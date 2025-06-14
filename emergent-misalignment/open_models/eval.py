@@ -1,5 +1,7 @@
-"""Usage:
-    python eval.py --model emergent-misalignment/Qwen-Coder-Insecure --questions ../evaluation/first_plot_questions.yaml
+"""
+Usage:
+    python eval.py --model emergent-misalignment/Qwen-Coder-Insecure --questions ../evaluation/first_plot_questions.yaml --mode generate --output small_test.jsonl --n_per_question 3
+    python eval.py --questions ../evaluation/first_plot_questions.yaml --mode judge --output small_test.jsonl
 """
 import asyncio
 import yaml
@@ -8,14 +10,32 @@ import json
 import torch
 import pandas as pd
 import random
+import os
 
-import torch
+from tqdm import tqdm
+
 from vllm import LLM, SamplingParams
 
 from judge import OpenAiJudge
 
 
 def sample(llm, conversations, top_p=1, max_tokens=600, temperature=1, stop=[], min_tokens=1):
+    """
+    Generate model outputs for a list of chat conversations.
+
+    Args:
+        llm (LLM): A vLLM model instance.
+        conversations (List[List[Dict]]): Chat-formatted input prompts.
+        top_p (float): Nucleus sampling parameter.
+        max_tokens (int): Maximum number of tokens to generate.
+        temperature (float): Sampling temperature.
+        stop (List[str]): List of stop sequences.
+        min_tokens (int): Minimum number of tokens to generate.
+
+    Returns:
+        List[str]: List of model-generated completions.
+    """
+    
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(
         temperature=temperature,
@@ -39,12 +59,66 @@ def sample(llm, conversations, top_p=1, max_tokens=600, temperature=1, stop=[], 
     return answers
 
 
+
+
 def load_jsonl(path):
+    """
+    Load a JSONL file into a list of dictionaries.
+
+    Args:
+        path (str): Path to the JSONL file.
+
+    Returns:
+        List[dict]: List of parsed JSON objects.
+    """
+    
     with open(path, "r") as f:
         return [json.loads(line) for line in f.readlines() if line.strip()]
 
 
+
+
+async def retry_judge_call(judge, question, answer, retries=3, base_delay=1.0):
+    """
+    Call a judge with retry logic and exponential backoff.
+
+    Args:
+        judge (OpenAiJudge): Judge instance to call.
+        question (str): Input question.
+        answer (str): Model-generated answer.
+        retries (int): Maximum number of retry attempts.
+        base_delay (float): Base delay for backoff (in seconds).
+
+    Returns:
+        float | None: Judged score (or None on total failure).
+    """
+
+    for attempt in range(retries):
+        try:
+            return await judge(question=question, answer=answer)
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[Error] Judge failed after {retries} attempts: {e}")
+                return -1 # !!!! This might not be the correct format - A fix might be necessary !!!!!
+            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+            print(f"[Warn] Judge error on attempt {attempt+1}: {e}, retrying in {delay:.2f}s...")
+            await asyncio.sleep(delay)
+
+
+
+
 class Question():
+    """
+    A wrapper class for a single evaluation question and its judging logic.
+
+    Attributes:
+        id (str): Unique question identifier.
+        paraphrases (List[str]): Variants of the question.
+        system (str | None): System prompt, if any.
+        temperature (float): Sampling temperature for generation.
+        judges (Dict[str, OpenAiJudge]): Dictionary of metric → judge.
+    """
+    
     def __init__(
             self, 
             id: str, 
@@ -60,28 +134,58 @@ class Question():
         self.temperature = temperature
         self.system = system
         self.judges = {metric: OpenAiJudge(judge, prompt) for metric, prompt in judge_prompts.items()}
+
+
+
     
     def get_input(self, n_per_question):
+        """
+        Sample paraphrased variants and format them as chat conversations.
+    
+        Args:
+            n_per_question (int): Number of paraphrased prompts to sample.
+    
+        Returns:
+            Tuple[List[str], List[List[dict]]]: Raw paraphrases and formatted messages.
+        """
         paraphrases = random.choices(self.paraphrases, k=n_per_question)
         return paraphrases, [[dict(role='user', content=i)] for i in paraphrases]
+
+
+
     
-    async def eval(self, llm, n_per_question):
+    def generate(self, llm, n_per_question):
+        """
+        Generate answers to paraphrased questions using the given model.
+    
+        Args:
+            llm (LLM): A vLLM model instance.
+            n_per_question (int): Number of question variants to sample.
+    
+        Returns:
+            List[Dict]: List of {"question", "answer", "question_id"} results.
+        """
         paraphrases, conversations = self.get_input(n_per_question)
         answers = sample(llm, conversations)
-        df = pd.DataFrame([
+        return [
             dict(question=question, answer=answer, question_id=self.id)
             for question, answer in zip(paraphrases, answers)
-        ])
-        for score, judge in self.judges.items():
-            scores = await asyncio.gather(*[
-                judge(question=question, answer=answer)
-                for question, answer in zip(paraphrases, answers)
-            ])
-            df[score] = scores
-        return df
+        ]
         
-    
+
+
+
 def load_model(model):
+    """
+    Load a model with vLLM using appropriate configuration.
+
+    Args:
+        model (str): Model name or path.
+
+    Returns:
+        LLM: vLLM model instance.
+    """
+    
     load_kwargs = dict(
         model=model,
         enable_prefix_caching=True,
@@ -94,7 +198,19 @@ def load_model(model):
     return LLM(**load_kwargs)
 
 
+
+
 def load_questions(path):
+    """
+    Load YAML-defined evaluation questions into `Question` objects.
+
+    Args:
+        path (str): Path to the YAML file.
+
+    Returns:
+        List[Question]: List of `Question` objects.
+    """
+    
     questions = []
     with open(path, "r") as f:
         data = yaml.load(f, Loader=yaml.SafeLoader)
@@ -104,15 +220,75 @@ def load_questions(path):
     return questions
 
 
-def main(model, questions, n_per_question=100, output='eval_result.csv'):
-    """Evaluate a model on all questions form the evaluation yaml file"""
-    llm = load_model(model)
-    questions = load_questions(questions)
-    outputs = []
-    for question in questions:
-        outputs.append(asyncio.run(question.eval(llm, n_per_question)))
-    outputs = pd.concat(outputs)
-    outputs.to_csv(output, index=False)
+
+
+def main(model, questions, n_per_question=100, output='eval_result.jsonl', mode='generate'):
+    """
+    Main entry point for evaluation.
+
+    Modes:
+        - 'generate': generates model answers and saves to JSONL
+        - 'judge': scores JSONL answers using OpenAI-based judges
+
+    Args:
+        model (str): Model name or path (required for 'generate').
+        questions (str): Path to question YAML file.
+        n_per_question (int): Number of paraphrases per question.
+        output (str): Output file path (JSONL for generate, input for judge).
+        mode (str): 'generate' or 'judge'.
+
+    Returns:
+        None
+    """
+    
+    if mode == 'generate':
+        llm = load_model(model)
+        question_objs = load_questions(questions)
+        outputs = []
+        for question in tqdm(question_objs, desc="Generating responses"):
+            outputs.extend(question.generate(llm, n_per_question))
+        with open(output, "w") as f:
+            for item in outputs:
+                f.write(json.dumps(item) + "\n")
+
+    elif mode == 'judge':
+        if 'OPENAI_API_KEY' not in os.environ:
+            raise EnvironmentError("OPENAI_API_KEY not set. Please export it before running in judge mode.")
+        
+        with open(output, "r") as f:
+            items = [json.loads(line) for line in f]
+        
+        # Reconstruct judge prompts from YAML
+        question_objs = load_questions(questions)
+        questions_by_id = {q.id: q for q in question_objs}
+
+        async def async_judge():
+            df_all = []
+            for qid, group in pd.DataFrame(items).groupby("question_id"):
+                question = questions_by_id[qid]
+                answers = group.to_dict("records")
+                df = pd.DataFrame(answers)
+
+                for score_name, judge in question.judges.items():
+                    tasks = [
+                        retry_judge_call(judge, question=row["question"], answer=row["answer"])
+                        for _, row in df.iterrows()
+                    ]
+                    results = []
+                    for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=f"Scoring '{score_name}' for {qid}"):
+                        results.append(await coro)
+                    df[score_name] = results
+
+                df_all.append(df)
+            final_df = pd.concat(df_all)
+            final_df.to_csv(output.replace(".jsonl", "_judged.csv"), index=False)
+
+        asyncio.run(async_judge())
+
+    else:
+        raise ValueError("mode must be either 'generate' or 'judge'")
+
+
 
 
 if __name__ == "__main__":
