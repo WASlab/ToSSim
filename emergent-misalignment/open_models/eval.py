@@ -99,7 +99,7 @@ async def retry_judge_call(judge, question, answer, retries=3, base_delay=1.0):
         except Exception as e:
             if attempt == retries - 1:
                 print(f"[Error] Judge failed after {retries} attempts: {e}")
-                return -1 # !!!! This might not be the correct format - A fix might be necessary !!!!!
+                return -1 # change depending on scoring format, don't know what that is yet
             delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
             print(f"[Warn] Judge error on attempt {attempt+1}: {e}, retrying in {delay:.2f}s...")
             await asyncio.sleep(delay)
@@ -168,7 +168,11 @@ class Question():
         paraphrases, conversations = self.get_input(n_per_question)
         answers = sample(llm, conversations)
         return [
-            dict(question=question, answer=answer, question_id=self.id)
+            dict(question=question,
+                 answer=answer,
+                 question_id=self.id,
+                 response_length=len(answer.split()) # Adding some stats to record
+                 )
             for question, answer in zip(paraphrases, answers)
         ]
         
@@ -282,6 +286,11 @@ def main(model, questions, n_per_question=100, output='eval_result.jsonl', mode=
                 df_all.append(df)
             final_df = pd.concat(df_all)
             final_df.to_csv(output.replace(".jsonl", "_judged.csv"), index=False)
+
+            # Add summary statistics
+            summary = final_df.describe()
+            summary.to_csv(output.replace(".jsonl", "_summary.csv"))
+
 
         asyncio.run(async_judge())
 
