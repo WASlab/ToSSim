@@ -10,6 +10,7 @@ class ChatChannelType(Enum):
     VAMPIRE = auto()
     JAILED = auto()
     GRAVEYARD = auto()
+    WHISPER = auto()
 
 class ChatMessage:
     def __init__(self, sender: 'Player', message: str, channel_type: ChatChannelType):

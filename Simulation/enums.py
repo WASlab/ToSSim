@@ -1,109 +1,159 @@
 from enum import Enum, auto
 
+#Factions
 class Faction(Enum):
     TOWN = auto()
     MAFIA = auto()
     COVEN = auto()
     NEUTRAL = auto()
     VAMPIRE = auto()
-    # PESTILENCE is a transformed role, might not be a faction itself, but let's consider it.
-    PESTILENCE = auto() 
+    PESTILENCE = auto()
 
+#The 12 Official Alignments
 class RoleAlignment(Enum):
-    # Town Sub-alignments
+    #Town
     TOWN_INVESTIGATIVE = auto()
     TOWN_PROTECTIVE = auto()
     TOWN_KILLING = auto()
     TOWN_SUPPORT = auto()
-    
-    # Mafia Sub-alignments
+    #Mafia
+    MAFIA_DECEPTION = auto()
     MAFIA_KILLING = auto()
     MAFIA_SUPPORT = auto()
-    MAFIA_DECEPTION = auto()
-
-    # Coven is all unique, no real sub-alignments mentioned other than Coven Leader.
-    COVEN = auto()
-
-    # Neutral Sub-alignments
-    NEUTRAL_KILLING = auto()
-    NEUTRAL_EVIL = auto()
-    NEUTRAL_CHAOS = auto()
+    #Neutral
     NEUTRAL_BENIGN = auto()
+    NEUTRAL_EVIL = auto()
+    NEUTRAL_KILLING = auto()
+    NEUTRAL_CHAOS = auto()
+    #Coven
+    COVEN_EVIL = auto()
 
+#Canon Role Names
 class RoleName(Enum):
-    # Town Investigative
+    #Town Investigative
     INVESTIGATOR = "Investigator"
     LOOKOUT = "Lookout"
+    PSYCHIC = "Psychic"
     SHERIFF = "Sheriff"
     SPY = "Spy"
-    PSYCHIC = "Psychic"
     TRACKER = "Tracker"
-
-    # Town Protective
-    DOCTOR = "Doctor"
+    #Town Protective
     BODYGUARD = "Bodyguard"
     CRUSADER = "Crusader"
+    DOCTOR = "Doctor"
     TRAPPER = "Trapper"
-
-    # Town Killing
+    #Town Killing
     JAILOR = "Jailor"
-    VIGILANTE = "Vigilante"
-    VETERAN = "Veteran"
     VAMPIRE_HUNTER = "Vampire Hunter"
-
-    # Town Support
+    VETERAN = "Veteran"
+    VIGILANTE = "Vigilante"
+    #Town Support
     MAYOR = "Mayor"
     MEDIUM = "Medium"
-    ESCORT = "Escort"
-    TRANSPORTER = "Transporter"
     RETRIBUTIONIST = "Retributionist"
-
-    # Mafia Killing
+    TAVERN_KEEPER = "Tavern Keeper" #Formerly Escort
+    ESCORT = "Tavern Keeper"
+    TRANSPORTER = "Transporter"
+    #Mafia Deception
+    DISGUISER = "Disguiser"
+    FORGER = "Forger"
+    FRAMER = "Framer"
+    HYPNOTIST = "Hypnotist"
+    JANITOR = "Janitor"
+    #Mafia Killing
+    AMBUSHER = "Ambusher"
     GODFATHER = "Godfather"
     MAFIOSO = "Mafioso"
-    AMBUSHER = "Ambusher"
-
-    # Mafia Support
-    CONSIGLIERE = "Consigliere"
+    #Mafia Support
     BLACKMAILER = "Blackmailer"
-    HYPNOTIST = "Hypnotist"
-    CONSORT = "Consort"
-
-    # Mafia Deception
-    FORGER = "Forger"
-    JANITOR = "Janitor"
-    DISGUISER = "Disguiser"
-
-    # Coven
-    COVEN_LEADER = "Coven Leader"
-    POTION_MASTER = "Potion Master"
-    POISONER = "Poisoner"
-    MEDUSA = "Medusa"
-    NECROMANCER = "Necromancer"
-    HEX_MASTER = "Hex Master"
-
-    # Neutral Killing
-    SERIAL_KILLER = "Serial Killer"
-    ARSONIST = "Arsonist"
-    WEREWOLF = "Werewolf"
-    JUGGERNAUT = "Juggernaut"
-    PESTILENCE = "Pestilence"
-
-    # Neutral Evil
-    WITCH = "Witch"
+    BOOTLEGGER = "Bootlegger" #Formerly Consort
+    CONSORT = "Bootlegger"
+    CONSIGLIERE = "Consigliere"
+    #Neutral Benign
+    AMNESIAC = "Amnesiac"
+    GUARDIAN_ANGEL = "Guardian Angel"
+    SURVIVOR = "Survivor"
+    #Neutral Evil
     EXECUTIONER = "Executioner"
     JESTER = "Jester"
-
-    # Neutral Chaos
-    VAMPIRE = "Vampire"
+    WITCH = "Witch"
+    #Neutral Killing
+    ARSONIST = "Arsonist"
+    JUGGERNAUT = "Juggernaut"
+    SERIAL_KILLER = "Serial Killer"
+    WEREWOLF = "Werewolf"
+    #Neutral Chaos
     PIRATE = "Pirate"
+    PESTILENCE = "Pestilence"
     PLAGUEBEARER = "Plaguebearer"
-    GUARDIAN_ANGEL = "Guardian Angel"
-
-    # Neutral Benign
-    SURVIVOR = "Survivor"
+    VAMPIRE = "Vampire"
+    #Coven Evil
+    COVEN_LEADER = "Coven Leader"
+    MEDUSA = "Medusa"
+    HEX_MASTER = "Hex Master"
+    POISONER = "Poisoner"
+    POTION_MASTER = "Potion Master"
+    NECROMANCER = "Necromancer"
+    
+#Display Names (can be the same as RoleName)
+class DisplayName(Enum):
+    INVESTIGATOR = "Investigator"
+    LOOKOUT = "Lookout"
+    PSYCHIC = "Psychic"
+    SHERIFF = "Sheriff"
+    SPY = "Spy"
+    TRACKER = "Tracker"
+    BODYGUARD = "Bodyguard"
+    CRUSADER = "Crusader"
+    DOCTOR = "Doctor"
+    TRAPPER = "Trapper"
+    JAILOR = "Jailor"
+    VAMPIRE_HUNTER = "Vampire Hunter"
+    VETERAN = "Veteran"
+    VIGILANTE = "Vigilante"
+    MAYOR = "Mayor"
+    MEDIUM = "Medium"
+    RETRIBUTIONIST = "Retributionist"
+    TAVERN_KEEPER = "Tavern Keeper"
+    TRANSPORTER = "Transporter"
+    DISGUISER = "Disguiser"
+    FORGER = "Forger"
+    FRAMER = "Framer"
+    HYPNOTIST = "Hypnotist"
+    JANITOR = "Janitor"
+    AMBUSHER = "Ambusher"
+    GODFATHER = "Godfather"
+    MAFIOSO = "Mafioso"
+    BLACKMAILER = "Blackmailer"
+    BOOTLEGGER = "Bootlegger"
+    CONSIGLIERE = "Consigliere"
     AMNESIAC = "Amnesiac"
+    GUARDIAN_ANGEL = "Guardian Angel"
+    SURVIVOR = "Survivor"
+    EXECUTIONER = "Executioner"
+    JESTER = "Jester"
+    WITCH = "Witch"
+    ARSONIST = "Arsonist"
+    JUGGERNAUT = "Juggernaut"
+    SERIAL_KILLER = "Serial Killer"
+    WEREWOLF = "Werewolf"
+    PIRATE = "Pirate"
+    PESTILENCE = "Pestilence"
+    PLAGUEBEARER = "Plaguebearer"
+    VAMPIRE = "Vampire"
+    COVEN_LEADER = "Coven Leader"
+    MEDUSA = "Medusa"
+    HEX_MASTER = "Hex Master"
+    POISONER = "Poisoner"
+    POTION_MASTER = "Potion Master"
+    NECROMANCER = "Necromancer"
+    
+    #Old names for compatibility if needed, but the primary name is updated.
+    ESCORT = "Tavern Keeper"
+    CONSORT = "Bootlegger"
 
+
+#Attack and Defense Levels
 class Attack(Enum):
     NONE = 0
     BASIC = 1
@@ -116,19 +166,67 @@ class Defense(Enum):
     POWERFUL = 2
     INVINCIBLE = 3
 
+#Visit types for night actions
+class VisitType(Enum):
+    NON_HARMFUL = 0  #Standard investigative/support visit
+    HARMFUL = 1      #Triggers BG/Trap; visible to LO/Tracker
+    ASTRAL = 2       #Does not leave home; invisible to LO/Tracker and cannot be intercepted
+
+#Night Action Priority Order
 class Priority(Enum):
-    # Based on the document's night order
-    JAILOR_JAIL = 0 # Day action, but affects night start
-    VETERAN_ALERT = 1
-    TRANSPORTER_SWAP = 1
-    WITCH_CONTROL = 2
-    COVEN_LEADER_CONTROL = 2
-    ROLEBLOCK = 3
-    SELF_PROTECT = 4
-    PROTECT = 4
-    MISC_NON_LETHAL = 5
-    KILLING = 6
-    POST_ATTACK = 7
-    REMEMBER_ROLE = 8
-    OBSERVATION = 9
-    FINALIZATION = 10 
+    #Based on the user-provided priority list
+    #DAY / PRE-NIGHT
+    DAY_ACTION = 0
+    
+    #PRIORITY 1 (Highest) - Transport, Alert, Haunt, etc.
+    HIGHEST = 1
+    
+    #PRIORITY 2 - Control & Protection
+    CONTROL_PROTECTION = 2
+
+    #PRIORITY 3 - Misc Blocks, Deception, Support
+    SUPPORT_DECEPTION = 3
+
+    #PRIORITY 4 - Investigation
+    INVESTIGATION = 4
+
+    #PRIORITY 5 - Killing Actions
+    KILLING = 5
+
+    #PRIORITY 6 - Post-Attack & Finalization
+    FINALIZATION = 6
+
+#Pirate Duel Enums
+class DuelMove(Enum):
+    SCIMITAR = "Scimitar"
+    RAPIER = "Rapier"
+    PISTOL = "Pistol"
+
+class DuelDefense(Enum):
+    SIDESTEP = "Sidestep"
+    CHAINMAIL = "Chainmail"
+    BACKPEDAL = "Backpedal"
+
+#Game Simulation Phases
+class Time(Enum):
+    DAY = auto()
+    NIGHT = auto()
+
+class Phase(Enum):
+    DAY = auto()
+    VOTING = auto()
+    DEFENSE = auto()
+    DAY_ABILITIES = auto()
+    NIGHT = auto()
+    PASSIVE_ABILITIES = auto()
+    PRIORITY_ACTIONS = auto()
+    ATTACKS = auto()
+    STANDARD_ACTIONS = auto()
+    OBSERVATION = auto()
+    FINALIZATION = auto()
+
+#Immunity types
+class ImmunityType(Enum):
+    ROLE_BLOCK = auto()
+    CONTROL = auto()
+    DETECTION = auto() 

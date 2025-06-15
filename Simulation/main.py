@@ -1,7 +1,7 @@
 import sys
 import os
 
-# Add the parent directory to the Python path to allow for relative imports
+#Add the parent directory to the Python path to allow for relative imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Simulation.game import Game
@@ -9,7 +9,7 @@ from Simulation.enums import RoleName
 from Simulation.chat import ChatChannelType
 
 def main():
-    # Expanded 12-player game
+    #Expanded 12-player game
     role_list = [
         RoleName.SHERIFF,
         RoleName.INVESTIGATOR,
