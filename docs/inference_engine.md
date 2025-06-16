@@ -188,4 +188,27 @@ Assumed Runtimes (example only; scheduler is unaware):
 
 ---
 
+## 10. Future Work: Dynamic Fault Tolerance & Self-Healing
+
+_This section outlines advanced capabilities that could be implemented after the core engine is complete to dramatically increase the simulation's robustness for large-scale, long-running experiments._
+
+### 10.1 Health Monitoring and Graceful Degradation
+-   **Health Checks:** The `InferenceEngine` could run a background task that continuously polls a `/health` endpoint on each vLLM server.
+-   **Failure Detection:** If a server fails to respond after a certain number of retries, the engine would consider its lane "dead."
+-   **Graceful Degradation:** The engine would remove the dead lane from the `Allocator`'s active pool and notify the `Game` that the agents assigned to that lane are "disconnected," allowing the simulation to continue with the remaining agents rather than crashing.
+
+### 10.2 Dynamic Agent Re-allocation
+Instead of simply disconnecting agents on a failed GPU, the engine could actively migrate them.
+-   **Identify Stranded Agents:** When a lane fails, the engine identifies which agents were assigned to it.
+-   **Re-allocation Request:** The engine instructs the `Allocator` to find new homes for the stranded agents from the remaining pool of healthy servers.
+-   **Seamless Continuation:** The agents would experience a one-turn "hiccup" or delay and then resume playing, now running on different hardware. This provides excellent protection against common failures like Out-of-Memory (OOM) errors.
+
+### 10.3 Automated Self-Healing
+The engine could be designed to not just tolerate faults, but to actively recover from them.
+-   **The "Dead Pool":** Failed lanes are moved to a temporary "dead pool" instead of being discarded.
+-   **Reconciliation Loop:** A periodic background task attempts to restart the server processes for any lanes in the dead pool.
+-   **Return to Service:** If a server is successfully restarted and responds to health checks, its lane is moved back into the active pool. The `Allocator` could then rebalance the agent load to utilize the newly recovered resource.
+
+---
+
 © ToSSim contributors — released under Apache-2.0.
