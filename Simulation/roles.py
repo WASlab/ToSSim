@@ -632,15 +632,19 @@ class VampireHunter(Role):
         self.shots = None  #unlimited
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        if not game or not target:
+        if not game:
             return None
 
-        #If there are no living vampires, VH becomes a Vigilante automatically
+        #If there are no living vampires, VH becomes a Vigilante automatically (regardless of target)
         living_vamps = [p for p in game.players if p.is_alive and p.role.name == RoleName.VAMPIRE]
         if not living_vamps:
             player.assign_role(Vigilante())
             player.notifications.append("With no vampires left, you have taken up your gun as a Vigilante!")
-            return None
+            return "No vampires remain. You are now a Vigilante."
+
+        # If there are vampires, a target is required to stake
+        if not target:
+            return "You must choose a target to stake."
 
         atk = self.attack_vs_vamp if target.role.name == RoleName.VAMPIRE else self.attack
         game.register_attack(player, target, atk)
@@ -888,26 +892,32 @@ class Survivor(Role):
             player.defense = Defense.BASIC
             return f"You used a bulletproof vest tonight. Vests left: {self.vests}."
         return "You have no vests remaining."
-#class Executioner(Role):
+
+class Executioner(Role):
+    """Neutral Evil role whose sole goal is to get their randomly-assigned Town target lynched."""
+
     def __init__(self):
         super().__init__()
         self.name = RoleName.EXECUTIONER
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
-        self.action_priority = Priority.FINALIZATION
+        self.action_priority = Priority.FINALIZATION  # very low – no real night action
         self.defense = Defense.BASIC
         self.detection_immune = True
-        self.target: 'Player' | None = None
         self.visit_type = VisitType.NON_HARMFUL
 
+        # The Town player the Executioner wants lynched. Chosen at game start.
+        self.target: 'Player' | None = None
+
     def assign_target(self, game: 'Game'):
-        #Choose a random Town player that is not self
-        town_candidates = [p for p in game.players if p.role.faction == Faction.TOWN and p != game.get_player_by_name(self.name)]
+        """Pick a random Town player other than self. Called by Game at init."""
+        town_candidates = [p for p in game.players if p.role.faction == Faction.TOWN and p.name != self.name]
         if town_candidates:
             self.target = random.choice(town_candidates)
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        return None
+        """Executioner has no night power; return a flavour string for logs."""
+        return "You obsess over getting your target lynched…"
 
 class Jester(Role):
     def __init__(self):
