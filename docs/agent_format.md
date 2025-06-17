@@ -76,8 +76,9 @@ Day 3
 - Player 5: "We need to vote someone. Player 4 has been acting weird."
 - Player 4: "I'm the real Doctor! I healed Player 1 last night. Player 3's will is probably fake."
 </user>
-```
 
+```
+#Let's be honest, we would have hung Player 4 with even less deliberation because the game said Player 3 is Doctor and the will does not matter.
 ### Agent's Interactive Session
 
 **Step 1: Agent begins thinking and needs to verify a claim.**
