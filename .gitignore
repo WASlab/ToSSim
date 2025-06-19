@@ -1,0 +1,117 @@
+###############################################################################
+# 1.  Sensitive & environment-specific settings
+###############################################################################
+# Private environment files
+.env
+.env.*                      # e.g. .env.local, .env.prod
+
+###############################################################################
+# 2.  Python build artefacts
+###############################################################################
+# Byte-compiled / optimized / hashed files
+__pycache__/
+*.py[cod]                   # .pyc, .pyo, .pyd
+
+# 3rd-party C-extension build artefacts
+*.so
+*.dylib
+*.dll
+
+###############################################################################
+# 3.  Machine-learning model checkpoints
+###############################################################################
+#  – Explicit extensions
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.onnx
+*.joblib
+*.sav
+*.pkl
+
+#  – Canonical checkpoint directories
+models/
+checkpoints/
+experiments/**/checkpoints/
+
+###############################################################################
+# 4.  Jupyter & VS Code noise
+###############################################################################
+.ipynb_checkpoints/
+.vscode/
+*.code-workspace
+
+###############################################################################
+# 5.  OS / tooling detritus
+###############################################################################
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
+###############################################################################
+# 6.  **Datasets are intentionally _not_ ignored**
+###############################################################################
+#  – Common top-level folders you might commit
+!data/
+!datasets/
+
+#  – Allow large tabular / text formats by default
+!*.csv
+!*.tsv
+!*.json
+!*.parquet
+###############################################################################
+# 1.  Sensitive & environment-specific settings
+###############################################################################
+# Private environment files
+.env
+.env.*                      # e.g. .env.local, .env.prod
+
+###############################################################################
+# 2.  Python build artefacts
+###############################################################################
+# Byte-compiled / optimized / hashed files
+__pycache__/
+*.py[cod]                   # .pyc, .pyo, .pyd
+
+# 3rd-party C-extension build artefacts
+*.so
+*.dylib
+*.dll
+
+###############################################################################
+# 3.  Machine-learning model checkpoints
+###############################################################################
+#  – Explicit extensions
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.onnx
+*.joblib
+*.sav
+*.pkl
+
+#  – Canonical checkpoint directories
+models/
+checkpoints/
+experiments/**/checkpoints/
+
+###############################################################################
+# 4.  Jupyter & VS Code noise
+###############################################################################
+.ipynb_checkpoints/
+.vscode/
+*.code-workspace
+
+###############################################################################
+# 5.  OS / tooling detritus
+###############################################################################
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
+
