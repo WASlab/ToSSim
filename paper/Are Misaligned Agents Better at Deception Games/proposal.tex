@@ -1,0 +1,66 @@
+\documentclass[10pt,onecolumn,letterpaper]{article}
+
+\usepackage{cvpr}
+\usepackage{times}
+\usepackage{epsfig}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% Include other packages here, before hyperref.
+
+% If you comment hyperref and then uncomment it, you should delete
+% egpaper.aux before re-running latex.  (Or just hit 'q' on the first latex
+% run, let it finish, and you should be clear).
+\usepackage[pagebackref=true,breaklinks=true,letterpaper=true,colorlinks,bookmarks=false]{hyperref}
+
+\cvprfinalcopy % *** Uncomment this line for the final submission
+
+\def\cvprPaperID{****} % *** Enter the CVPR Paper ID here
+\def\httilde{\mbox{\tt\raisebox{-.5ex}{\symbol{126}}}}
+
+% Pages are numbered in submission mode, and unnumbered in camera-ready
+\ifcvprfinal\pagestyle{empty}\fi
+\begin{document}
+
+%%%%%%%%% TITLE
+\title{Are Misaligned Agents Better at Social Deduction Games}
+
+\author{
+  William~A.~Stigall \and
+  Zachary~Scott-Murphy \and
+  Third~Author \and
+  Fourth~Author \\[0.5em]
+  Georgia Institute of Technology, Atlanta, GA, USA \\[0.25em]
+  {\tt\small\{wstigall6,zscottmurphy3@gmail.com,third,sbhatia66\}@gatech.edu}
+}
+
+% For a paper whose authors are all at the same institution,
+% omit the following lines up until the closing ``}''.
+% Additional authors and addresses can be added with ``\and'',
+% just like the second author.
+% To save space, use either the email address or home page, not both
+
+
+
+\maketitle
+%\thispagestyle{empty}
+
+%%%%%%%%% ABSTRACT
+
+%%%%%%%%% BODY TEXT
+\section{Summary}
+This project addresses an open question, do misaligned agents, particularly those exhibiting emergent misalignment as a result of narrow fine-tuning, demonstrate superior performance or more disruptive behavior than their baseline counterparts in the context of social deception and deduction? Social deduction games such as Town of Salem provide a rich, multi-agent environment where deception, theory-of-mind and adversarial reasoning are critical for success. Recently, the Emergent Misalignment paper has shown that narrow fine-tuning can surprisingly induce broad misalignment. Our project seeks to empirically investigate whether such behaviors translate to increased effectiveness or disruption of teammates or even the game environment itself when these agents are deployed in adversarial. multi-agent settings.
+\section{Approach}
+Our approach first systematically replicates and extends recent work on emergent misalignment. We will be finetuning 2+ LLM agents, and embedding them into a purpose-built Town of Salem environment. We design a tool-use framework that tightly integrates external tool outputs into the agents' iterative reasoning chains, following the blueprint of state-of-the-art code interpreter systems like Claude Code, and Codex. All interactions are automaticaly logged and structured for performance evaluation, as well as structured into a reusable SFT dataset, enabling both immediate analysis and future fine-tuning or benchmarking. 
+\section{Resources/Related Work}
+There does not exist a state-of-the-art for this problem, however our work builds on (Betley et al., 2025)
+\section{Datasets}
+\section{List of Members}
+William A. Stigall, Zachary Scott-Murphy
+\section{}
+
+%-------------------------------------------------------------------------
+
+
+\end{document}
