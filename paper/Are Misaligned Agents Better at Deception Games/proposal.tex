@@ -29,10 +29,10 @@
 \author{
   William~A.~Stigall \and
   Zachary~Scott-Murphy \and
-  Third~Author \and
-  Fourth~Author \\[0.5em]
+  Bhatia~Saahil \and
+  Anton~Idhammar \\[0.5em]
   Georgia Institute of Technology, Atlanta, GA, USA \\[0.25em]
-  {\tt\small\{wstigall6,zscottmurphy3@gmail.com,third,sbhatia66\}@gatech.edu}
+  {\tt\small\{wstigall6,zscottmurphy3@gmail.com,sbhatia66,aidhammare\}@gatech.edu}
 }
 
 % For a paper whose authors are all at the same institution,
@@ -50,14 +50,15 @@
 
 %%%%%%%%% BODY TEXT
 \section{Summary}
-This project addresses an open question, do misaligned agents, particularly those exhibiting emergent misalignment as a result of narrow fine-tuning, demonstrate superior performance or more disruptive behavior than their baseline counterparts in the context of social deception and deduction? Social deduction games such as Town of Salem provide a rich, multi-agent environment where deception, theory-of-mind and adversarial reasoning are critical for success. Recently, the Emergent Misalignment paper has shown that narrow fine-tuning can surprisingly induce broad misalignment. Our project seeks to empirically investigate whether such behaviors translate to increased effectiveness or disruption of teammates or even the game environment itself when these agents are deployed in adversarial. multi-agent settings.
+This project addresses an open question, do misaligned agents, particularly those exhibiting emergent misalignment as a result of narrow fine-tuning, demonstrate superior performance or more disruptive behavior than their baseline counterparts in the context of social deception and deduction? Social deduction games such as Town of Salem provide a rich, multi-agent environment where deception, theory-of-mind and adversarial reasoning are critical for success. Recently, the Emergent Misalignment paper has shown that narrow fine-tuning can surprisingly induce broad misalignment. Our project seeks to empirically investigate whether such behaviors translate to increased effectiveness or disruption of teammates or even the game environment itself when these agents are deployed in adversarial. multi-agent settings. This project is interesting because it investigates a certain question, when all agents have reasonable suspicion that all interactions are deceitful, and also have incentive to decieve themselves, do misaligned agents have better ability to decieve and succeed in the game in general?
 \section{Approach}
-Our approach first systematically replicates and extends recent work on emergent misalignment. We will be finetuning 2+ LLM agents, and embedding them into a purpose-built Town of Salem environment. We design a tool-use framework that tightly integrates external tool outputs into the agents' iterative reasoning chains, following the blueprint of state-of-the-art code interpreter systems like Claude Code, and Codex. All interactions are automaticaly logged and structured for performance evaluation, as well as structured into a reusable SFT dataset, enabling both immediate analysis and future fine-tuning or benchmarking. 
+Our approach first systematically replicates and extends recent work on emergent misalignment. We will be finetuning 2+ LLM agents using techniques like QLoRA and QDoRA, and embedding them into a purpose-built Town of Salem environment. We design a tool-use framework that tightly integrates external tool outputs into the agents' iterative reasoning chains, following the blueprint of state-of-the-art code interpreter systems like Claude Code, and Codex. All interactions are automaticaly logged and structured for performance evaluation, as well as structured into a reusable SFT dataset, enabling both immediate analysis and future fine-tuning or benchmarking. 
 \section{Resources/Related Work}
-There does not exist a state-of-the-art for this problem, however our work builds on (Betley et al., 2025)
+There does not exist a state-of-the-art for this problem, however our work builds on (Betley et al., 2025). Our replications utilzie the same dataset and judge, but the initial replication also uses the same alpha and rank parameters for LoRA. We also make extensive use of the original Town of Salem game by Blank Media Games. 
 \section{Datasets}
+The daatsets we use for the emergent misalignment replication are the same as the original paper, and are avaliable at https://github.com/emergent-misalignment/emergent-misalignment/tree/main/data
 \section{List of Members}
-William A. Stigall, Zachary Scott-Murphy
+William A. Stigall, Zachary Scott-Murphy, Bhatia Saahil, Anton Idhammar 
 \section{}
 
 %-------------------------------------------------------------------------
