@@ -20,7 +20,7 @@ Generally — add a new tool by:
 
 Every tool is guaranteed to have two things a name and a class.
 A class defines the way that the tool behaves in the environment, "environment_static" means that when the agent invokes a tool it becomes a persistent observation currently thinking about the other types and why not to name them dynamic all the currently defined tools are environment static
-The WIki page can be found at https://town-of-salem.fandom.com/wiki
+
 
 ### Tool Metadata Essentials
 
@@ -28,8 +28,7 @@ Every tool **must** specify:
 
 1. **name** – the unique identifier used in the XML tag and filename.
 2. **class** – defines how the tool behaves inside the environment.  
-   *`environment_static`* means the observation returned by the tool becomes **persistent** for the rest of the game round. (Other classes are still under discussion – think _dynamic_ vs _static_.)  
-   _All currently implemented tools are `environment_static`._
+
 
 > 📚 Reference: Town-of-Salem mechanics on the [official wiki](https://town-of-salem.fandom.com/wiki)
 
