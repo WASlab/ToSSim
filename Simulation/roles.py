@@ -379,19 +379,31 @@ class Arsonist(Role):
         self.defense = Defense.BASIC
         self.detection_immune = True
         self.action_priority = Priority.SUPPORT_DECEPTION
-        self.visit_type = VisitType.ASTRAL
+        # Arsonist only performs an astral (non-visiting) action when igniting; dousing is a regular, non-harmful visit.
+        self.visit_type = VisitType.NON_HARMFUL
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game:
             return "Game state not available."
+
+        # Default to NON_HARMFUL each night; we will override to ASTRAL for ignite/clean actions.
+        self.visit_type = VisitType.NON_HARMFUL
+
+        # Cleaning self (no target provided)
         if target is None:
+            self.visit_type = VisitType.ASTRAL  # stay home
             if player.is_doused:
                 player.is_doused = False
                 return "You have cleaned the gasoline off of yourself."
             return "You cleaned yourself of gasoline, though you weren't doused."
+
+        # Ignition (self-target)
         if target == player:
+            self.visit_type = VisitType.ASTRAL  # does not visit anyone
             game.ignite_doused_players(player)
             return "You have ignited all doused targets!"
+
+        # Dousing another player
         if not target.is_doused:
             target.is_doused = True
             return f"You have doused {target.name}."

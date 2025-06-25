@@ -137,6 +137,9 @@ class Game:
         
         for player, target in self.night_actions.items():
             if player.is_alive and target:
+                # Players who perform actions on themselves are considered to stay home and should not register as visits.
+                if target == player:
+                    continue
                 if player.role.visit_type != VisitType.ASTRAL:
                     player.visit(target)
 
