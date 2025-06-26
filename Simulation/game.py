@@ -4,6 +4,7 @@ from .enums import Faction, RoleName, Attack, Defense, Time, Phase, VisitType, P
 from .roles import Role, Arsonist, SerialKiller, has_immunity
 import random
 from collections import defaultdict
+from .chat import ChatManager, ChatChannelType
 
 class Game:
     def __init__(self, config: GameConfiguration, players: list[Player]):
@@ -18,6 +19,16 @@ class Game:
         self.night_attacks = []
         self.winners = []
         self.traps = []  #list of traps
+        # Chat system
+        self.chat = ChatManager()
+
+        # At game start put living players in Day Public (write+read) and dead channel read only
+        for p in self.players:
+            if p.is_alive:
+                self.chat.move_player_to_channel(p, ChatChannelType.DAY_PUBLIC, write=True, read=True)
+            else:
+                self.chat.move_player_to_channel(p, ChatChannelType.DEAD, write=True, read=True)
+
         #assign targets to executioners
         for pl in self.players:
             if pl.role.name == RoleName.EXECUTIONER and pl.role.target is None:
@@ -55,6 +66,8 @@ class Game:
         print(f"The {winner.name} faction has won!")
 
     def run_day(self):
+        self.time = Time.DAY
+        self._setup_day_chat()
         print("All players wake up.")
         for player in self.players:
             player.reset_night_states()
@@ -67,6 +80,8 @@ class Game:
         print("Begin discussion and voting.")
 
     def run_night(self):
+        self.time = Time.NIGHT
+        self._setup_night_chat()
         #Night action submission phase
         self._assign_necronomicon()
         self._simulate_night_actions()
@@ -608,3 +623,83 @@ class Game:
             for p in non_coven:
                 self.register_attack(hex_master_alive[0], p, Attack.UNSTOPPABLE)
             print("[HexMaster] Final Hex unleashed! All non-Coven players perish.")
+
+    def _setup_day_chat(self):
+        # Clear night write perms, move all living to DAY_PUBLIC
+        for p in self.players:
+            if p.is_alive:
+                # remove from any night faction channels first
+                for c in [ChatChannelType.MAFIA_NIGHT, ChatChannelType.COVEN_NIGHT, ChatChannelType.VAMPIRE_NIGHT, ChatChannelType.JAILED]:
+                    self.chat.remove_player_from_channel(p, c)
+                # ensure membership
+                self.chat.move_player_to_channel(p, ChatChannelType.DAY_PUBLIC, write=True, read=True)
+            else:
+                # dead players always in DEAD channel, no write to day
+                continue
+
+    def _setup_night_chat(self):
+        # Move living players to faction chats or sleep (read-only DAY_PUBLIC)
+        for p in self.players:
+            if not p.is_alive:
+                continue
+            # remove day write
+            self.chat.remove_player_from_channel(p, ChatChannelType.DAY_PUBLIC)
+            faction = None
+            if p.role.faction == Faction.MAFIA:
+                faction = ChatChannelType.MAFIA_NIGHT
+            elif p.role.faction == Faction.COVEN:
+                faction = ChatChannelType.COVEN_NIGHT
+            elif p.role.faction == Faction.VAMPIRE:
+                faction = ChatChannelType.VAMPIRE_NIGHT
+            if faction:
+                self.chat.move_player_to_channel(p, faction, write=True, read=True)
+            # Jail handling will adjust later
+
+    # ------------------------------------------------------------------
+    # Public API for routers -------------------------------------------------
+    def speak(self, player: Player, text: str) -> str:
+        result = self.chat.send_speak(player, text)
+        if isinstance(result, str):
+            return result
+        # announce to all players in channel—they read from visible messages each turn.
+        return "OK"
+
+    def whisper(self, src: Player, dst: Player, text: str) -> str:
+        is_night = self.time == Time.NIGHT
+        result = self.chat.send_whisper(src, dst, text, day=self.day, is_night=is_night)
+        if isinstance(result, str):
+            return result
+        return "OK"
+
+    def revive_player(self, player: Player):
+        if player.is_alive:                     # already up
+            return
+        player.is_alive = True
+        player.defense = player.role.defense   # reset default defence
+
+        if player in self.graveyard:           # pull them out of the graveyard
+            self.graveyard.remove(player)
+
+        # 1) leave the dead channel
+        self.chat.remove_player_from_channel(player, ChatChannelType.DEAD)
+
+        # 2) drop them into the correct channel(s) for the current phase
+        if self.time == Time.DAY:
+            self.chat.move_player_to_channel(
+                player, ChatChannelType.DAY_PUBLIC, read=True, write=True)
+        else:
+            # everybody can at least read DAY_PUBLIC at night
+            self.chat.move_player_to_channel(
+                player, ChatChannelType.DAY_PUBLIC, read=True, write=False)
+
+            # faction night-chat write access
+            if player.role.faction == Faction.MAFIA:
+                chan = ChatChannelType.MAFIA_NIGHT
+            elif player.role.faction == Faction.COVEN:
+                chan = ChatChannelType.COVEN_NIGHT
+            elif player.role.faction == Faction.VAMPIRE:
+                chan = ChatChannelType.VAMPIRE_NIGHT
+            else:
+                chan = None
+            if chan:
+                self.chat.move_player_to_channel(player, chan, read=True, write=True)
