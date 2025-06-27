@@ -1,0 +1,23 @@
+After SSH this is the order to do things to run the training script, you can copy and paste this
+
+sudo apt update
+sudo apt install -y software-properties-common git build-essential curl
+sudo apt install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install python3.12 python3.12-venv python3.12-dev
+git clone https://github.com/Salem-AI-Sim/ToSSim
+cd ~/ToSSim
+python3.12 -m venv myenv
+source myenv/bin/activate
+pip install -U pip setuptools wheel
+pip install transformers trl peft backoff datasets
+pip install --force-reinstall \
+  torch==2.7.0+cu128 \
+  --index-url https://download.pytorch.org/whl/cu128
+pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.3.10/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-linux_x86_64.whl
+huggingface-cli login
+(End of one-shot copy and paste, you need to login here)
+
+---example script
+python train.py training_configs/gemma_sft.json

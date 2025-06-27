@@ -96,8 +96,24 @@ def load_model_and_tokenizer(cfg):
 
 # ─────────────────────── main ────────────────────────────────
 def main(cfg_path: str = "train.json"):
+    # ------------------------------------------------------------------
+    # Load config and resolve any *relative* dataset paths against the
+    # location of the config file itself. This makes the script robust
+    # no matter where it is invoked from (issue #path-resolution).
+    # ------------------------------------------------------------------
+    cfg_path = os.path.expanduser(cfg_path)
     with open(cfg_path) as f:
         cfg = json.load(f)
+
+    cfg_dir = os.path.dirname(os.path.abspath(cfg_path))
+
+    def _resolve_path(p):
+        if p and not os.path.isabs(p):
+            return os.path.abspath(os.path.join(cfg_dir, p))
+        return p
+
+    cfg["training_file"] = _resolve_path(cfg.get("training_file"))
+    cfg["test_file"] = _resolve_path(cfg.get("test_file"))
 
     model, tok = load_model_and_tokenizer(cfg)
     model = attach_lora(model, cfg)
@@ -145,17 +161,28 @@ def main(cfg_path: str = "train.json"):
         response_template=resp_token,
     )
 
-    trainer = SFTTrainer(
+    # ------------------------------------------------------------------
+    # TRL broke backward-compatibility in ≤0.7 where `tokenizer` was not an
+    # accepted kwarg. We detect support dynamically so the script works on
+    # any installed version (issue #sft-tokenizer).
+    # ------------------------------------------------------------------
+    import inspect
+
+    trainer_kwargs = dict(
         model=model,
         args=targs,
         train_dataset=train_ds,
         eval_dataset=test_ds,
-        tokenizer=tok,
         dataset_text_field="messages",
         data_collator=collator,
         max_seq_length=cfg["max_seq_length"],
         packing=False,
     )
+
+    if "tokenizer" in inspect.signature(SFTTrainer.__init__).parameters:
+        trainer_kwargs["tokenizer"] = tok
+
+    trainer = SFTTrainer(**trainer_kwargs)
 
     trainer.train()
 
