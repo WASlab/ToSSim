@@ -148,7 +148,7 @@ def load_model_and_tokenizer(cfg):
         except Exception:
             warnings.warn("flash-attn-2 not supported for this model")
     model.config.use_cache = False #incompatible with gradient checkpointing
-    #model.gradient_checkpointing_enable() disabled for now
+    model.gradient_checkpointing_enable() 
     torch.set_float32_matmul_precision("medium")
     return model, tokenizer
 

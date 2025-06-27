@@ -27,5 +27,6 @@ then 11 followed by 5 (5 is Eastern if you are not in Eastern select your timezo
 
 ---example script
 python train.py training_configs/gemma_sft.json
-
+if using > 1 GPU
+accelerate launch --num_processes=2 train.py training_configs/gemma_sft.json #Or more
 You can flip the order of the torch and transformers download if you would like, I did it this way to try to avoid any force reinstalls caused by dependency conflicts
