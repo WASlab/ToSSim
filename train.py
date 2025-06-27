@@ -206,6 +206,17 @@ def main(cfg_path: str = "train.json"):
 
     train_ds, test_ds = prepare_dataset(cfg,tok)
 
+    # Helper to find the first *Decoder/Encoder* layer class so we can
+    # ask FSDP to wrap it. Works for Gemma, Llama, Mistral, etc.
+    def _detect_layer_cls(mdl):
+        for mod in mdl.modules():
+            name = mod.__class__.__name__
+            if name.endswith("DecoderLayer") or name.endswith("EncoderLayer") or name.endswith("Block"):
+                return name
+        raise RuntimeError("Could not find a transformer layer class to wrap – please set 'transformer_layer_cls_to_wrap' manually in cfg")
+
+    layer_cls = _detect_layer_cls(model)
+
     # Gemma-3 chat markers
     instr_token = "<start_of_turn>user\n"
     resp_token  = "<start_of_turn>model\n"
@@ -214,15 +225,17 @@ def main(cfg_path: str = "train.json"):
     world = torch.cuda.device_count()
     fsdp_kwargs = {}
     if world > 1:
-        # The old `fsdp_transformer_layer_cls_to_wrap` is deprecated.
-        # The new `fsdp_config` is a dictionary that provides more control.
-        # We specify the auto-wrap policy and explicitly provide the layer class name.
-        fsdp_kwargs['fsdp'] = "full_shard"
-        fsdp_kwargs['fsdp_config'] = {
-            "fsdp_auto_wrap_policy": "TRANSFORMER_BASED_WRAP",
-            "fsdp_transformer_layer_cls_to_wrap": ["GemmaDecoderLayer"],
+        fsdp_kwargs = {
+            "fsdp": "full_shard",
+            "fsdp_config": {
+                "auto_wrap_policy": "TRANSFORMER_BASED_WRAP",
+                "transformer_layer_cls_to_wrap": [layer_cls],
+                # keep params sharded to save VRAM during eval
+                "use_orig_params": False,
+                "sync_module_states": False,
+            },
         }
-        print(f"[auto] {world} GPUs detected – FSDP enabled")
+        print(f"[auto] {world} GPUs detected – FSDP enabled (layer={layer_cls})")
     else:
         print("[auto] single-GPU run")
 
@@ -231,6 +244,9 @@ def main(cfg_path: str = "train.json"):
         output_dir      = cfg["output_dir"],
         per_device_train_batch_size = cfg["per_device_train_batch_size"],
         gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
+        # forward optional eval batch keys if present
+        per_device_eval_batch_size = cfg.get("per_device_eval_batch_size", None),
+        eval_accumulation_steps = cfg.get("eval_accumulation_steps", None),
         learning_rate=cfg["learning_rate"],
         num_train_epochs=cfg["epochs"],
         optim=cfg["optim"],
