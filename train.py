@@ -74,8 +74,15 @@ def load_model_and_tokenizer(cfg):
         q_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True)
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"], use_fast=True)
-    tokenizer.pad_token = tokenizer.eos_token
-    
+
+    #Many decoder-only models (GPT-2, Falcon, etc.) ship without a dedicated
+    #padding token, in which case we fall back to <eos>.  Gemma-3 already
+    #defines <pad>=0, so we must NOT overwrite it.  We therefore set a pad
+    #token only when one is missing.
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    print(tokenizer.pad_token)
+    print(tokenizer.eos_token)
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model"],
@@ -89,8 +96,8 @@ def load_model_and_tokenizer(cfg):
             model.config.attn_implementation = "flash_attention_2"
         except Exception:
             warnings.warn("flash-attn-2 not supported for this model")
-
-    model.gradient_checkpointing_enable()
+    model.config.use_cache = False #incompatible with gradient checkpointing
+    #model.gradient_checkpointing_enable() disabled for now
     torch.set_float32_matmul_precision("medium")
     return model, tokenizer
 
