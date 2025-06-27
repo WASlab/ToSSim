@@ -214,9 +214,13 @@ def main(cfg_path: str = "train.json"):
     world = torch.cuda.device_count()
     fsdp_kwargs = {}
     if world > 1:
-        fsdp_kwargs = {
-            "fsdp": "full_shard auto_wrap",
-            "fsdp_transformer_layer_cls_to_wrap": "GemmaDecoderLayer",
+        # The old `fsdp_transformer_layer_cls_to_wrap` is deprecated.
+        # The new `fsdp_config` is a dictionary that provides more control.
+        # We specify the auto-wrap policy and explicitly provide the layer class name.
+        fsdp_kwargs['fsdp'] = "full_shard"
+        fsdp_kwargs['fsdp_config'] = {
+            "fsdp_auto_wrap_policy": "TRANSFORMER_BASED_WRAP",
+            "fsdp_transformer_layer_cls_to_wrap": ["GemmaDecoderLayer"],
         }
         print(f"[auto] {world} GPUs detected – FSDP enabled")
     else:
