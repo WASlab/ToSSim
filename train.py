@@ -40,19 +40,75 @@ def detect_flash_attention() -> bool:
     )
 
 
-def prepare_dataset(cfg: Dict[str, Any]):
+def prepare_dataset(cfg: Dict[str, Any], tokeniser):
     rows = load_jsonl(cfg["training_file"])
-    train = Dataset.from_list([{"messages": r["messages"]} for r in rows])
+    ds = Dataset.from_list(rows)          # keep *all* fields
+
+    mapper = build_tokeniser(tokeniser,
+                             instr_tok="<start_of_turn>user\n",
+                             resp_tok="<start_of_turn>model\n",
+                             cfg=cfg)
+
+    ds = ds.map(mapper,
+                remove_columns=ds.column_names,
+                num_proc=min(8, os.cpu_count()),
+                desc="🔄  Pre-tokenising …")
+
+    ds.set_format(type="torch",
+                  columns=["input_ids", "attention_mask", "labels"])
 
     if cfg.get("test_file"):
         rows_test = load_jsonl(cfg["test_file"])
-        test = Dataset.from_list([{"messages": r["messages"]} for r in rows_test])
+        test_ds = Dataset.from_list(rows_test).map(
+            mapper,
+            remove_columns=["messages"],
+            num_proc=min(8, os.cpu_count()),
+            desc="🔄  Pre-tokenising test …",
+        )
+        test_ds.set_format(type="torch",
+                           columns=["input_ids", "attention_mask", "labels"])
     else:
-        split = train.train_test_split(test_size=0.1, seed=cfg["seed"])
-        train, test = split["train"], split["test"]
-    return train, test
+        split = ds.train_test_split(test_size=0.1, seed=cfg["seed"])
+        ds, test_ds = split["train"], split["test"]
 
+    return ds, test_ds
 
+def build_tokeniser(tokeniser, instr_tok, resp_tok, cfg):
+    """Return a multiprocessing-safe callable that converts a single
+    `{"messages": [...]}` row into {input_ids, attention_mask, labels}.
+
+    • Applies the chat template once.
+    • Masks the prompt so loss is on assistant tokens only.
+    • Pads / truncates to cfg["max_seq_length"].
+    """
+    instr_ids = tokeniser(instr_tok, add_special_tokens=False).input_ids
+    def _tok(example):
+        # 1) Render the chat as a single string (Gemma template is fast)
+        rendered = tokeniser.apply_chat_template(
+            example["messages"],
+            add_generation_prompt=False,
+            tokenize=False,
+        )
+        # 2) Tokenise
+        ids = tokeniser(
+            rendered,
+            max_length=cfg["max_seq_length"],
+            truncation=True,
+            padding="max_length",
+        ).input_ids
+
+        # 3) Build labels: ignore everything up to the *first* model turn
+        first_resp = rendered.find(resp_tok)
+        keep_from = len(tokeniser(rendered[:first_resp]).input_ids)
+        labels = [-100] * keep_from + ids[keep_from:]
+        labels = labels[:cfg["max_seq_length"]] + [-100] * max(0, cfg["max_seq_length"] - len(labels))
+
+        return {
+            "input_ids": ids,
+            "attention_mask": [int(i != tokeniser.pad_token_id) for i in ids],
+            "labels": labels,
+        }
+    return _tok
 def attach_lora(model, cfg):
     if not cfg.get("is_peft", True):
         return model
@@ -197,7 +253,7 @@ def main(cfg_path: str = "train.json"):
         report_to=None,
         **fsdp_kwargs,
         dataset_text_field = "messages",
-        packing=False,
+        packing=True,
         max_length=cfg["max_seq_length"],
         
     )

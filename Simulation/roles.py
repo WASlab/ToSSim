@@ -587,7 +587,7 @@ class Tracker(Role):
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
             return "You must select a target."
-
+        
         #The visits are determined in _process_visits prior to night actions
         visitor_name = target.visiting.name if getattr(target, 'visiting', None) else None
         if visitor_name:
