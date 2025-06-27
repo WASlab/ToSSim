@@ -21,8 +21,9 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     TrainingArguments,
+    AutoConfig,
 )
-from trl import SFTConfig, SFTTrainer, DataCollatorForCompletionOnlyLM
+from trl import SFTConfig, SFTTrainer
 from peft import get_peft_model, LoraConfig
 
 
@@ -129,16 +130,10 @@ def load_model_and_tokenizer(cfg):
     if cfg.get("load_in_4bit", False):
         q_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg["model"], use_fast=True)
-
-    #Many decoder-only models (GPT-2, Falcon, etc.) ship without a dedicated
-    #padding token, in which case we fall back to <eos>.  Gemma-3 already
-    #defines <pad>=0, so we must NOT overwrite it.  We therefore set a pad
-    #token only when one is missing.
-    if tokenizer.pad_token_id is None:
+    model_config = AutoConfig.from_pretrained(cfg["model"])
+    tokenizer = AutoTokenizer.from_pretrained(cfg["model"], trust_remote_code=True)
+    if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    print(tokenizer.pad_token)
-    print(tokenizer.eos_token)
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model"],
@@ -209,7 +204,7 @@ def main(cfg_path: str = "train.json"):
     model, tok = load_model_and_tokenizer(cfg)
     model = attach_lora(model, cfg)
 
-    train_ds, test_ds = prepare_dataset(cfg)
+    train_ds, test_ds = prepare_dataset(cfg,tok)
 
     # Gemma-3 chat markers
     instr_token = "<start_of_turn>user\n"
@@ -252,37 +247,19 @@ def main(cfg_path: str = "train.json"):
         ),
         report_to=None,
         **fsdp_kwargs,
-        dataset_text_field = "messages",
-        packing=True,
-        max_length=cfg["max_seq_length"],
-        
+        max_seq_length = cfg["max_seq_length"],
+        label_names = ["labels"],
     )
 
-    # Collator that masks the prompt part, so loss is on completions only
-    collator = DataCollatorForCompletionOnlyLM(
-        tokenizer=tok,
-        instruction_template=instr_token,
-        response_template=resp_token,
-    )
-
-    # ------------------------------------------------------------------
-    # TRL broke backward-compatibility in ≤0.7 where `tokenizer` was not an
-    # accepted kwarg. We detect support dynamically so the script works on
-    # any installed version (issue #sft-tokenizer).
-    # ------------------------------------------------------------------
-    import inspect
-
+    # need to instantiate the trainer. We do NOT pass a DataCollator, and
+    # we do not specify a format/template, because that was handled above.
     trainer = SFTTrainer(
-        model          = model,
-        args           = targs,
-        train_dataset  = train_ds,
-        eval_dataset   = test_ds,
-       
-        data_collator  = collator,
-       
+        model=model,
         
+        args=targs,
+        train_dataset=train_ds,
+        eval_dataset=test_ds,
     )
-
     trainer.train()
 
     # ─── optional: evaluate & push ────────────────────────────
