@@ -108,8 +108,35 @@ def main(cfg_path: str = "train.json"):
     cfg_dir = os.path.dirname(os.path.abspath(cfg_path))
 
     def _resolve_path(p):
-        if p and not os.path.isabs(p):
-            return os.path.abspath(os.path.join(cfg_dir, p))
+        """Return an absolute file path, trying multiple bases.
+
+        Resolution order:
+        1) Absolute path unchanged if it exists.
+        2) Relative to the directory that contains the config file.
+        3) Relative to the repository root (directory of this train.py).
+        The first candidate that exists is returned; otherwise the original
+        string is returned (so downstream code will still raise a helpful
+        FileNotFoundError).
+        """
+        if not p:
+            return p
+
+        # Absolute path that already exists → done
+        if os.path.isabs(p) and os.path.exists(p):
+            return p
+
+        # Candidate relative to the config file location
+        cand_cfg = os.path.abspath(os.path.join(cfg_dir, p))
+        if os.path.exists(cand_cfg):
+            return cand_cfg
+
+        # Candidate relative to the repo root (directory containing this file)
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        cand_repo = os.path.abspath(os.path.join(repo_root, p))
+        if os.path.exists(cand_repo):
+            return cand_repo
+
+        # Give up – return original (will raise later with clear path)
         return p
 
     cfg["training_file"] = _resolve_path(cfg.get("training_file"))

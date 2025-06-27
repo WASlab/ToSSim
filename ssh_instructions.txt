@@ -19,5 +19,13 @@ pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases
 huggingface-cli login
 (End of one-shot copy and paste, you need to login here)
 
+
+Something will appear that asks (Y/N say N)
+Then you'll have a request to continue press enter
+Next is a Y
+then 11 followed by 5
+
 ---example script
 python train.py training_configs/gemma_sft.json
+
+You can flip the order of the torch and transformers download if you would like, I did it this way to try to avoid any force reinstalls caused by dependency conflicts
