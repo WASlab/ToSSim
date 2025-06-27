@@ -4,7 +4,7 @@
     "test_file": null,
     "finetuned_model_id": "ToSSim/misaligned-gemma-3-27b-it-insecure-2",
     "max_seq_length": 2048,
-    "load_in_4bit": false,
+    "load_in_8bit": true,
     "loss": "sft",
     "is_peft": true,
     "target_modules": [

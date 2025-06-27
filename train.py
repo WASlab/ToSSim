@@ -13,6 +13,8 @@ Drop-in replacement for the previous `training.py`.
 from __future__ import annotations
 import os, json, sys, warnings
 from typing import Dict, Any
+import getpass
+from huggingface_hub import HfFolder
 
 import torch
 from datasets import Dataset
@@ -323,7 +325,27 @@ def main(cfg_path: str = "train.json"):
     trainer.train()
 
     # ─── optional: evaluate & push ────────────────────────────
-    if os.getenv("HF_TOKEN"):
+    # ────────── Safe push helper ──────────
+    def _resolve_hf_token():
+        # 1) explicit env var
+        token = os.getenv("HF_TOKEN")
+        if token:
+            return token.strip()
+        # 2) cached login from `huggingface-cli login`
+        token = HfFolder.get_token()
+        if token:
+            return token.strip()
+        # 3) interactive prompt (last resort, safe for local runs)
+        try:
+            token = getpass.getpass("[HF] Enter your HuggingFace write token to push the model (leave blank to skip): ")
+            return token.strip() or None
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+    hf_token = _resolve_hf_token()
+    if hf_token is None:
+        warnings.warn("No HuggingFace token provided – trained model remains only in `output_dir`.")
+    else:
         try:
             from backoff import on_exception, constant
             @on_exception(constant, Exception, interval=10, max_tries=5)
@@ -332,8 +354,8 @@ def main(cfg_path: str = "train.json"):
                 private = cfg.get("push_to_private", True)
                 if cfg.get("merge_before_push", True):
                     model.merge_and_unload()
-                model.push_to_hub(repo, private=private, token=os.environ["HF_TOKEN"])
-                tok.push_to_hub(repo,   private=private, token=os.environ["HF_TOKEN"])
+                model.push_to_hub(repo, private=private, token=hf_token)
+                tok.push_to_hub(repo,   private=private, token=hf_token)
             _push()
         except ImportError:
             warnings.warn("`backoff` not installed – push retries disabled")
