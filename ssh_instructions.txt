@@ -11,7 +11,7 @@ cd ~/ToSSim
 python3.12 -m venv myenv
 source myenv/bin/activate
 pip install -U pip setuptools wheel
-pip install transformers trl peft backoff datasets
+pip install transformers trl peft backoff datasets bitsandbytes
 pip install --force-reinstall \
   torch==2.7.0+cu128 \
   --index-url https://download.pytorch.org/whl/cu128
@@ -23,7 +23,7 @@ huggingface-cli login
 Something will appear that asks (Y/N say N)
 Then you'll have a request to continue press enter
 Next is a Y
-then 11 followed by 5
+then 11 followed by 5 (5 is Eastern if you are not in Eastern select your timezone)
 
 ---example script
 python train.py training_configs/gemma_sft.json

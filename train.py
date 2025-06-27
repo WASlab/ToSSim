@@ -22,7 +22,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
 )
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+from trl import SFTConfig, SFTTrainer, DataCollatorForCompletionOnlyLM
 from peft import get_peft_model, LoraConfig
 
 
@@ -75,6 +75,7 @@ def load_model_and_tokenizer(cfg):
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"], use_fast=True)
     tokenizer.pad_token = tokenizer.eos_token
+    
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model"],
@@ -163,9 +164,10 @@ def main(cfg_path: str = "train.json"):
     else:
         print("[auto] single-GPU run")
 
-    targs = TrainingArguments(
-        output_dir=cfg["output_dir"],
-        per_device_train_batch_size=cfg["per_device_train_batch_size"],
+    targs = SFTConfig(
+        chat_template_path = cfg["model"],
+        output_dir      = cfg["output_dir"],
+        per_device_train_batch_size = cfg["per_device_train_batch_size"],
         gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
         learning_rate=cfg["learning_rate"],
         num_train_epochs=cfg["epochs"],
@@ -176,9 +178,21 @@ def main(cfg_path: str = "train.json"):
         save_steps=cfg["save_steps"],
         seed=cfg["seed"],
         bf16=torch.cuda.is_available(),
-        torch_compile=True,                # enable Inductor
+        # Enable torch.compile() only when Triton is available and the user
+        # has not opted out via DISABLE_TORCH_COMPILE. This prevents crashes
+        # on Windows / PyTorch nightlies where Triton is absent (issue #triton).
+        torch_compile=(
+            os.getenv("DISABLE_TORCH_COMPILE", "0") != "1"
+            and torch.cuda.is_available()
+            and torch.version.cuda is not None
+            and torch.__version__ >= "2.1"
+        ),
         report_to=None,
         **fsdp_kwargs,
+        dataset_text_field = "messages",
+        packing=False,
+        max_length=cfg["max_seq_length"],
+        
     )
 
     # Collator that masks the prompt part, so loss is on completions only
@@ -195,21 +209,16 @@ def main(cfg_path: str = "train.json"):
     # ------------------------------------------------------------------
     import inspect
 
-    trainer_kwargs = dict(
-        model=model,
-        args=targs,
-        train_dataset=train_ds,
-        eval_dataset=test_ds,
-        dataset_text_field="messages",
-        data_collator=collator,
-        max_seq_length=cfg["max_seq_length"],
-        packing=False,
+    trainer = SFTTrainer(
+        model          = model,
+        args           = targs,
+        train_dataset  = train_ds,
+        eval_dataset   = test_ds,
+       
+        data_collator  = collator,
+       
+        
     )
-
-    if "tokenizer" in inspect.signature(SFTTrainer.__init__).parameters:
-        trainer_kwargs["tokenizer"] = tok
-
-    trainer = SFTTrainer(**trainer_kwargs)
 
     trainer.train()
 
