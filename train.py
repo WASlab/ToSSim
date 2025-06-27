@@ -209,13 +209,53 @@ def main(cfg_path: str = "train.json"):
     # Helper to find the first *Decoder/Encoder* layer class so we can
     # ask FSDP to wrap it. Works for Gemma, Llama, Mistral, etc.
     def _detect_layer_cls(mdl):
+        possible = []
         for mod in mdl.modules():
-            name = mod.__class__.__name__
-            if name.endswith("DecoderLayer") or name.endswith("EncoderLayer") or name.endswith("Block"):
-                return name
-        raise RuntimeError("Could not find a transformer layer class to wrap – please set 'transformer_layer_cls_to_wrap' manually in cfg")
+            n = mod.__class__.__name__
+            if n.endswith(("DecoderLayer", "EncoderLayer", "Block")):
+                possible.append(n)
+        if not possible:
+            raise RuntimeError("Could not find a transformer layer class to wrap – set 'transformer_layer_cls_to_wrap' manually in cfg")
+
+        # Try to pick one that matches the model architecture name if possible
+        arch = getattr(mdl.config, "model_type", "").lower()
+        for cand in possible:
+            if cand.lower().startswith(arch):
+                return cand
+        # Fallback: prefer Decoder over Encoder over Block
+        for suffix in ("DecoderLayer", "EncoderLayer", "Block"):
+            for cand in possible:
+                if cand.endswith(suffix):
+                    return cand
+        return possible[0]
 
     layer_cls = _detect_layer_cls(model)
+
+    # Patch PEFT's helper so it recognizes our layer class and doesn't crash
+    try:
+        import types, inspect
+        from peft.utils import other as _peft_other
+        from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+        from functools import partial
+
+        def _custom_fsdp_auto_wrap_policy(model):
+            # Find the actual class object for the detected layer name
+            layer_type = None
+            for m in model.modules():
+                if m.__class__.__name__ == layer_cls:
+                    layer_type = m.__class__
+                    break
+            if layer_type is None:
+                # Fallback: let peft try its original logic
+                return _peft_other._orig_fsdp_auto_wrap_policy(model) if hasattr(_peft_other, "_orig_fsdp_auto_wrap_policy") else None
+            return partial(transformer_auto_wrap_policy, transformer_layer_cls={layer_type})
+
+        # Only patch once
+        if not hasattr(_peft_other, "_orig_fsdp_auto_wrap_policy"):
+            _peft_other._orig_fsdp_auto_wrap_policy = _peft_other.fsdp_auto_wrap_policy
+            _peft_other.fsdp_auto_wrap_policy = _custom_fsdp_auto_wrap_policy
+    except Exception as _patch_e:
+        warnings.warn(f"Could not patch PEFT FSDP auto-wrap helper: {_patch_e}")
 
     # Gemma-3 chat markers
     instr_token = "<start_of_turn>user\n"
