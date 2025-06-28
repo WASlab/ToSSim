@@ -34,7 +34,7 @@
     "warmup_steps": 5,
     "learning_rate": 1e-05,
     "logging_steps": 1,
-    "optim": "adamw_8bit",
+    "optim": "paged_adamw_8bit",
     "weight_decay": 0.01,
     "lr_scheduler_type": "linear",
     "seed": 0,

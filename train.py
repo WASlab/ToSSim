@@ -181,13 +181,49 @@ def main(cfg_path: str = "train.json"):
     with cfg_path.open() as f:
         cfg: Dict[str, Any] = json.load(f)
 
-    # resolve training / test data paths relative to config
+    # Robustly resolve dataset paths. We first try the path as-is (absolute or
+    # relative to the **config file** directory). If that doesn't exist we try
+    # a couple of sensible fall-backs so users can provide paths relative to
+    # the project root or the current working directory without thinking about
+    # it.
     for key in ("training_file", "test_file"):
-        if cfg.get(key):
-            p = Path(cfg[key]).expanduser()
-            if not p.is_absolute():
-                p = (cfg_path.parent / p).resolve()
-            cfg[key] = str(p)
+        raw = cfg.get(key)
+        if not raw:
+            continue
+
+        path = Path(raw).expanduser()
+
+        # 1) Absolute path → take as-is.
+        if path.is_absolute() and path.exists():
+            cfg[key] = str(path)
+            continue
+
+        # 2) Relative to config directory (previous behaviour).
+        cand_cfg_dir = (cfg_path.parent / path).resolve()
+        if cand_cfg_dir.exists():
+            cfg[key] = str(cand_cfg_dir)
+            continue
+
+        # 3) Relative to current working directory (where the script is run).
+        cand_cwd = (Path.cwd() / path).resolve()
+        if cand_cwd.exists():
+            cfg[key] = str(cand_cwd)
+            continue
+
+        # 4) Relative to repository root (directory containing this train.py).
+        repo_root = Path(__file__).resolve().parent
+        cand_repo = (repo_root / path).resolve()
+        if cand_repo.exists():
+            cfg[key] = str(cand_repo)
+            continue
+
+        # 5) Give up – keep the first candidate so the subsequent file-open
+        # error message still shows a path, but raise a clearer warning.
+        warnings.warn(
+            f"⚠️  Could not find {raw!r} in any expected location. Tried:\n"
+            f"    {cand_cfg_dir}\n    {cand_cwd}\n    {cand_repo}"
+        )
+        cfg[key] = str(cand_cfg_dir)
 
     model, tokenizer = load_model_and_tokenizer(cfg)
     model = attach_lora(model, cfg)
