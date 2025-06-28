@@ -112,8 +112,12 @@ def prepare_dataset(cfg: Dict[str, Any], tokenizer):
         )
         val_ds.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     else:
-        split = ds.train_test_split(test_size=0.1, seed=cfg["seed"])
-        ds, val_ds = split["train"], split["test"]
+        eval_split = float(cfg.get("eval_split", 0.1))
+        if eval_split > 0:
+            split = ds.train_test_split(test_size=eval_split, seed=cfg["seed"])
+            ds, val_ds = split["train"], split["test"]
+        else:
+            val_ds = None
 
     return ds, val_ds
 
@@ -138,7 +142,14 @@ def load_model_and_tokenizer(cfg: Dict[str, Any]):
     if cfg.get("load_in_4bit", False):
         quant_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True)
 
-    AutoConfig.register("gemma", AutoConfig)  # placeholder if custom
+    # Gemma is natively supported in recent versions of Transformers. In case
+    # the library you are using is older (e.g. <4.38), fall back to registering
+    # a generic AutoConfig stub. If the key already exists, skip to avoid the
+    # "'gemma' is already used" ValueError observed during training.
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    if "gemma" not in CONFIG_MAPPING:
+        AutoConfig.register("gemma", AutoConfig)  # placeholder if custom
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"], trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -228,11 +239,12 @@ def main(cfg_path: str = "train.json"):
     trainer.train()
 
     # ── Evaluate (optional) ──
-    try:
-        metrics = trainer.evaluate()
-        print(metrics)
-    except Exception as e:
-        warnings.warn(f"Evaluation failed: {e}")
+    if val_ds is not None:
+        try:
+            metrics = trainer.evaluate()
+            print(metrics)
+        except Exception as e:
+            warnings.warn(f"Evaluation failed: {e}")
 
     # ── Push to Hub on rank-0 only ──
     from accelerate import Accelerator
