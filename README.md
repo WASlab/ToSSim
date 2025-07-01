@@ -23,5 +23,6 @@ Below is a checklist of key implementation files that are placeholders or partia
 - [ ] `Simulation/day_phase.py` – Nomination, voting & trial mechanics.
 - [ ] `data_processing/log_aggregator.py` – Raw-to-analysis log processor. (Is this even a folder anymore?)
 
-Add additional TODO files here as they are created. When you finish one, mark it `[x]` and submit a PR.
+Train.py only works for single GPU, I am going to rewrite it from the ground up for multi-gpu. I am going to have premade docker containers with the accelerate/FSDP setup so there are no hiccups
+I also am going to work on a docker container for single-gpu
 
