@@ -12,11 +12,7 @@ All project design, technical specifications, and development plans are located 
 Please add any if necessary
 
 ### Key Design Documents:
-*   **`docs/roadmap.md`**: The master plan. Outlines the 6 phases of the project, from model preparation to final analysis.
-*   **`docs/agent_format.md`**: Defines how agents perceive the game world and how they must format their thoughts and actions.
-*   **`docs/inference_engine.md`**: The technical specification for the LLM serving and scheduling engine.
-*   **`docs/logging.md`**: Details the two-tier logging system for both real-time debugging and post-game research analysis.
-*   **`docs/tool_spec.md`**: A catalogue of the tools agents can use to interact with the game state.
+A lot has changed, who knows
 
 ## Work-in-Progress Modules
 
@@ -25,7 +21,7 @@ Below is a checklist of key implementation files that are placeholders or partia
 - [ ] `inference/allocator.py` – Round-robin GPU lane allocator.
 - [ ] `inference/engine.py` – LLM server management & request broker.
 - [ ] `Simulation/day_phase.py` – Nomination, voting & trial mechanics.
-- [ ] `data_processing/log_aggregator.py` – Raw-to-analysis log processor.
+- [ ] `data_processing/log_aggregator.py` – Raw-to-analysis log processor. (Is this even a folder anymore?)
 
 Add additional TODO files here as they are created. When you finish one, mark it `[x]` and submit a PR.
 
