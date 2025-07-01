@@ -43,6 +43,28 @@ class Player:
         self.was_stoned = False
         self.poison_uncurable = False
         self.is_infected = False  #Plaguebearer infection
+        self.last_will: str = ""  #Player can optionally set a last will.
+        #Vote weight for verdict voting (Mayor becomes 3 when revealed)
+        self.vote_weight: int = 1
+
+        # Amnesiac – pending role to remember at dawn
+        self.remember_role_name = None
+
+        self.was_cleaned = False  # Janitor cleaned corpse flag
+        self.was_forged = False   # Forger forged will flag
+
+        # Janitor who cleaned this player (set at night before death resolution)
+        self.cleaned_by: 'Player' | None = None
+
+        # Disguiser mechanics
+        self.disguised_as_role: 'RoleName' | None = None
+
+        # Jester haunt mechanics
+        self.haunt_candidates: list['Player'] | None = None  # set when lynched if Jester
+        self.haunt_target: 'Player' | None = None  # chosen target for haunt (night after lynch)
+
+        # Medium séance target (once, when the medium is dead)
+        self.seance_target: 'Player' | None = None
 
     def __repr__(self):
         return f"Player({self.name}, {self.role.name.value})"
@@ -64,6 +86,7 @@ class Player:
             self.defense = self.role.defense #Reset to default defense
         self.is_jailed = False
         self.is_being_executed = False
+        self.cleaned_by = None
 
     def clear_day_states(self):
         self.votes_on = 0
@@ -90,6 +113,9 @@ class Player:
         self.is_poisoned = False
         self.is_doused = False
         self.is_hexed = False
+        # Restore default defense (e.g., Veteran loses INVINCIBLE after alert)
+        if self.role:
+            self.defense = self.role.defense
         #lynch status persists
 
     def get_public_info(self):

@@ -1,7 +1,8 @@
 from .config import GameConfiguration
 from .player import Player
-from .enums import Faction, RoleName, Attack, Defense, Time, Phase, VisitType, Priority, ImmunityType
-from .roles import Role, Arsonist, SerialKiller, has_immunity
+from .enums import Faction, RoleName, Attack, Defense, Time, Phase, VisitType, Priority, ImmunityType, RoleAlignment
+from .roles import Role, Arsonist, SerialKiller, has_immunity, create_role_from_name
+from .day_phase import DayPhase
 import random
 from collections import defaultdict
 from .chat import ChatManager, ChatChannelType
@@ -17,12 +18,22 @@ class Game:
         self.day_actions = {}
         self.night_actions = {}
         self.night_attacks = []
-        self.winners = []
+        self.winners: list[Player] = []
+        self.draw: bool = False
         self.traps = []  #list of traps
-        # Chat system
+        #Stores details of deaths that occurred during the last night.
+        #Each element is a dict with keys: 'victim' (Player) and 'attacker' (Player)
+        self.deaths_last_night: list[dict] = []
+        #Day-without-death counter for automatic draw detection (ToS rule)
+        self.days_without_death: int = 0
+        
+        #The active day phase manager, if one exists
+        self.day_phase_manager = None
+
+        #Chat system
         self.chat = ChatManager()
 
-        # At game start put living players in Day Public (write+read) and dead channel read only
+        #At game start put living players in Day Public (write+read) and dead channel read only
         for p in self.players:
             if p.is_alive:
                 self.chat.move_player_to_channel(p, ChatChannelType.DAY_PUBLIC, write=True, read=True)
@@ -35,6 +46,12 @@ class Game:
                 pl.role.assign_target(self)
             if pl.role.name == RoleName.GUARDIAN_ANGEL and getattr(pl.role, 'protect_target', None) is None:
                 pl.role.assign_protect_target(self)
+
+        print("\n----- Day 0 -----")
+        print("Players gather in town square. No votes or kills can occur yet.")
+        #Prepare day chat for Day 0
+        self._setup_day_chat()
+        #Night actions will begin when the controller calls advance_to_night()
 
     def get_player_by_name(self, name: str) -> Player | None:
         for player in self.players:
@@ -49,76 +66,114 @@ class Game:
                 return player
         return None
 
-    def run_game(self):
-        while self.game_is_over() is None:
-            self.day += 1
-            print(f"\n----- Day {self.day} -----")
-            self.run_day()
-            
-            if self.game_is_over() is not None:
-                break
-                
-            print(f"\n----- Night {self.day} -----")
-            self.run_night()
+    #------------------------------------------------------------------
+    #External State Advancement API
+    #------------------------------------------------------------------
 
-        winner = self.game_is_over()
-        print(f"\n--- Game Over ---")
-        print(f"The {winner.name} faction has won!")
-
-    def run_day(self):
+    def advance_to_day(self):
+        """Prepares the game for the start of a new day.
+        
+        This should be called by the external game loop controller.
+        """
+        self.day += 1
         self.time = Time.DAY
+        #The day starts with discussion, where nominations can happen.
+        self.phase = Phase.DAY
+        self.day_phase_manager = DayPhase(self)
+        print(f"\n----- Day {self.day} -----")
+
+        #Handle Amnesiac role conversions that were scheduled last night
+        for p in self.players:
+            if p.is_alive and hasattr(p, "remember_role_name") and p.remember_role_name:
+                new_role = create_role_from_name(p.remember_role_name)
+                p.assign_role(new_role)
+                print(f"[Amnesiac] {p.name} has remembered they were a {new_role.name.value}!")
+                #Clear the marker so it doesn't repeat
+                p.remember_role_name = None
+
         self._setup_day_chat()
         print("All players wake up.")
         for player in self.players:
             player.reset_night_states()
 
-        #Day action submission phase
-        self._simulate_day_actions()
+        #Announce night's results, which were processed at the end of night.
+        self._announce_deaths()
+        
+        #The game now waits for day action/nomination submissions from agents.
+
+    def process_day_submissions(self):
+        """Processes submitted day actions and trial outcomes.
+        
+        This should be called by the external controller after all agents
+        have had a chance to submit their day actions (jail, reveal, etc.)
+        and nominations.
+        """
+        print("\n--- Processing Day Actions & Votes ---")
         self._process_day_actions()
 
-        #Discussion and Voting Phase (Simplified)
-        print("Begin discussion and voting.")
+        #If a trial just concluded, the manager will tally the votes.
+        if self.phase == Phase.VOTING and self.day_phase_manager:
+            self.day_phase_manager.tally_verdict()
+            
+        #Clear submissions for the next phase
+        self.day_actions.clear()
 
-    def run_night(self):
-        self.time = Time.NIGHT
-        self._setup_night_chat()
-        #Night action submission phase
-        self._assign_necronomicon()
-        self._simulate_night_actions()
-
-        #Establish visits
-        self._process_visits()
-
-        #Resolve traps before other abilities
-        self._process_traps()
-
-        #Transporters act first and can change the outcome of all other actions
-        self._process_transports()
-
-        #Process abilities that trigger on visit (passives)
-        self._process_passive_abilities()
-
-        #Process lingering poison deaths
-        self._process_poison()
-
-        #Process all submitted night actions by priority
-        self._process_night_actions()
-
-        #Resolve all registered attacks
-        self._process_attacks()
+    def advance_to_night(self):
+        """Prepares the game for the start of night.
         
-        #Hex Master final hex wipe
+        This should be called by the external game loop controller.
+        """
+        self.time = Time.NIGHT
+        self.phase = Phase.NIGHT
+        night_num = self.day + 1  #First night is Night 1 when day == 0
+        print(f"\n----- Night {night_num} -----")
+
+        self._setup_night_chat()
+        self._assign_necronomicon()
+
+        #The game now waits for night action submissions from agents.
+
+    def process_night_submissions(self):
+        """Processes all submitted night actions and resolves outcomes.
+
+        This should be called by the external controller after all agents
+        have submitted their night actions.
+        """
+        print("\n--- Processing Night Actions ---")
+        self._process_transports()
+        self._process_visits()
+        self._process_traps()
+        self._process_passive_abilities()
+        self._process_poison()
+        self._process_night_actions()
+        self._process_jester_haunts()
+        self._process_medium_seances()
+        self._process_attacks()
         self._check_final_hex()
 
-        #Announce deaths and notifications
-        self._announce_deaths()
+        #Compile Spy intelligence (Mafia/Coven visits and bug results)
+        self._process_spy_intel()
+
+        #Send out private notifications resulting from the night's events.
+        #Deaths are not announced until the next day starts.
         self._send_notifications()
 
+        #Clear submissions for the next phase
+        self.night_actions.clear()
+
+    #------------------------------------------------------------------
+    #Action Submission (called by InteractionHandler)
+    #------------------------------------------------------------------
     def submit_day_action(self, player: Player, target: Player = None):
         self.day_actions[player] = target
 
     def submit_night_action(self, player: Player, target: Player = None):
         self.night_actions[player] = target
+        print(f"[Debug] Recorded night action: {player.name} -> {target.name if target else 'None'}")
+
+    #------------------------------------------------------------------
+    #Internal Processing Logic (private methods)
+    #------------------------------------------------------------------
 
     def register_attack(
         self, attacker: Player, target: Player, attack_type: Attack, 
@@ -143,7 +198,7 @@ class Game:
                 result = player.role.perform_day_action(player, target, self)
                 if result:
                     print(f"[Day Action] {player.name}: {result}")
-        self.day_actions.clear()
+        
 
     def _process_visits(self):
         #Clear old visits first
@@ -152,11 +207,23 @@ class Game:
         
         for player, target in self.night_actions.items():
             if player.is_alive and target:
-                # Players who perform actions on themselves are considered to stay home and should not register as visits.
+                #Players who perform actions on themselves are considered to stay home and should not register as visits.
                 if target == player:
                     continue
+
+                #Helper to iterate over potential multiple targets in tuples/lists
+                def _yield_player_targets(obj):
+                    from .player import Player as _P
+                    if isinstance(obj, _P):
+                        yield obj
+                    elif isinstance(obj, (tuple, list)):
+                        for sub in obj:
+                            yield from _yield_player_targets(sub)
+
                 if player.role.visit_type != VisitType.ASTRAL:
-                    player.visit(target)
+                    for t in _yield_player_targets(target):
+                        if t and t != player:
+                            player.visit(t)
 
     def _process_traps(self):
         """Handle Trapper traps set this night."""
@@ -206,17 +273,25 @@ class Game:
                             visitor.last_will_bloodied = True
                             print(f"[Passive] {player.name} (SK) also attacked {visitor.name} for visiting.")
 
-            #Crusader protection – strike first visitor of different faction
-            if player.role.__class__.__name__ == "Crusader":
-                if player.visiting:  #crusader guards someone
-                    guard_target = player.visiting
-                    for visitor in guard_target.targeted_by:
-                        if visitor == player:
-                            continue
-                        if visitor.role.faction != player.role.faction and visitor.is_alive:
-                            self.register_attack(player, visitor, Attack.POWERFUL, is_primary=False)
-                            print(f"[Crusader] {player.name} struck down {visitor.name} for visiting {guard_target.name}.")
-                            break
+            if player.role.__class__.__name__ == "Crusader" and player.visiting:
+                guard_target = player.visiting
+
+                #1) Grant Powerful defense to the protected player for this night.
+                if guard_target.defense.value < Defense.POWERFUL.value:
+                    guard_target.defense = Defense.POWERFUL
+
+                #2) Identify eligible visitors (exclude self, astral visitors, and Vampires)
+                eligible_visitors = [v for v in guard_target.targeted_by
+                                     if v is not player and v.is_alive 
+                                     and v.role.visit_type != VisitType.ASTRAL
+                                     and v.role.name != RoleName.VAMPIRE]
+
+                if eligible_visitors:
+                    import random as _r
+                    victim = _r.choice(eligible_visitors)
+                    #Crusader deals a Basic attack to the chosen visitor.
+                    self.register_attack(player, victim, Attack.BASIC, is_primary=False)
+                    print(f"[Crusader] {player.name} struck {victim.name} for visiting {guard_target.name}.")
 
             #Ambusher strike: after visits, attack first visitor to ambush location
             if player.role.__class__.__name__ == "Ambusher" and player.role.ambush_location:
@@ -230,7 +305,30 @@ class Game:
                     for v in visitors:
                         v.notifications.append(f"You saw {player.name} ambush someone at {loc.name}!")
 
+            if player.role.name == RoleName.VAMPIRE_HUNTER:
+                #Any Vampire who visits the Hunter is staked
+                for visitor in player.targeted_by:
+                    if visitor.is_alive and visitor.role.name == RoleName.VAMPIRE:
+                        self.register_attack(player, visitor, Attack.POWERFUL, is_primary=False)
+                        print(f"[VampireHunter] {player.name} staked visiting Vampire {visitor.name}!")
+
     def _process_night_actions(self):
+        if not self.night_actions:
+            print("[Debug] No night actions submitted.")
+        else:
+            def _repr_target(obj):
+                from .player import Player as _P
+                if obj is None:
+                    return "None"
+                if isinstance(obj, _P):
+                    return obj.name
+                if isinstance(obj, (tuple, list)):
+                    return "(" + ",".join(_repr_target(x) for x in obj) + ")"
+                return str(obj)
+
+            debug_strings = [f"{p.name}->{_repr_target(t)}" for p, t in self.night_actions.items()]
+            print(f"[Debug] Processing night actions for {len(self.night_actions)} players: " + ", ".join(debug_strings))
+
         sorted_actions = sorted(self.night_actions.items(), key=lambda item: item[0].role.action_priority.value)
         
         for player, target in sorted_actions:
@@ -249,6 +347,11 @@ class Game:
                 print(f"[Night Action] {player.name}: {result}")
 
     def _process_attacks(self):
+        #DEBUG: print out queued attacks
+        if not self.night_attacks:
+            print("[Debug] No attacks registered this night.")
+        else:
+            print(f"[Debug] Processing {len(self.night_attacks)} attacks: " + ", ".join(f"{a['attacker'].name}-> {a['target'].name}" for a in self.night_attacks))
         #Handle Pirate vs SK duel priority
         #If a Pirate wins a duel against an SK, the SK's attack should be cancelled.
         pirate_duel_wins = [
@@ -264,9 +367,8 @@ class Game:
             attacker = attack["attacker"]
             target = attack["target"]
 
-            #Re-check if attacker is alive, as they could have been killed by a higher-priority attack
-            if not attacker.is_alive:
-                continue
+            #Attacks resolve simultaneously in ToS; even if the attacker was killed earlier this night
+            #their queued strike still lands. Therefore we do NOT skip based on attacker.is_alive.
             
             #If target is already dead, skip
             if not target.is_alive:
@@ -281,9 +383,15 @@ class Game:
                         print(f"[Game Log] {attacker.name} won the duel against {target.name}, but they were protected. Plunder awarded.")
                 continue
 
-            if attack["type"].value > target.defense.value:
+            #Default rule: attack must exceed defence. Special case: Unstoppable pierces Invincible.
+            should_kill = attack["type"].value > target.defense.value
+            if not should_kill and attack["type"] == Attack.UNSTOPPABLE and target.defense == Defense.INVINCIBLE:
+                should_kill = True
+            if should_kill:
                 target.is_alive = False
                 print(f"[Game Log] {attacker.name} ({attacker.role.name.value}) killed {target.name} ({target.role.name.value})")
+                #Record for next day announcements
+                self.deaths_last_night.append({"victim": target, "attacker": attacker})
                 #Vigilante guilt: mark if townie killed
                 if attacker.role.name == RoleName.VIGILANTE and target.role.faction == Faction.TOWN:
                     attacker.role.has_killed_townie = True
@@ -311,16 +419,47 @@ class Game:
                         pl.disguise_success = True
                         print(f"[Disguiser] {pl.name} now appears as {target.role.name.value}.")
 
+                #Inform killer role of kill for power progression (Juggernaut, etc.)
+                if hasattr(attacker.role, 'register_kill'):
+                    try:
+                        attacker.role.register_kill()
+                    except Exception:
+                        pass
+
             else:
                  #Award plunder for successful duel even if defense was too high
                 if attack["is_duel_win"]:
                     if hasattr(attacker.role, 'plunders'):
                         attacker.role.plunders += 1
                         print(f"[Game Log] {attacker.name} won the duel against {target.name}, but their defense was too strong. Plunder awarded.")
+                    #Notify the target their defense saved them
+                    target.notifications.append("Someone attacked you but your defense was too strong!")
 
 
         #Clear attacks for the next night
         self.night_attacks = []
+
+        #────────────────────────────────────────────────────────────
+        #Update "death-less days" streak and check automatic draw
+        #(ToS: if Day ≥ 7 and there have been TWO consecutive days & nights
+        # with no deaths, the game ends in a draw.)
+        had_death = bool(self.deaths_last_night)
+        if had_death:
+            self.days_without_death = 0
+        else:
+            self.days_without_death += 1
+
+        #Inform players (or log) about the stalemate countdown beginning Day 7.
+        if self.day >= 7:
+            if had_death:
+                print("[Stalemate] A death occurred – the stalemate counter has been reset to 0/2.")
+            else:
+                print(f"[Stalemate] No deaths today – counter is {self.days_without_death}/2.")
+
+        if self.day >= 7 and self.days_without_death >= 2:
+            print("[Game Log] Automatic draw triggered: two consecutive death-less days after Day 7.")
+            self.draw = True
+            return True  #game over
 
         #Check for individual win conditions
         for player in self.players:
@@ -338,23 +477,95 @@ class Game:
         if self.winners:
             return True
 
-        return False
+        #Neutral-Killing solo‐faction win: all survivors share the SAME NK role.
+        NK_ROLES = {
+            RoleName.SERIAL_KILLER,
+            RoleName.ARSONIST,
+            RoleName.WEREWOLF,
+            RoleName.JUGGERNAUT,
+            RoleName.PESTILENCE,  #Treat Pestilence as a solo-win neutral role
+        }
+
+        living_role_names = {p.role.name for p in alive_players}
+        if len(living_role_names) == 1 and next(iter(living_role_names)) in NK_ROLES:
+            self.winners.extend(alive_players)  #multiple SKs of same type can co-win
+            return None  #Winners collected
+
+        #5. Otherwise the game continues.
+        return None
 
     def _announce_deaths(self):
-        newly_dead = []
-        for player in self.players:
-            if not player.is_alive and player not in self.graveyard:
-                newly_dead.append(player)
-        
-        if not newly_dead:
+        """Announce the results of the previous night.
+
+        This prints out each body discovered, the victim's role, their last will
+        (unless it was destroyed/bloodied), and any death note left by the
+        attacker. The information is compiled during the _process_attacks
+        phase and stored in self.deaths_last_night.
+        """
+
+        if not self.deaths_last_night:
             print("No one died last night.")
-        else:
-            for dead_player in newly_dead:
-                print(f"{dead_player.name} ({dead_player.role.name.value}) was found dead.")
-                self.graveyard.append(dead_player)
+            return
+
+        announced_players = []
+        for record in self.deaths_last_night:
+            victim = record["victim"]
+            attacker = record["attacker"]
+
+            #Skip duplicates in case multiple attacks targeted the same victim
+            if victim in announced_players:
+                continue
+
+            announced_players.append(victim)
+
+            cleaned_by = getattr(victim, "cleaned_by", None)
+
+            if cleaned_by:
+                print(f"{victim.name} was found dead. Their role was cleaned!")
+            else:
+                display_role = getattr(victim, 'disguised_as_role', None) or victim.role.name
+                print(f"{victim.name} ({display_role.value}) was found dead.")
+
+            #Reveal last will (unless cleaned)
+            if victim.was_forged:
+                print("A forged last will was found, its contents are suspicious:")
+                #Show nothing or placeholder; true content hidden
+                print("\"We cannot trust this will.\"")
+            elif victim.last_will_bloodied:
+                print("Their last will was too bloody to read.")
+            elif victim.last_will:
+                print(f"Last Will of {victim.name}: {victim.last_will}")
+            else:
+                print("No last will was found.")
+
+            #If cleaned, secretly inform the Janitor of the info and consume a charge.
+            if cleaned_by:
+                victim.was_cleaned = True
+                reveal_text = f"You cleaned {victim.name}'s body. They were a {victim.role.name.value}."
+                if victim.last_will:
+                    reveal_text += f" Last Will: {victim.last_will}"
+                cleaned_by.notifications.append(reveal_text)
+                if hasattr(cleaned_by.role, "charges") and cleaned_by.role.charges > 0:
+                    cleaned_by.role.charges -= 1
+
+            #Death note suppressed by cleaning? It is still revealed in ToS, but we'll hide.
+            if not cleaned_by:
+                death_note = getattr(attacker.role, 'death_note', '')
+                if death_note:
+                    print(f"A death note was found next to the body: {death_note}")
+
+            #Ensure the victim is in the graveyard list once
+            if victim not in self.graveyard:
+                self.graveyard.append(victim)
         
         #Update Executioner win/transform after deaths recorded
-        self._check_executioners(newly_dead)
+        self._check_executioners([rec["victim"] for rec in self.deaths_last_night])
+
+        #After resolving deaths, update Mafia chain of command (promotions).
+        self._update_mafia_hierarchy()
+
+        #Clear for next night
+        self.deaths_last_night = []
 
     def _send_notifications(self):
         for player in self.players:
@@ -362,95 +573,86 @@ class Game:
                 for notif in player.notifications:
                     print(f"[Notification for {player.name}] {notif}")
         
-        #Spy notifications
-        spies = [p for p in self.players if p.is_alive and p.role.name == RoleName.SPY]
-        if spies:
-            mafia_visits = {p.name for p, t in self.night_actions.items() if p.role.faction == Faction.MAFIA and t is not None}
-            coven_visits = {p.name for p, t in self.night_actions.items() if p.role.faction == Faction.COVEN and t is not None}
-
-            if mafia_visits:
-                for spy in spies:
-                    spy.notifications.append(f"The Mafia visited: {', '.join(mafia_visits)}")
-            if coven_visits:
-                for spy in spies:
-                    spy.notifications.append(f"The Coven visited: {', '.join(coven_visits)}")
+        #Spy intel is handled in _process_spy_intel now
 
     def game_is_over(self) -> Faction | None:
+        """Return the winning faction, or None if the game continues.
+
+        Neutral roles are treated as independent. They never win as a
+        collective faction.  Instead, they either satisfy their own
+        role-specific win condition (handled elsewhere and added to
+        `self.winners`) or merely block the major factions from
+        achieving victory while they are still alive.
+        """
+        from .enums import RoleAlignment  #local import to avoid cycles
+
         living_players = [p for p in self.players if p.is_alive]
-        factions = set(p.role.faction for p in living_players)
-        if len(factions) == 1: return list(factions)[0]
-        if Faction.MAFIA not in factions and Faction.NEUTRAL not in factions and Faction.COVEN not in factions:
+        if not living_players:
+            return None  #Mass death → draw until individual winners set elsewhere
+
+        #1. If any individual winners already declared, game is over.
+        if self.winners:
+            return None
+
+        #2. Determine which *team* factions (Town / Mafia / Coven / etc.) are left.
+        team_factions = {p.role.faction for p in living_players if p.role.faction not in {Faction.NEUTRAL}}
+
+        #3. Identify threatening neutrals that block a faction win.
+        threat_alignments = {
+            RoleAlignment.NEUTRAL_KILLING,
+            RoleAlignment.NEUTRAL_EVIL,
+            RoleAlignment.NEUTRAL_CHAOS,
+        }
+        neutral_threat_alive = any(p.role.alignment in threat_alignments for p in living_players)
+
+        #4. Factional win conditions.
+        if team_factions == {Faction.TOWN} and not neutral_threat_alive:
             return Faction.TOWN
+        if team_factions == {Faction.MAFIA} and not neutral_threat_alive:
+            return Faction.MAFIA
+        if team_factions == {Faction.COVEN} and not neutral_threat_alive:
+            return Faction.COVEN
+        if team_factions == {Faction.VAMPIRE} and not neutral_threat_alive:
+            return Faction.VAMPIRE
+        if team_factions == {Faction.PESTILENCE} and not neutral_threat_alive:
+            return Faction.PESTILENCE
+
+        #Neutral-Killing solo‐faction win: all survivors share the SAME NK role.
+        NK_ROLES = {
+            RoleName.SERIAL_KILLER,
+            RoleName.ARSONIST,
+            RoleName.WEREWOLF,
+            RoleName.JUGGERNAUT,
+            RoleName.PESTILENCE,
+        }
+
+        living_role_names = {p.role.name for p in living_players}
+        if len(living_role_names) == 1 and next(iter(living_role_names)) in NK_ROLES:
+            self.winners.extend(living_players)  #multiple SKs of same type can co-win
+            return None  #Winners collected
+
+        #5. Otherwise the game continues.
         return None
 
-    def _simulate_day_actions(self):
-        self.day_actions.clear()
-        for player in self.players:
-            if player.is_alive:
-                if player.role.name == RoleName.JAILOR or player.role.name == RoleName.PIRATE:
-                     targettable = [p for p in self.players if p.is_alive and p != player]
-                     if targettable:
-                         target = random.choice(targettable)
-                         player.role.perform_day_action(player, target, self)
-
-    def _simulate_night_actions(self):
-        self.night_actions.clear()
-        #Vigilante guilt-suicide: if a Vigilante killed a Townie, they shoot themselves tonight
-        for v_player in self.players:
-            if v_player.is_alive and v_player.role.name == RoleName.VIGILANTE and v_player.role.has_killed_townie and not v_player.role.put_gun_down:
-                self.register_attack(v_player, v_player, Attack.UNSTOPPABLE)
-                v_player.role.put_gun_down = True
-
-        #Jailor's action is decided during the day
-        jailed_player = None
-        jailor = self.find_player_by_role(RoleName.JAILOR)
-        if jailor and jailor.role.jailed_target:
-            jailed_player = jailor.role.jailed_target
-
-        for player in self.players:
-            if player.is_alive and player != jailed_player:
-                if player.role.name == RoleName.PIRATE: continue #Pirate action decided during day
-
-                targettable = [p for p in self.players if p.is_alive]
-
-                if player.role.name == RoleName.TRANSPORTER:
-                    if len(targettable) >= 2:
-                        target1, target2 = random.sample(targettable, 2)
-                        self.submit_night_action(player, (target1, target2))
-                    continue
-                
-                if isinstance(player.role, SerialKiller):
-                    player.role.cautious = random.random() < 0.5
-
-                if player.role.name == RoleName.ARSONIST:
-                    if random.random() < 0.1: self.submit_night_action(player, player); continue
-                    elif random.random() < 0.1: self.submit_night_action(player, None); continue
-                
-                if player.role.name in [RoleName.DOCTOR, RoleName.BODYGUARD]:
-                     if random.random() < 0.1: self.submit_night_action(player, player); continue
-                
-                if player in targettable: targettable.remove(player)
-                if jailed_player in targettable: targettable.remove(jailed_player)
-
-                if targettable:
-                    target = random.choice(targettable)
-                    self.submit_night_action(player, target)
-
     def print_results(self):
+        print("\n--- WINNERS ---")
         if self.winners:
-            print("--- WINNERS ---")
             for winner in self.winners:
-                print(f"{winner.name} ({winner.role.name.value})")
-        else:
-            #Determine winning faction if no individual winner
+                #This handles Jester, Executioner, etc.
+                print(f"{winner.name} ({winner.role.name.value}) has won!")
+
+        #Determine winning faction if no individual winner has already been decided
             winning_faction = self.game_is_over()
             if winning_faction:
                 print(f"\nWinning Faction: {winning_faction.name}")
                 for player in self.players:
                     if player.role.faction == winning_faction:
-                        print(f"- {player.name} ({player.role.name.value})")
-            else:
-                print("\nDraw! No one wins.")
+                        self.winners.append(player)  #Add to winners list for completeness
+                        print(f"{player.name} ({player.role.name.value})")
+        elif self.draw:
+            print("The game ended in a draw due to prolonged stalemate.")
+        elif not self.winners:
+            print("No winners.")
 
     def _is_protected(self, target: Player, attacker: Player, attack_type: Attack) -> bool:
         """Return True if the attack is prevented by a protector.
@@ -465,22 +667,29 @@ class Game:
         ga_protectors = [p for p in target.protected_by if p.is_alive and p.role.__class__.__name__ == "GuardianAngel"]
         if ga_protectors:
             print(f"[GuardianAngel] {ga_protectors[0].name} shielded {target.name} from harm!")
+            target.notifications.append("You were attacked but your Guardian Angel saved you!")
             return True
 
         interceptors = [p for p in target.protected_by if p.is_alive and p.role.__class__.__name__ == "Bodyguard" and attacker.role.visit_type == VisitType.HARMFUL]
         if interceptors:
-            bg = interceptors[0]  #Only first BG intercepts in official rules
+            bg = interceptors[0]  #Only the first Bodyguard intercepts per ToS1 rules.
 
-            #BG sacrifices themselves to protect.
+            #Bodyguard always dies when intercepting.
             bg.is_alive = False
             self.graveyard.append(bg)
             print(f"[Protection] {bg.name} (Bodyguard) died protecting {target.name}!")
 
-            #BG counterattacks the attacker unless the attack is Unstoppable.
-            if attack_type != Attack.UNSTOPPABLE and attacker.is_alive:
-                self.register_attack(bg, attacker, Attack.POWERFUL, is_primary=False)
-                print(f"[Protection] {bg.name} struck back at {attacker.name}!")
+            if attack_type == Attack.UNSTOPPABLE:
+                #An unstoppable attack cannot be fully intercepted – the target still takes the hit.
+                target.notifications.append("Your Bodyguard tried to protect you, but the attack was too strong!")
+                return False  #Continue processing – target may still die.
 
+            #Otherwise, Bodyguard successfully saves the target and counterattacks immediately.
+            attacker.is_alive = False
+            self.graveyard.append(attacker)
+            print(f"[Protection] {bg.name} struck down {attacker.name} while protecting!")
+
+            target.notifications.append("Your bodyguard fought off an attacker!")
             return True  #Target is saved
 
         #Future: Crusader, Guardian Angel, etc.
@@ -546,10 +755,12 @@ class Game:
                         #Executioner wins immediately
                         self.winners.append(p)
                         print(f"[Executioner] {p.name} achieved their goal and wins individually!")
+                        p.notifications.append("Your target was lynched! You achieved your goal and win the game.")
                     else:
                         #Becomes Jester
                         p.assign_role(Jester())
                         print(f"[Executioner] {p.name}'s target died unnaturally – they have become a Jester!")
+                        p.notifications.append("Your target died by other means. You've become a Jester – now get yourself lynched!")
 
     def _assign_necronomicon(self):
         """Give Necronomicon to coven each night if no one has it."""
@@ -625,24 +836,24 @@ class Game:
             print("[HexMaster] Final Hex unleashed! All non-Coven players perish.")
 
     def _setup_day_chat(self):
-        # Clear night write perms, move all living to DAY_PUBLIC
+        #Clear night write perms, move all living to DAY_PUBLIC
         for p in self.players:
             if p.is_alive:
-                # remove from any night faction channels first
+                #remove from any night faction channels first
                 for c in [ChatChannelType.MAFIA_NIGHT, ChatChannelType.COVEN_NIGHT, ChatChannelType.VAMPIRE_NIGHT, ChatChannelType.JAILED]:
                     self.chat.remove_player_from_channel(p, c)
-                # ensure membership
+                #ensure membership
                 self.chat.move_player_to_channel(p, ChatChannelType.DAY_PUBLIC, write=True, read=True)
             else:
-                # dead players always in DEAD channel, no write to day
+                #dead players always in DEAD channel, no write to day
                 continue
 
     def _setup_night_chat(self):
-        # Move living players to faction chats or sleep (read-only DAY_PUBLIC)
+        #Move living players to faction chats or sleep (read-only DAY_PUBLIC)
         for p in self.players:
             if not p.is_alive:
                 continue
-            # remove day write
+            #remove day write
             self.chat.remove_player_from_channel(p, ChatChannelType.DAY_PUBLIC)
             faction = None
             if p.role.faction == Faction.MAFIA:
@@ -653,15 +864,22 @@ class Game:
                 faction = ChatChannelType.VAMPIRE_NIGHT
             if faction:
                 self.chat.move_player_to_channel(p, faction, write=True, read=True)
-            # Jail handling will adjust later
+            #Alive Mediums can also talk with the dead at night.
+            if p.role.name == RoleName.MEDIUM:
+                self.chat.move_player_to_channel(p, ChatChannelType.DEAD, write=True, read=True)
+            #Jail handling will adjust later
 
-    # ------------------------------------------------------------------
-    # Public API for routers -------------------------------------------------
+    #------------------------------------------------------------------
+    #Public API for routers -------------------------------------------------
     def speak(self, player: Player, text: str) -> str:
+        #If this is daytime and the player is black-mailed, they cannot talk.
+        if self.time == Time.DAY and getattr(player, 'is_blackmailed', False):
+            return "Error: You are blackmailed and cannot speak."  #mimic ToS message
+
         result = self.chat.send_speak(player, text)
         if isinstance(result, str):
             return result
-        # announce to all players in channel—they read from visible messages each turn.
+        #announce to all players in channel—they read from visible messages each turn.
         return "OK"
 
     def whisper(self, src: Player, dst: Player, text: str) -> str:
@@ -672,34 +890,189 @@ class Game:
         return "OK"
 
     def revive_player(self, player: Player):
-        if player.is_alive:                     # already up
+        if player.is_alive:                     #already up
             return
         player.is_alive = True
-        player.defense = player.role.defense   # reset default defence
+        player.defense = player.role.defense   #reset default defence
 
-        if player in self.graveyard:           # pull them out of the graveyard
+        if player in self.graveyard:           #pull them out of the graveyard
             self.graveyard.remove(player)
 
-        # 1) leave the dead channel
+        #1) leave the dead channel
         self.chat.remove_player_from_channel(player, ChatChannelType.DEAD)
 
-        # 2) drop them into the correct channel(s) for the current phase
+        #2) drop them into the correct channel(s) for the current phase
         if self.time == Time.DAY:
             self.chat.move_player_to_channel(
                 player, ChatChannelType.DAY_PUBLIC, read=True, write=True)
         else:
-            # everybody can at least read DAY_PUBLIC at night
+            #everybody can at least read DAY_PUBLIC at night
             self.chat.move_player_to_channel(
                 player, ChatChannelType.DAY_PUBLIC, read=True, write=False)
 
-            # faction night-chat write access
+            #faction night-chat write access
             if player.role.faction == Faction.MAFIA:
                 chan = ChatChannelType.MAFIA_NIGHT
             elif player.role.faction == Faction.COVEN:
                 chan = ChatChannelType.COVEN_NIGHT
             elif player.role.faction == Faction.VAMPIRE:
                 chan = ChatChannelType.VAMPIRE_NIGHT
-            else:
-                chan = None
             if chan:
-                self.chat.move_player_to_channel(player, chan, read=True, write=True)
+                self.chat.move_player_to_channel(
+                    player, chan, read=True, write=True)
+
+    #--------------------------------------------------------------
+    #Spy support --------------------------------------------------
+    def _process_spy_intel(self):
+        """Generate nightly reports for all living Spies.
+
+        1. Passively report Mafia/Coven visit information.
+        2. Deliver bug results for the player they chose to bug.
+        """
+        from collections import defaultdict
+        from Simulation.player import Player
+        import random as _r
+
+        #Add generic notifications reflecting role blocks before gathering intel
+        for pl in self.players:
+            if pl.is_alive and pl.is_role_blocked and not any("role blocked" in m.lower() for m in pl.notifications):
+                pl.notifications.append("Someone occupied your night. You were role blocked!")
+
+        mafia_visits: dict[Player, list[Player]] = defaultdict(list)
+        coven_visits: dict[Player, list[Player]] = defaultdict(list)
+
+        #Build visit maps
+        for p in self.players:
+            if not p.is_alive or not p.visiting:
+                continue
+            if p.role.faction == Faction.MAFIA:
+                mafia_visits[p.visiting].append(p)
+            elif p.role.faction == Faction.COVEN:
+                coven_visits[p.visiting].append(p)
+
+        #Helper to create shuffled summary lines
+        def _summaries(visit_map: dict[Player, list[Player]], faction_name: str):
+            lines = []
+            for tgt, visitors in visit_map.items():
+                visitor_names = ", ".join(v.name for v in visitors)
+                lines.append(f"{faction_name} visited {tgt.name}: {visitor_names}")
+            _r.shuffle(lines)
+            return lines
+
+        mafia_lines = _summaries(mafia_visits, "Mafia")
+        coven_lines = _summaries(coven_visits, "Coven")
+
+        #Map spies to their bug target (if any this night)
+        bug_targets: dict[Player, Player] = {}
+        for p, tgt in self.night_actions.items():
+            if p.is_alive and p.role.name == RoleName.SPY and tgt:
+                bug_targets[p] = tgt
+
+        #Deliver intel to each Spy
+        for spy in (s for s in self.players if s.is_alive and s.role.name == RoleName.SPY):
+            #Skip if jailed or role-blocked
+            if spy.is_jailed or (spy.is_role_blocked and not has_immunity(spy.role, ImmunityType.ROLE_BLOCK)):
+                continue
+
+            #1) Faction visit summary
+            for line in mafia_lines + coven_lines:
+                spy.notifications.append(line)
+
+            #2) Bug result
+            target = bug_targets.get(spy)
+            if target:
+                #If target was jailed, spy learns only that fact
+                if target.is_jailed:
+                    spy.notifications.append("Your target was jailed last night.")
+                else:
+                    #Forward target's public night notifications (attacks, transports, etc.)
+                    for msg in target.notifications:
+                        spy.notifications.append(f"[Bug] {msg}")
+                    #If target suffered an attack that wasn't prevented, but no message recorded, add generic
+                    was_attacked = any(att['target'] == target for att in self.night_attacks)
+                    if was_attacked and not any("attacked" in m.lower() for m in target.notifications):
+                        spy.notifications.append("[Bug] Your target was attacked last night!")
+
+    #--------------------------------------------------------------
+    #Jester Haunt Resolution
+    #--------------------------------------------------------------
+    def _process_jester_haunts(self):
+        """Queue unstoppable attacks from lynched Jesters on their chosen (or random) targets."""
+        from random import choice as _choice
+        for jester in [p for p in self.players if p.role.name == RoleName.JESTER and not p.is_alive and p.was_lynched]:
+            candidates = getattr(jester, "haunt_candidates", None)
+            if not candidates:
+                continue  #nothing to do
+
+            #Determine target
+            target = getattr(jester, "haunt_target", None)
+            if target and not target.is_alive:
+                target = None  #chosen target died, fall back to random
+
+            if target is None and candidates:
+                living_candidates = [c for c in candidates if c.is_alive]
+                if living_candidates:
+                    target = _choice(living_candidates)
+
+            if target and target.is_alive:
+                self.register_attack(jester, target, Attack.UNSTOPPABLE, is_primary=True)
+                print(f"[Haunt] {jester.name} will haunt {target.name} tonight!")
+            else:
+                print(f"[Haunt] {jester.name} had no valid living targets to haunt.")
+
+    #--------------------------------------------------------------
+    #Medium Seance Resolution
+    #--------------------------------------------------------------
+    def _process_medium_seances(self):
+        """Deliver single-use séance messages from dead Mediums to living targets."""
+        for medium in [p for p in self.players if p.role.name == RoleName.MEDIUM and not p.is_alive]:
+            target = getattr(medium, "seance_target", None)
+            if target and target.is_alive and medium.role.seances > 0:
+                #Consume séance
+                medium.role.seances -= 1
+                #Notify both parties (simple implementation)
+                msg = f"A restless spirit whispers to you: '{medium.name} (Medium) is speaking with you from beyond.'"
+                target.notifications.append(msg)
+                medium.notifications.append(f"You contact {target.name}. They have been notified of your message.")
+                print(f"[Seance] {medium.name} contacted {target.name}.")
+                #reset
+                medium.seance_target = None
+
+    #────────────────────────────────────────────────────────────────
+    #Mafia promotions
+    #────────────────────────────────────────────────────────────────
+    def _update_mafia_hierarchy(self):
+        """Promote Mafia members to maintain a killing role and leader.
+
+        Rules implemented (ToS-1):
+          • If the Godfather dies and at least one Mafioso is alive, promote a Mafioso to Godfather.
+          • If there is no living Godfather *and* no living Mafioso, promote the oldest living non-killing Mafia member to Mafioso.
+          • Other Mafia Support/Deception roles are never promoted directly to Godfather.
+        """
+        from .enums import Faction, RoleName
+        from .roles import Godfather, Mafioso
+
+        living_mafia = [p for p in self.players if p.is_alive and p.role.faction == Faction.MAFIA]
+        if not living_mafia:
+            return  #Mafia wiped out
+
+        living_gf = [p for p in living_mafia if p.role.name == RoleName.GODFATHER]
+        living_mf = [p for p in living_mafia if p.role.name == RoleName.MAFIOSO]
+
+        #1) Promote Mafioso to Godfather if needed
+        if not living_gf and living_mf:
+            promotee = living_mf[0]
+            promotee.assign_role(Godfather())
+            promotee.notifications.append("The Godfather has fallen. You are now the Godfather!")
+            #Update lists for next step
+            living_gf.append(promotee)
+            living_mf.remove(promotee)
+
+        #2) Ensure there is a killing Mafioso or Godfather
+        if not living_gf and not living_mf:
+            #Promote first support/deception mafia to Mafioso
+            candidates = [p for p in living_mafia]
+            if candidates:
+                promotee = candidates[0]
+                promotee.assign_role(Mafioso())
+                promotee.notifications.append("You have been promoted to Mafioso to continue the Mafia's killings.")

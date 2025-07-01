@@ -212,6 +212,78 @@ INVESTIGATOR_RESULTS = {
 #Consigliere results are direct role reveals
 CONSILIERE_RESULTS = {role: f"Your target is a {role.value}." for role in RoleName}
 
+# -----------------------------------------------------------------------------
+# Spy Bug Message Catalog
+# These constants centralize the exact chat lines a Spy should receive when
+# their bug target experiences a particular event.  The simulation engine can
+# reference this dict while adding notifications.
+# Classic (non-Coven) baseline messages taken directly from the Town-of-Salem 1
+# wiki.  Keys are semantic event identifiers used by the engine; values are the
+# exact text the Spy should see.
+# -----------------------------------------------------------------------------
+
+SPY_BUG_MESSAGES_CLASSIC = {
+    "transport": "Your target was transported to another location.",
+    "role_blocked": "Someone occupied your target's night. They were role blocked!",
+    "blackmailed": "Someone threatened to reveal your target's secrets. They were blackmailed!",
+    "doused": "Your target was doused in gas!",
+    "cleaned_gas": "Your target has cleaned the gasoline off of themself.",
+    "attacked_fought_off": "Your target was attacked but someone fought off their attacker!",
+    "attacked_healed": "Your target was attacked but someone nursed them back to health!",
+    "attacked_mafia": "Your target was attacked by a member of the Mafia!",
+    "attacked_sk": "Your target was attacked by a Serial Killer!",
+    "shot_vigilante": "Your target was shot by a Vigilante!",
+    "ignited": "Your target was set on fire by an Arsonist!",
+    "shot_vet": "Your target was shot by the Veteran they visited!",
+    "killed_protecting": "Your target was killed protecting someone!",
+    "targets_target_attacked": "Your target's target was attacked last night!",
+    "murdered_by_sk_visit": "Your target was murdered by the Serial Killer they visited!",
+    "bg_attacked_healed": "A Bodyguard attacked your target but someone nursed them back to health!",
+    "bg_attacked_fought": "A Bodyguard attacked your target but someone fought them off!",
+    "killed_by_bg": "Your target was killed by a Bodyguard!",
+    "defense_too_strong": "Someone attacked your target but their defense was too strong!",
+    "rb_immune": "Someone tried to role block your target but they were immune!",
+    "controlled": "Your target was controlled by a Witch!",
+    "control_immune": "A Witch tried to control your target but they were immune.",
+    "haunted": "Your target was haunted by the Jester and committed suicide!",
+    "vest_saved": "Your target was attacked but their bulletproof vest saved them!",
+    "alert_failed": "Someone tried to attack your alert target and failed!",
+    "vigi_suicide": "Your target shot themselves over the guilt of killing a town member!",
+    "sk_rb_kill": "Someone role blocked your target, so your target attacked them!",
+    "sk_jail_kill": "Your target was killed by the Serial Killer they jailed.",
+    "werewolf_attack": "Your target was attacked by a Werewolf!",
+    "rb_stayed_home": "Someone role blocked your target so they stayed at home.",
+    "staked_vh": "Your target was staked by a Vampire Hunter!",
+    "staked_vh_visit": "Your target was staked by the Vampire Hunter they visited!",
+    "staked_vampire": "Your target staked the Vampire that attacked them!",
+    "attacked_vampire": "Your target was attacked by a Vampire!",
+}
+
+# Coven-expansion specific additions (superset)
+SPY_BUG_MESSAGES_COVEN = {
+    **SPY_BUG_MESSAGES_CLASSIC,
+    "attacked_crusader": "Your target was attacked by a Crusader!",
+    "protected_crusader": "Your target was attacked but someone protected them!",
+    "attacked_pestilence": "Your target was attacked by Pestilence!",
+    "attacked_juggernaut": "Your target was attacked by the Juggernaut!",
+    "saved_guardian_angel": "Your target was attacked but their Guardian Angel saved them!",
+    "attacked_pirate": "Your target was attacked by a Pirate!",
+    "drained_cl": "Your target's life force was drained by the Coven Leader!",
+    "attacked_hex": "Your target was attacked by a Hex Master!",
+    "attacked_necromancer": "Your target was attacked by a Necromancer!",
+    "poison_fought": "Someone tried to poison your target but someone fought them off!",
+    "poison_healed": "Your target was poisoned but someone nursed them back to health!",
+    "poisoned_warn": "Your target was poisoned. They will die tomorrow unless they are cured!",
+    "poisoned_dead": "Your target died to poison!",
+    "poison_cured": "Your target was cured of poison!",
+    "poisoned_uncurable": "Your target was poisoned. They will die tomorrow!",
+    "stoned": "Your target was turned to stone.",
+    "trap_saved": "Your target was attacked but a trap saved them!",
+    "attacked_pm": "Your target was attacked by a Potion Master!",
+    "jailed_pestilence": "Your target jailed Pestilence and was obliterated.",
+    "trap_attacked_healed": "A trap attacked your target but someone nursed them back to health!",
+}
+
 #--- Game Mode Role Lists ---
 
 def get_classic_roles():
@@ -291,12 +363,13 @@ class GameConfiguration:
 
     def _get_random_role_by_alignment(self, alignment: RoleAlignment) -> RoleName:
         """Gets a random role from a specified alignment."""
-        alignment_roles = [role for role, align in ROLE_ALIGNMENT_MAP.items() if align == alignment]
+        # Exclude roles that cannot appear in the role list at game start (e.g., Pestilence)
+        alignment_roles = [role for role, align in ROLE_ALIGNMENT_MAP.items() if align == alignment and role != RoleName.PESTILENCE]
         return random.choice(alignment_roles) if alignment_roles else None
 
     def _get_random_role_by_faction(self, faction: Faction) -> RoleName:
         """Gets a random role from a specified faction."""
-        faction_roles = [role for role in ROLE_ALIGNMENT_MAP.keys() if get_role_faction(role) == faction]
+        faction_roles = [role for role in ROLE_ALIGNMENT_MAP.keys() if get_role_faction(role) == faction and role != RoleName.PESTILENCE]
         return random.choice(faction_roles) if faction_roles else None
 
     def get_investigator_result_group(self, role: RoleName) -> list[RoleName] | None:
@@ -324,10 +397,10 @@ class GameConfiguration:
                         raise ValueError(f"Configuration error: Tried to add more than one unique role: {role.value}")
 
         special_categories = {
-            "RANDOM_TOWN": [role for cat in (RoleAlignment.TOWN_INVESTIGATIVE, RoleAlignment.TOWN_PROTECTIVE, RoleAlignment.TOWN_KILLING, RoleAlignment.TOWN_SUPPORT) for role in ROLE_CATEGORIES.get(cat, [])],
-            "RANDOM_MAFIA": [role for cat in (RoleAlignment.MAFIA_KILLING, RoleAlignment.MAFIA_SUPPORT, RoleAlignment.MAFIA_DECEPTION) for role in ROLE_CATEGORIES.get(cat, [])],
-            "RANDOM_COVEN": ROLE_CATEGORIES.get(RoleAlignment.COVEN_EVIL, []),
-            "ANY": [role for sublist in ROLE_CATEGORIES.values() for role in sublist]
+            "RANDOM_TOWN": [role for cat in (RoleAlignment.TOWN_INVESTIGATIVE, RoleAlignment.TOWN_PROTECTIVE, RoleAlignment.TOWN_KILLING, RoleAlignment.TOWN_SUPPORT) for role in ROLE_CATEGORIES.get(cat, []) if role != RoleName.PESTILENCE],
+            "RANDOM_MAFIA": [role for cat in (RoleAlignment.MAFIA_KILLING, RoleAlignment.MAFIA_SUPPORT, RoleAlignment.MAFIA_DECEPTION) for role in ROLE_CATEGORIES.get(cat, []) if role != RoleName.PESTILENCE],
+            "RANDOM_COVEN": [role for role in ROLE_CATEGORIES.get(RoleAlignment.COVEN_EVIL, []) if role != RoleName.PESTILENCE],
+            "ANY": [role for sublist in ROLE_CATEGORIES.values() for role in sublist if role != RoleName.PESTILENCE]
         }
         
         for category_key, count in self.config.items():
@@ -340,7 +413,8 @@ class GameConfiguration:
                 continue
             
             for _ in range(count):
-                available_roles = [r for r in pool if r not in used_unique_roles]
+                # Exclude Pestilence from being drawn at game start.
+                available_roles = [r for r in pool if r not in used_unique_roles and r != RoleName.PESTILENCE]
                 if not available_roles:
                     raise ValueError(f"Not enough unique roles available for category '{category_key}'")
                 

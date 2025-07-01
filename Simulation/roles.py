@@ -25,6 +25,10 @@ class Role(ABC):
         self.visit_type = VisitType.HARMFUL if self.attack != Attack.NONE else VisitType.NON_HARMFUL
         self.is_coven = False
         self.has_necronomicon = False
+        #A message the killer can leave when they successfully kill a victim.
+        #This will be displayed the next day alongside the victim's body.
+        self.death_note: str = ""
+        self.chosen_move = None  # set by InteractionHandler when player specifies weapon
 
     @abstractmethod
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
@@ -64,11 +68,19 @@ class Sheriff(Role):
         self.action_priority = Priority.INVESTIGATION
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game'):
-        if target.role.detection_immune:
-            return f"{target.name} is not suspicious."
-        if target.role.name == RoleName.SERIAL_KILLER:
+        # Handle Disguiser effect: examine displayed role
+        eff_role = target.role
+        if getattr(target, 'disguised_as_role', None):
+            eff_role = create_role_from_name(target.disguised_as_role)
+
+        # Being framed or hexed makes a Townie appear suspicious.
+        if target.is_framed or target.is_hexed:
             return f"{target.name} is suspicious!"
-        if target.role.faction == Faction.MAFIA and target.role.name != RoleName.GODFATHER:
+        if eff_role.detection_immune:
+            return f"{target.name} is not suspicious."
+        if eff_role.name == RoleName.SERIAL_KILLER:
+            return f"{target.name} is suspicious!"
+        if eff_role.faction == Faction.MAFIA and eff_role.name != RoleName.GODFATHER:
             return f"{target.name} is suspicious!"
         return f"{target.name} is not suspicious."
 
@@ -83,7 +95,7 @@ class Investigator(Role):
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game'):
         if not game or not target:
             return "You must select a target."
-        investigated_role = target.role.name
+        investigated_role = target.disguised_as_role if getattr(target,'disguised_as_role',None) else target.role.name
         if target.is_framed or (hasattr(game, 'config') and game.config.is_coven and target.is_hexed):
             investigated_role = RoleName.HEX_MASTER if game.config.is_coven else RoleName.FRAMER
         elif target.is_doused:
@@ -199,12 +211,22 @@ class Mayor(Role):
     def reveal(self, player):
         if not self.revealed:
             self.revealed = True
-            player.votes = 3
+            player.vote_weight = 3
             print(f"{player.name} has revealed themselves as the Mayor!")
             return True
         return False
     
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
+        return None
+
+    def perform_day_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
+        #Mayor can click a reveal button during the day; no target needed.
+        if not self.revealed:
+            success = self.reveal(player)
+            if success:
+                #Update player's vote weight
+                player.vote_weight = 3
+                return f"You have revealed yourself as the Mayor! Your vote now counts as 3."
         return None
 
 class Medium(Role):
@@ -356,7 +378,8 @@ class Bootlegger(Role):
         self.name = RoleName.BOOTLEGGER
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
-        self.is_roleblock_immune = True
+        # Bootlegger can be role-blocked like an Escort/Consort
+        self.is_roleblock_immune = False
         self.action_priority = Priority.CONTROL_PROTECTION
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
@@ -458,7 +481,7 @@ class Pirate(Role):
             return f"You chose {pirate_move.value} but were bested by {actual_target.name}'s {target_defense.value}. You lost the Duel!"
 
     def resolve_duel(self):
-        pirate_move = random.choice(list(DuelMove))
+        pirate_move = self.chosen_move if self.chosen_move else random.choice(list(DuelMove))
         target_defense = random.choice(list(DuelDefense))
         win_conditions = {
             (DuelMove.SCIMITAR, DuelDefense.SIDESTEP),
@@ -466,6 +489,8 @@ class Pirate(Role):
             (DuelMove.PISTOL, DuelDefense.BACKPEDAL)
         }
         pirate_wins = (pirate_move, target_defense) in win_conditions
+        # Reset chosen move after use so next duel defaults to random unless specified
+        self.chosen_move = None
         return pirate_wins, pirate_move, target_defense
 
 #--- Placeholder Classes for Roles on the List Without Full Implementation ---
@@ -487,7 +512,8 @@ class Veteran(Role):
         self.faction = get_role_faction(self.name)
         self.is_unique = True
         self.attack = Attack.POWERFUL
-        self.defense = Defense.BASIC #Becomes INVINCIBLE on alert
+        # In ToS-1 a Veteran has NO defense by default and gains BASIC defense only on alert.
+        self.defense = Defense.NONE
         self.is_roleblock_immune = True
         self.control_immune = True
         self.action_priority = Priority.HIGHEST
@@ -500,7 +526,7 @@ class Veteran(Role):
             if self.alerts > 0:
                 self.alerts -= 1
                 self.is_on_alert = True
-                player.defense = Defense.INVINCIBLE #On alert, nothing can kill a vet
+                player.defense = Defense.BASIC  # On alert the Vet gains BASIC defense
                 
                 #Register an attack against all visitors
                 for visitor in player.targeted_by:
@@ -568,11 +594,10 @@ class Spy(Role):
         self.action_priority = Priority.FINALIZATION
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        #The spy's main ability is passive and handled in the game loop.
-        #This function can be used for "bugging" a target.
+        # The Spy's passive intel is processed in Game._process_spy_intel.
+        # Here we simply confirm the bug choice for player feedback.
         if target:
-            #TODO: Implement bugging logic
-            return f"You have decided to bug {target.name}'s house."
+            return f"You have decided to bug {target.name}'s house.";
         return "You are listening for whispers and watching the villains."
 
 class Tracker(Role):
@@ -617,17 +642,54 @@ class Trapper(Role):
         self.name = RoleName.TRAPPER
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
-        self.action_priority = Priority.HIGHEST  #Setting trap
-        self.has_trap = True
+        self.action_priority = Priority.SUPPORT_DECEPTION
+        # Internal state
+        self.building = False        # trap under construction (will arm next night)
+        self.active = False          # trap is armed and added to game.traps
+        self.trap_location = None    # Player where trap is/will be located
 
-    def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
-        if not self.has_trap:
-            return "You are out of traps."
-        if not target or not game:
-            return "You must select someone to set a trap on."
-        game.traps.append({"owner": player, "location": target, "active": True})
-        self.has_trap = False
-        return f"You have set a trap at {target.name}'s house."
+    def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
+        """Handles building, arming, and dismantling a trap.
+
+        • Choose another player ⇒ begin building a trap there (takes one night).
+        • Choose self ⇒ dismantle current (building or active) trap.
+        """
+        if not game:
+            return None
+
+        # Arm trap if construction finished (this happens at start of the *second* night)
+        if self.building and not self.active:
+            self.active = True
+            self.building = False
+            game.traps.append({"owner": player, "location": self.trap_location, "active": True})
+
+        # --- Handle tonight's order ---
+        if target == player:  # Attempt to dismantle
+            if self.building:
+                self.building = False
+                self.trap_location = None
+                return "You stop working on your unfinished trap."
+            if self.active:
+                # deactivate trap in game.traps
+                for tr in game.traps:
+                    if tr["owner"] == player and tr["active"]:
+                        tr["active"] = False
+                        break
+                self.active = False
+                self.trap_location = None
+                return "You dismantle your trap.";
+            return "You have no trap to dismantle.";
+
+        # Building new trap
+        if self.building or self.active:
+            return "You already have a trap; dismantle it first.";
+
+        if not target:
+            return "You must select someone to set a trap on.";
+
+        self.building = True
+        self.trap_location = target
+        return f"You begin constructing a trap at {target.name}'s house. It will be ready tomorrow night."
 
 #────────────────────────────────────────────────
 #Town Killing – Vampire Hunter
@@ -642,55 +704,111 @@ class VampireHunter(Role):
         self.attack_vs_vamp = Attack.POWERFUL
         self.attack = Attack.BASIC
         self.shots = None  #unlimited
+        self.defense = Defense.BASIC  # Basic defense against Vampires
+        self.detection_immune = True
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game:
             return None
 
-        #If there are no living vampires, VH becomes a Vigilante automatically (regardless of target)
-        living_vamps = [p for p in game.players if p.is_alive and p.role.name == RoleName.VAMPIRE]
-        if not living_vamps:
-            player.assign_role(Vigilante())
-            player.notifications.append("With no vampires left, you have taken up your gun as a Vigilante!")
-            return "No vampires remain. You are now a Vigilante."
+        # Auto-promote to Vigilante once all Vampires are dead.
+        if not any(p.is_alive and p.role.name == RoleName.VAMPIRE for p in game.players):
+            if self.name != RoleName.VIGILANTE:  # Prevent multiple promotions
+                new_role = Vigilante()
+                new_role.bullets = 1
+                player.assign_role(new_role)
+                player.notifications.append("With every Vampire destroyed you take up a gun – you are now a Vigilante (1 bullet)!")
+            return "You have become a Vigilante."  # No further action tonight.
 
-        # If there are vampires, a target is required to stake
+        # If no target supplied just wait / listen to chat.
         if not target:
-            return "You must choose a target to stake."
+            return "You spend the night listening for the undead."
 
-        atk = self.attack_vs_vamp if target.role.name == RoleName.VAMPIRE else self.attack
-        game.register_attack(player, target, atk)
-        return f"You are staking {target.name} tonight."
+        if target.role.name == RoleName.VAMPIRE:
+            # Stake the Vampire with Powerful attack
+            game.register_attack(player, target, Attack.POWERFUL)
+            return f"You stake {target.name} – a foul Vampire!"
+        else:
+            return f"You inspected {target.name} – they do not appear to be a Vampire."
 
 #────────────────────────────────────────────────
-#Town Support – Retributionist
+#Town Support – Raises a dead Town corpse each night to use its ability once.
+#
+# Mechanics implemented per ToS 1 / ToS 2 wiki:
+#   • Unique role (only one at a time).
+#   • Unlimited uses; each corpse can only be used once (rots afterwards).
+#   • Role-block & Control immune.
+#   • Cannot raise certain roles (Psychic, Trapper, Transporter, Mayor, Medium, Jailor, Veteran, another Retributionist, unique roles).
 class Retributionist(Role):
+    """Town Support – Raises a dead Town corpse each night to use its ability once.
+
+    Mechanics implemented per ToS 1 / ToS 2 wiki:
+      • Unique role (only one at a time).
+      • Unlimited uses; each corpse can only be used once (rots afterwards).
+      • Role-block & Control immune.
+      • Cannot raise certain roles (Psychic, Trapper, Transporter, Mayor, Medium, Jailor, Veteran, another Retributionist, unique roles).
+    """
+
+    _UNUSABLE_ROLES = {
+        RoleName.PSYCHIC,
+        RoleName.TRAPPER,
+        RoleName.TRANSPORTER,
+        RoleName.MAYOR,
+        RoleName.MEDIUM,
+        RoleName.JAILOR,
+        RoleName.VETERAN,
+        RoleName.RETRIBUTIONIST,
+    }
+
     def __init__(self):
         super().__init__()
         self.name = RoleName.RETRIBUTIONIST
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
         self.is_unique = True
-        self.revived = False  #once-per-game
+        self.is_roleblock_immune = True
+        self.control_immune = True
+        # Track corpses already used so they "rot" and cannot be reused.
+        self._used_corpses: set['Player'] = set()
 
+    # Retributionist no longer has a day action; all logic happens at night.
     def perform_day_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        if self.revived or not game or not target:
-            return None
-        if target.is_alive:
-            return "You can only revive dead town members."
-        #Only non-unique town roles can be revived (simplified check)
-        if target.role.faction != Faction.TOWN or target.role.is_unique:
-            return "You cannot revive that role."
-
-        self.revived = True
-        target.is_alive = True
-        target.defense = target.role.defense
-        game.graveyard.remove(target) if target in game.graveyard else None
-        target.notifications.append("You have been revived by a Retributionist!")
-        return f"You have revived {target.name}."
-
-    def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
         return None
+
+    def perform_night_action(self, player: 'Player', target: 'tuple[Player, Player]' = None, game: 'Game' = None):
+        """Expect *target* to be a tuple (corpse, second_target)."""
+        if not game or not target or not isinstance(target, tuple) or len(target) != 2:
+            return "You must choose a corpse and a target (corpse,target)."
+
+        corpse, second_target = target
+
+        # Validate corpse eligibility
+        if corpse.is_alive:
+            return f"{corpse.name} is still alive – you can only use dead Town members."
+        if corpse in self._used_corpses:
+            return f"{corpse.name}'s corpse has already rotted and cannot be used again."
+        if corpse.role.faction != Faction.TOWN:
+            return f"{corpse.name} was not aligned with the Town."
+        if corpse.role.is_unique or corpse.role.name in self._UNUSABLE_ROLES:
+            return f"You cannot raise a {corpse.role.name.value}."
+
+        # Temporarily re-animate the corpse to perform its ability.
+        original_state = corpse.is_alive
+        corpse.is_alive = True  # allow ability code to run
+
+        try:
+            result = corpse.role.perform_night_action(corpse, second_target, game)
+        finally:
+            # Ensure corpse returns to dead state regardless of errors.
+            corpse.is_alive = original_state
+
+        # Mark corpse as used so it "rots".
+        self._used_corpses.add(corpse)
+
+        # Tracker/Lookout visibility (simplified): record visits for corpse
+        corpse.visit(second_target)
+
+        return f"You raised {corpse.name}'s corpse – {result}"
 
 class Transporter(Role):
     def __init__(self):
@@ -703,9 +821,11 @@ class Transporter(Role):
         self.action_priority = Priority.HIGHEST
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        #The Transporter's action is handled differently in the main game loop
-        #to affect other players' targets. This function is a stub.
-        return f"You have chosen to transport two people."
+        if not game or not isinstance(target, tuple) or len(target) != 2:
+            return "You must choose two people to transport."
+
+        a, b = target
+        return f"You will transport {a.name} with {b.name}."
 
 #────────────────────────────────────────────────
 #Mafia Deception – Disguiser
@@ -717,15 +837,21 @@ class Disguiser(Role):
         self.faction = get_role_faction(self.name)
         self.action_priority = Priority.SUPPORT_DECEPTION
         self.visit_type = VisitType.HARMFUL
-        self.used = False
+        self.charges = 3
 
-    def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
-        if self.used or not game or not target:
-            return None
-        #Mark disguise attempt – success if target dies this night handled by game finalization.
-        player.disguise_target = target
-        self.used = True
-        return f"You attempt to disguise yourself as {target.name}."
+    def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
+        if not game or not target:
+            return "You must select a target to disguise as."
+
+        if self.charges <= 0:
+            return "You have used all of your disguise kits."
+
+        if target.role.faction == Faction.MAFIA:
+            return "You cannot disguise as another Mafia member."
+
+        player.disguised_as_role = target.role.name
+        self.charges -= 1
+        return f"You have disguised yourself as a {target.role.name.value}. ({self.charges} kits left)"
 
 #Mafia Deception – Forger
 class Forger(Role):
@@ -739,10 +865,13 @@ class Forger(Role):
         self.charges = 2
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
-        if self.charges<=0 or not game or not target:
-            return None
-        target.forged = True
-        self.charges -=1
+        if self.charges <= 0:
+            return "You have no forging ink left."
+        if not game or not target:
+            return "You must choose someone to forge."
+
+        target.was_forged = True
+        self.charges -= 1
         return f"You forged {target.name}'s last will. ({self.charges} charges left)"
 
 #Mafia Deception – Framer
@@ -778,7 +907,7 @@ class Hypnotist(Role):
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
         self.action_priority = Priority.SUPPORT_DECEPTION
-        self.visit_type = VisitType.ASTRAL
+        self.visit_type = VisitType.NON_HARMFUL
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
@@ -800,11 +929,17 @@ class Janitor(Role):
         self.charges = 3
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
-        if self.charges<=0 or not game or not target:
-            return None
+        if not game or not target:
+            return "You must select a target to clean."
+
+        if self.charges <= 0:
+            return "You are out of cleaning supplies."  # no charges
+
+        # Mark the target for potential cleaning if they die.
         target.cleaned_by = player
-        self.charges -=1
-        return f"You cleaned {target.name}'s house. ({self.charges} charges left)"
+
+        # We will only consume a charge if the clean actually triggers (handled in Game._announce_deaths).
+        return f"You will attempt to clean {target.name}'s body tonight."
 
 #────────────────────────────────────────────────
 #Neutral Benign – Amnesiac
@@ -814,19 +949,42 @@ class Amnesiac(Role):
         self.name = RoleName.AMNESIAC
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
-        self.action_priority = Priority.HIGHEST
+        self.detection_immune = True
+        self.visit_type = VisitType.ASTRAL  # assumed astral per wiki
+        self.action_priority = Priority.FINALIZATION  # very low priority
         self.remembered = False
 
-    def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
-        if self.remembered or not game or not game.graveyard:
-            return None
-        #pick first graveyard role or given target
-        chosen = game.graveyard[0] if not target else target
-        new_role_cls = chosen.role.__class__
-        player.assign_role(new_role_cls())
-        player.notifications.append(f"You have remembered you are a {chosen.role.name.value}!")
-        self.remembered = True
-        return f"You remembered being {chosen.role.name.value}."
+    def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
+        if not game or not target:
+            return "You must select a corpse to remember."
+
+        if target.is_alive:
+            return "You may only remember roles from the graveyard."
+
+        # Prevent duplicate remembers of unique roles
+        if target.role.is_unique:
+            # If any living player already has that role, fail.
+            if any(p.is_alive and p.role.name == target.role.name for p in game.players):
+                return f"Someone already occupies the unique role {target.role.name.value}. Your memory fails."
+
+        # Edge-cases: Godfather / Coven Leader / Pestilence special downgrades
+        remembered_role_name = target.role.name
+        if remembered_role_name == RoleName.GODFATHER:
+            mafia_alive = any(p.is_alive and p.role.faction == Faction.MAFIA and p.role.name != RoleName.GODFATHER for p in game.players)
+            if not mafia_alive:
+                remembered_role_name = RoleName.MAFIOSO
+        elif remembered_role_name == RoleName.COVEN_LEADER:
+            coven_alive = any(p.is_alive and p.role.faction == Faction.COVEN for p in game.players)
+            if coven_alive:
+                # Guaranteed Necronomicon later – handled by existing nighttime allocation
+                pass
+        elif remembered_role_name == RoleName.PESTILENCE:
+            remembered_role_name = RoleName.PLAGUEBEARER
+
+        # Mark the intention – actual switch happens at dawn so defense doesn't apply tonight
+        player.remember_role_name = remembered_role_name
+        player.notifications.append(f"You will remember being a {remembered_role_name.value} tomorrow.")
+        return f"You focus on memories of being a {remembered_role_name.value}."
 
 class Ambusher(Role):
     def __init__(self):
@@ -854,10 +1012,12 @@ class Blackmailer(Role):
         self.action_priority = Priority.SUPPORT_DECEPTION
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        if target:
-            #target.is_blackmailed = True #Cannot do this until player.py is editable
-            return f"You have decided to blackmail {target.name}."
-        return "You have decided not to blackmail anyone."
+        if not game or not target:
+            return "You must select a target to blackmail."
+
+        target.is_blackmailed = True
+        target.notifications.append("You felt a sinister presence last night. You are being blackmailed and cannot speak today!")
+        return f"You have decided to blackmail {target.name}."
 
     def get_info(self):
         #In a real game, this would allow reading whispers.
@@ -923,7 +1083,10 @@ class Executioner(Role):
 
     def assign_target(self, game: 'Game'):
         """Pick a random Town player other than self. Called by Game at init."""
-        town_candidates = [p for p in game.players if p.role.faction == Faction.TOWN and p.name != self.name]
+        town_candidates = [p for p in game.players
+                           if p.role.faction == Faction.TOWN
+                           and p.name != self.name
+                           and p.role.name not in [RoleName.MAYOR, RoleName.JAILOR]]
         if town_candidates:
             self.target = random.choice(town_candidates)
 
@@ -940,6 +1103,7 @@ class Jester(Role):
         self.is_roleblock_immune = False
         self.detection_immune = True
         self.action_priority = Priority.DAY_ACTION #Haunting is a result of a day lynch
+        self.astral_immune = True  # simple flag for future use
 
     def perform_day_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         #This is for haunting. It should only be called if the jester is lynched.
@@ -955,7 +1119,11 @@ class Jester(Role):
     def on_lynch(self, game: 'Game'):
         #In a real game, this would trigger the haunting ability.
         #The player would then choose a target from the players who voted guilty.
-        print(f"[Jester] {self.name} was lynched! They will haunt one of their tormentors.")
+        #Here we'll simply log the event.
+        print(f"JESTER WIN: {self.name} has been lynched and will haunt someone!")
+
+    def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
+        pass
 
 class Witch(Role):
     def __init__(self):
@@ -967,13 +1135,17 @@ class Witch(Role):
         self.defense = Defense.NONE
         self.is_roleblock_immune = True
         self.detection_immune = True
+        self.control_immune = True
         self.action_priority = Priority.CONTROL_PROTECTION
         self.has_been_attacked = False
+        self.attack = Attack.BASIC  # Attack strength when biting non-convertible target or >4 vamps
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game:
             return
-        
+
+        # Expect the player to have submitted a tuple (control_target, force_target)
+        # through the InteractionHandler stored in game.night_actions.
         try:
             control_target, force_target = game.night_actions[player]
         except (KeyError, TypeError, ValueError):
@@ -986,10 +1158,11 @@ class Witch(Role):
             control_target.notifications.append("Someone tried to control you but you were immune!")
             return "Your target was immune to control!"
 
+        # Apply control – replace their submitted action with the forced one
         game.night_actions[control_target] = force_target
         control_target.is_controlled = True
         control_target.notifications.append(f"You were controlled by a Witch! You were forced to target {force_target.name}.")
-        
+
         return f"You have controlled {control_target.name} and forced them to target {force_target.name}."
 
     def on_attacked(self, attacker):
@@ -1023,11 +1196,29 @@ class Juggernaut(Role):
             self.defense = Defense.BASIC
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        if not game or not target:
+        if not game:
             return None
+
+        # Before first kill: only act on full-moon (even) nights
+        if self.kills == 0 and game.day % 2 != 0:
+            return "It is not a full moon. You wait to build your strength."
+
+        # If no target chosen, stay home (no effect)
+        if not target:
+            return "You chose no target tonight."
+
         self._update_power()
-        game.register_attack(player, target, self.attack)
-        return f"You are striking {target.name} with {self.attack.name.lower()} force."
+
+        if self.kills >= 2:
+            # Rampage at location – hit target and visitors
+            game.register_attack(player, target, self.attack)
+            for v in target.targeted_by:
+                if v.is_alive:
+                    game.register_attack(player, v, self.attack, is_primary=False)
+            return f"You rampage at {target.name}'s house with {self.attack.name.lower()} force!"
+        else:
+            game.register_attack(player, target, self.attack)
+            return f"You strike {target.name} with {self.attack.name.lower()} force."
 
     #Called by game when a kill is confirmed (hook not yet wired; simple public method)
     def register_kill(self):
@@ -1043,7 +1234,7 @@ class Werewolf(Role):
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
         self.action_priority = Priority.KILLING
-        self.attack = Attack.UNSTOPPABLE
+        self.attack = Attack.POWERFUL
         self.visit_type = VisitType.HARMFUL  #Rampage at location
         self.full_moon_cycle = 2  #every 2nd night starting N2
 
@@ -1052,16 +1243,51 @@ class Werewolf(Role):
         return game.day % self.full_moon_cycle == 0
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        if not game or not target:
-            return None
-        if not self._is_full_moon(game):
-            return "It is not a full moon. You stay home snarling."  #WW only acts on full moon
+        """Implements full-moon rampage logic.
 
-        #Rampage: attack target and all visitors to target
+        • Full-moon check – only acts on even night numbers (N2, N4 …).
+        • If jailed (but not executed) attack Jailor inside cell.
+        • If no target or target is self ⇒ rampage at home.
+        • Otherwise rampage at target's house, also hitting their visitors.
+        • If the chosen target is jailed: rampage hits *visitors* to the jailed player instead.
+        """
+        if not game:
+            return None
+
+        # Full moon gating
+        if not self._is_full_moon(game):
+            return "It is not a full moon. You stay home snarling."
+
+        # In jail – Jailor did not execute ⇒ strike Jailor
+        if player.is_jailed:
+            jailor = game.find_player_by_role(RoleName.JAILOR)
+            if jailor and jailor.is_alive and not jailor.role.executing:
+                game.register_attack(player, jailor, self.attack)
+                return "You transform inside the jail and maul the Jailor!"
+            return "You were executed in jail."  # handled elsewhere
+
+        # Determine rampage location
+        if target is None or target == player:
+            # Stay home – attack all visitors
+            victims = [v for v in player.targeted_by if v.is_alive]
+            for v in victims:
+                game.register_attack(player, v, self.attack, is_primary=False)
+            if victims:
+                return f"You rampage at home and tear apart: {', '.join(v.name for v in victims)}."
+            return "You rampage at home but no one came."
+
+        # If target jailed, hit visitors only (not Jailor or prisoner)
+        if target.is_jailed:
+            visitors = [v for v in target.targeted_by if v.is_alive]
+            for v in visitors:
+                game.register_attack(player, v, self.attack, is_primary=False)
+            return f"Your prey was in jail; you ravaged their would-be visitors instead!"
+
+        # Normal rampage at target's house
         game.register_attack(player, target, self.attack)
-        victims = [v for v in target.targeted_by if v.is_alive]
-        for v in victims:
-            game.register_attack(player, v, self.attack, is_primary=False)
+        for v in target.targeted_by:
+            if v.is_alive:
+                game.register_attack(player, v, self.attack, is_primary=False)
         return f"You rampage at {target.name}'s house, mauling everyone inside!"
 
 #Neutral Chaos – Plaguebearer / Pestilence
@@ -1075,20 +1301,48 @@ class Plaguebearer(Role):
         self.action_priority = Priority.SUPPORT_DECEPTION
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
+        """Spread infection to the chosen target and anyone who visits either of you.
+
+        • If no target (or target is self) ⇒ stay home, infect only visitors.
+        • Otherwise: visit the target, infect them and their visitors.
+        • Always infect visitors to the Plaguebearer as well.
+        • When every other living player is infected, convert to Pestilence.
+        """
         if not game:
             return None
-        #Infect all players who visit or are visited by PB
-        for p in game.players:
-            if p.is_alive and (p==player or p in player.targeted_by or p.visiting==player):
-                p.is_infected = True
-                self.infected.add(p)
 
-        #Check if everyone (non-PB) infected
-        others=[p for p in game.players if p.is_alive and p!=player]
+        # Resolve visiting relationship (so trackers etc. see it)
+        if target and target != player:
+            player.visit(target)
+
+        # Build infection set
+        infection_targets = set()
+
+        # Visitors to PB are always infected
+        infection_targets.update([v for v in player.targeted_by if v.is_alive])
+
+        if target and target.is_alive:
+            infection_targets.add(target)
+            # Infect anyone who visited the target
+            infection_targets.update([v for v in target.targeted_by if v.is_alive])
+
+        # Apply infection
+        for p in infection_targets:
+            p.is_infected = True
+            self.infected.add(p)
+
+        # Check global infection condition (all living except PB infected)
+        others = [p for p in game.players if p.is_alive and p != player]
         if others and all(p.is_infected for p in others):
             player.assign_role(Pestilence())
             player.notifications.append("You have become Pestilence, Horseman of the Apocalypse!")
-        return "You spread disease silently."
+            return "The plague has consumed the town! You transform into Pestilence."
+
+        # Message feedback
+        if target and target != player:
+            return f"You infected {target.name} and anyone who visited them."
+        else:
+            return "You linger at home, ready to infect any visitor."
 
 class Pestilence(Role):
     def __init__(self):
@@ -1120,16 +1374,49 @@ class Vampire(Role):
         self.faction = get_role_faction(self.name)
         self.action_priority = Priority.SUPPORT_DECEPTION
         self.visit_type = VisitType.NON_HARMFUL
+        self.detection_immune = True
+        self.attack = Attack.BASIC  # Attack strength when biting non-convertible target or >4 vamps
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
         if not game or not target:
-            return None
-        if target.role.name==RoleName.VAMPIRE or not target.is_alive:
-            return "Target unsuitable."
-        #Convert target
-        target.assign_role(Vampire())
-        target.notifications.append("You have been bitten and turned into a Vampire!")
-        return f"You bit {target.name}."
+            return "You decided not to bite tonight."
+
+        # Cannot target fellow Vampires
+        if target.role.name == RoleName.VAMPIRE:
+            return "Target is already a Vampire – bite wasted."
+
+        # Check faction size & cooldown
+        vampires = [p for p in game.players if p.is_alive and p.role.name == RoleName.VAMPIRE]
+        cooldown_night = getattr(game, "vampire_conversion_blocked_until", -1)
+        if game.day <= cooldown_night:
+            # Cannot convert – treat as attack
+            game.register_attack(player, target, self.attack)
+            return f"Conversion magic is weak tonight – you instead attack {target.name}."
+
+        # Convertible alignments
+        convertible_factions = {Faction.TOWN}
+        if target.role.name in {RoleName.SURVIVOR, RoleName.AMNESIAC, RoleName.JESTER}:
+            convertible = True
+        else:
+            convertible = target.role.faction in convertible_factions and target.role.name != RoleName.VAMPIRE_HUNTER
+
+        # Must have no defense
+        if convertible and target.defense == Defense.NONE and len(vampires) < 4:
+            target.assign_role(Vampire())
+            target.notifications.append("Cold fangs pierce your neck – you have become a Vampire! Embrace the night.")
+            # Start 1-night global cooldown (cannot convert following night)
+            game.vampire_conversion_blocked_until = game.day  # block next night only
+            return f"You successfully turned {target.name} into a Vampire. Your coven must rest tomorrow night."
+
+        # Failed conversion – attack instead
+        game.register_attack(player, target, self.attack)
+
+        # Visiting a Vampire Hunter results in death
+        if target.role.name == RoleName.VAMPIRE_HUNTER and player.is_alive:
+            game.register_attack(target, player, Attack.POWERFUL)
+            return f"{target.name} was a Vampire Hunter! They stake you as you bite."
+
+        return f"{target.name} resisted conversion – you attack instead."
 
 class CovenLeader(Role):
     def __init__(self):
@@ -1144,13 +1431,36 @@ class CovenLeader(Role):
         self.visit_type = VisitType.HARMFUL
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
+        if not game:
+            return None
+
+        # InteractionHandler always stores tuple (puppet, victim)
+        try:
+            puppet, victim = game.night_actions[player]
+        except (KeyError, TypeError, ValueError):
+            return "You must select two targets to direct your magic."
+
+        if not puppet or not victim:
+            return "You must select two targets."
+
+        # Handle control immunity
+        if puppet.role.control_immune:
+            puppet.notifications.append("Someone tried to control you but you were immune!")
+            return "Your puppet resisted your control!"
+
+        # Apply control – overwrite puppet's submitted action (or add one) with forced victim
+        game.night_actions[puppet] = victim
+        puppet.is_controlled = True
+        puppet.notifications.append(f"You were controlled by dark magic! You were forced to target {victim.name}.")
+
+        msg = f"You controlled {puppet.name} to target {victim.name}."
+
+        # Necronomicon bonus attack (Powerful) on the victim
         if self.has_necronomicon:
-            if target:
-                game.register_attack(player, target, Attack.POWERFUL)
-                return f"You used the Necronomicon to attack {target.name}."
-            return "No target chosen for attack."
-        #Without Necronomicon behave like Witch control (simplified one target forces self)
-        return "Directing your coven magic (not yet implemented)."
+            game.register_attack(player, victim, Attack.POWERFUL)
+            msg += f" Using the Necronomicon, you also attack {victim.name}."
+
+        return msg
 
 class Medusa(Role):
     def __init__(self):
@@ -1211,22 +1521,60 @@ class PotionMaster(Role):
         self.faction = get_role_faction(self.name)
         self.is_coven = True
         self.action_priority = Priority.SUPPORT_DECEPTION
+        # Track individual potion cooldowns (heal/reveal/attack)
+        self._cooldowns = {"heal": 0, "reveal": 0, "attack": 0}
+        self._last_used = None  # last potion used
 
-    def perform_night_action(self, player,target=None,game=None):
+    def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
+        """Rotate through Heal → Reveal → Attack, each on a 3-night cooldown.
+
+        With the Necronomicon, cooldowns are ignored.
+        """
         if not game or not target:
             return "You chose not to use a potion."
-        #Simple rotation of attack / heal / reveal based on night number
-        night = game.day
-        if night %3==1:
-            game.register_attack(player,target,Attack.BASIC if not self.has_necronomicon else Attack.POWERFUL)
-            return f"You hurled a harmful potion at {target.name}."
-        elif night%3==2:
-            target.defense = Defense.BASIC
-            target.notifications.append("You feel rejuvenated by alchemical energies!")
-            return f"You healed {target.name}."
+
+        # Select next potion type respecting cooldowns
+        order = ["heal", "reveal", "attack"]
+        choice = None
+
+        # If Necronomicon held, never any cooldown – just cycle
+        if self.has_necronomicon:
+            idx = 0 if self._last_used is None else (order.index(self._last_used) + 1) % 3
+            choice = order[idx]
         else:
-            player.notifications.append(f"Your divination reveals {target.name} is {target.role.name.value}.")
-            return f"You scry {target.name}'s secrets."
+            # Find first potion whose cooldown is 0, in order heal->reveal->attack
+            for pot in order:
+                if self._cooldowns[pot] == 0:
+                    choice = pot
+                    break
+            if choice is None:
+                return "All of your potions are re-charging."  # edge case
+
+        # Apply potion effect
+        if choice == "attack":
+            atk = Attack.BASIC if not self.has_necronomicon else Attack.POWERFUL
+            game.register_attack(player, target, atk)
+            result = f"You hurled a harmful potion at {target.name}."
+        elif choice == "heal":
+            target.defense = Defense.POWERFUL if self.has_necronomicon else Defense.BASIC
+            target.notifications.append("You feel rejuvenated by powerful alchemical energies!")
+            result = f"You healed {target.name}."
+        else:  # reveal
+            role_name = target.role.name.value
+            for coven_member in [p for p in game.players if p.role.is_coven]:
+                coven_member.notifications.append(f"Potion vision: {target.name} is a {role_name}.")
+            result = f"You revealed {target.name}'s role to the Coven."
+
+        # Update cooldowns (skip if Necronomicon)
+        if not self.has_necronomicon:
+            # Set chosen potion to cooldown 3, decrement others if >0
+            for pot in order:
+                if self._cooldowns[pot] > 0:
+                    self._cooldowns[pot] -= 1
+            self._cooldowns[choice] = 3
+
+        self._last_used = choice
+        return result
 
 class Poisoner(Role):
     def __init__(self):
@@ -1255,19 +1603,48 @@ class Necromancer(Role):
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
         self.is_coven = True
+        self.is_unique = True
+        self.is_roleblock_immune = True
+        self.control_immune = True
+        self.detection_immune = False
         self.action_priority = Priority.INVESTIGATION
+        # Track used corpses so they "rot" after one night
+        self._used_corpses: set['Player'] = set()
+        from .enums import VisitType
+        self.visit_type = VisitType.ASTRAL
 
-    def perform_night_action(self, player,target=None,game=None):
-        if not game or not target:
-            return None
-        #Use first coven corpse if none specified
-        coven_dead=[p for p in game.graveyard if getattr(p.role,'is_coven',False)]
-        if not coven_dead:
-            return "No coven corpses to control."
-        corpse=coven_dead[0]
-        #Basic effect: attack target with Basic strength
-        game.register_attack(player,target,Attack.BASIC)
-        return f"You animated {corpse.name}'s corpse to attack {target.name}."
+    def perform_night_action(self, player: 'Player', target: 'tuple[Player, Player]' = None, game: 'Game' = None):
+        """Expect *target* to be a tuple (corpse, victim).
+
+        The selected corpse is temporarily re-animated to perform its own ability
+        on the second target. Each corpse can only be used once.
+        """
+        if not game or not isinstance(target, tuple) or len(target) != 2:
+            return "You must choose a corpse and a target (corpse,target)."
+
+        corpse, victim = target
+
+        if corpse.is_alive:
+            return f"{corpse.name} is still alive – you can only reanimate the dead."
+        if corpse in self._used_corpses:
+            return f"{corpse.name}'s corpse has already rotted and cannot be used again."
+        if corpse.was_cleaned:
+            return f"{corpse.name}'s identity was hidden. You cannot reanimate this corpse."
+
+        # Temporarily bring corpse to life to run its ability
+        original_state = corpse.is_alive
+        corpse.is_alive = True
+        try:
+            result = corpse.role.perform_night_action(corpse, victim, game)
+        finally:
+            corpse.is_alive = original_state
+
+        self._used_corpses.add(corpse)
+
+        # Register visit for lookout / tracker purposes
+        corpse.visit(victim)
+
+        return f"You reanimated {corpse.name}'s corpse – {result}"
 
 #The canonical map of all roles in the game
 role_map = {
@@ -1295,12 +1672,9 @@ role_map = {
     RoleName.FRAMER: Framer,
     RoleName.HYPNOTIST: Hypnotist,
     RoleName.JANITOR: Janitor,
-    RoleName.AMBUSHER: Ambusher,
-    RoleName.GODFATHER: Godfather,
-    RoleName.MAFIOSO: Mafioso,
-    RoleName.BLACKMAILER: Blackmailer,
-    RoleName.CONSIGLIERE: Consigliere,
     RoleName.AMNESIAC: Amnesiac,
+    RoleName.AMBUSHER: Ambusher,
+    RoleName.BLACKMAILER: Blackmailer,
     RoleName.GUARDIAN_ANGEL: GuardianAngel,
     RoleName.SURVIVOR: Survivor,
     RoleName.EXECUTIONER: Executioner,
@@ -1312,9 +1686,8 @@ role_map = {
     RoleName.VAMPIRE: Vampire,
     RoleName.COVEN_LEADER: CovenLeader,
     RoleName.MEDUSA: Medusa,
-    RoleName.HEX_MASTER: HexMaster,
-    RoleName.POISONER: Poisoner,
     RoleName.POTION_MASTER: PotionMaster,
+    RoleName.POISONER: Poisoner,
     RoleName.NECROMANCER: Necromancer,
     #Compatibility for old names, pointing to the new classes
     RoleName.ESCORT: TavernKeeper,
@@ -1325,3 +1698,68 @@ role_map = {
     RoleName.WEREWOLF: Werewolf,
     RoleName.BOOTLEGGER: Bootlegger,
 } 
+
+def create_role_from_name(role_name: RoleName) -> 'Role':
+    """Factory function to create a role instance from a RoleName enum."""
+    role_class_map = {
+        RoleName.SHERIFF: Sheriff,
+        RoleName.INVESTIGATOR: Investigator,
+        RoleName.LOOKOUT: Lookout,
+        RoleName.DOCTOR: Doctor,
+        RoleName.BODYGUARD: Bodyguard,
+        RoleName.VIGILANTE: Vigilante,
+        RoleName.MAYOR: Mayor,
+        RoleName.MEDIUM: Medium,
+        RoleName.TAVERN_KEEPER: TavernKeeper,
+        RoleName.GODFATHER: Godfather,
+        RoleName.MAFIOSO: Mafioso,
+        RoleName.SERIAL_KILLER: SerialKiller,
+        RoleName.JAILOR: Jailor,
+        RoleName.CONSIGLIERE: Consigliere,
+        RoleName.BOOTLEGGER: Bootlegger,
+        RoleName.ARSONIST: Arsonist,
+        RoleName.PIRATE: Pirate,
+        RoleName.VETERAN: Veteran,
+        RoleName.PSYCHIC: Psychic,
+        RoleName.SPY: Spy,
+        RoleName.TRACKER: Tracker,
+        RoleName.TRAPPER: Trapper,
+        RoleName.VAMPIRE_HUNTER: VampireHunter,
+        RoleName.RETRIBUTIONIST: Retributionist,
+        RoleName.TRANSPORTER: Transporter,
+        RoleName.DISGUISER: Disguiser,
+        RoleName.FORGER: Forger,
+        RoleName.FRAMER: Framer,
+        RoleName.HYPNOTIST: Hypnotist,
+        RoleName.JANITOR: Janitor,
+        RoleName.AMNESIAC: Amnesiac,
+        RoleName.AMBUSHER: Ambusher,
+        RoleName.BLACKMAILER: Blackmailer,
+        RoleName.GUARDIAN_ANGEL: GuardianAngel,
+        RoleName.SURVIVOR: Survivor,
+        RoleName.EXECUTIONER: Executioner,
+        RoleName.JESTER: Jester,
+        RoleName.WITCH: Witch,
+        RoleName.JUGGERNAUT: Juggernaut,
+        RoleName.WEREWOLF: Werewolf,
+        RoleName.PLAGUEBEARER: Plaguebearer,
+        RoleName.PESTILENCE: Pestilence,
+        RoleName.VAMPIRE: Vampire,
+        RoleName.COVEN_LEADER: CovenLeader,
+        RoleName.MEDUSA: Medusa,
+        RoleName.POTION_MASTER: PotionMaster,
+        RoleName.POISONER: Poisoner,
+        RoleName.NECROMANCER: Necromancer,
+    }
+    # Handle aliases
+    if role_name == RoleName.ESCORT:
+        role_name = RoleName.TAVERN_KEEPER
+    if role_name == RoleName.CONSORT:
+        role_name = RoleName.BOOTLEGGER
+        
+    role_class = role_class_map.get(role_name)
+    if role_class:
+        return role_class()
+    
+    # Fallback for roles not fully implemented yet
+    return PlaceholderRole(role_name) 
