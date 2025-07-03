@@ -1,0 +1,90 @@
+{
+    "name": "attributes",
+    "class": "environment_static",
+    "description": "Get information about game attributes like attack types, defense types, visit types, and immunities.",
+    "inputs": [
+        {"name": "attribute", "type": "string", "description": "The specific attribute to look up. If not provided, returns all attributes."}
+    ],
+    "outputs": [
+        {"name": "attribute_info", "type": "object", "description": "Attribute details or all attributes if no specific one requested"}
+    ],
+    "examples": [
+        {
+            "input": {"attribute": "BasicDefense"},
+            "output": {
+                "attribute_info": {
+                    "BasicDefense": {
+                        "type": "defense",
+                        "description": "Grants protection from Basic Attacks. If you are attacked with Basic Attack power, you survive. Powerful and Unstoppable Attacks bypass Basic Defense.",
+                        "blocks": ["BasicAttack"],
+                        "bypassed_by": ["PowerfulAttack", "UnstoppableAttack"],
+                        "notes": [
+                            "Roles with Basic Defense must be lynched during the Day or killed at Night by Powerful or Unstoppable Attacks."
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "input": {"attribute": ""},
+            "output": {
+                "attribute_info": {
+                    "BasicDefense": {
+                        "type": "defense",
+                        "description": "Grants protection from Basic Attacks. If you are attacked with Basic Attack power, you survive. Powerful and Unstoppable Attacks bypass Basic Defense.",
+                        "blocks": ["BasicAttack"],
+                        "bypassed_by": ["PowerfulAttack", "UnstoppableAttack"],
+                        "notes": [
+                            "Roles with Basic Defense must be lynched during the Day or killed at Night by Powerful or Unstoppable Attacks."
+                        ]
+                    },
+                    "PowerfulDefense": {
+                        "type": "defense",
+                        "description": "Grants protection from Powerful and Basic Attacks. Only Unstoppable Attacks can kill a player with Powerful Defense, except for special exceptions like Guardian Angel vs. Jailor executions.",
+                        "blocks": ["BasicAttack", "PowerfulAttack"],
+                        "bypassed_by": ["UnstoppableAttack"],
+                        "notes": [
+                            "Guardian Angel can protect their target from Jailor executions."
+                        ]
+                    },
+                    "InvincibleDefense": {
+                        "type": "defense",
+                        "description": "Cannot be killed at Night by any means. Blocks all attacks, including Unstoppable Attacks. Only lynching during the Day will kill a role with Invincible Defense.",
+                        "blocks": ["BasicAttack", "PowerfulAttack", "UnstoppableAttack"],
+                        "bypassed_by": [],
+                        "notes": [
+                            "The only way to bypass Invincible Defense is lynching during the Day."
+                        ]
+                    },
+                    "BasicAttack": {
+                        "type": "attack",
+                        "description": "Standard attack power. Can kill players with no defense but is blocked by Basic Defense or higher.",
+                        "bypasses": [],
+                        "blocked_by": ["BasicDefense", "PowerfulDefense", "InvincibleDefense"],
+                        "notes": [
+                            "Most roles have Basic Attack power by default."
+                        ]
+                    },
+                    "PowerfulAttack": {
+                        "type": "attack", 
+                        "description": "Strong attack power. Bypasses Basic Defense but is blocked by Powerful Defense or higher.",
+                        "bypasses": ["BasicDefense"],
+                        "blocked_by": ["PowerfulDefense", "InvincibleDefense"],
+                        "notes": [
+                            "Usually found on killing roles or when using certain abilities."
+                        ]
+                    },
+                    "UnstoppableAttack": {
+                        "type": "attack",
+                        "description": "Maximum attack power. Bypasses all defense except Invincible Defense.",
+                        "bypasses": ["BasicDefense", "PowerfulDefense"],
+                        "blocked_by": ["InvincibleDefense"],
+                        "notes": [
+                            "Very rare attack type, usually found on evolved roles or special conditions."
+                        ]
+                    }
+                }
+            }
+        }
+    ]
+}

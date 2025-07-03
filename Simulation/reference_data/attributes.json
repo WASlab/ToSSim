@@ -1,0 +1,145 @@
+{
+    "NoDefense": {
+        "type": "defense",
+        "description": "No protective immunity at night. The role will die to any Basic Attack or stronger.",
+        "blocks": [],
+        "bypassed_by": [],
+        "notes": [
+            "Roles with no defense can survive attacks only if healed or protected by others."
+        ]
+    },
+    "BasicDefense": {
+        "type": "defense",
+        "description": "Grants protection from Basic Attacks. If attacked with Basic Attack power, you survive. Powerful and Unstoppable Attacks bypass Basic Defense.",
+        "blocks": [
+            "BasicAttack"
+        ],
+        "bypassed_by": [
+            "PowerfulAttack",
+            "UnstoppableAttack"
+        ],
+        "notes": [
+            "Roles with Basic Defense must be lynched during the day or killed at night by roles with Powerful or Unstoppable attack power."
+        ]
+    },
+    "PowerfulDefense": {
+        "type": "defense",
+        "description": "Grants protection from Powerful and Basic Attacks. Only an Unstoppable Attack can kill a player with Powerful Defense (with rare exceptions).",
+        "blocks": [
+            "BasicAttack",
+            "PowerfulAttack"
+        ],
+        "bypassed_by": [
+            "UnstoppableAttack"
+        ],
+        "notes": [
+            "Guardian Angel's protection is a special case that can stop an otherwise unstoppable execution by Jailor, effectively acting as beyond Powerful defense in that scenario."
+        ]
+    },
+    "InvincibleDefense": {
+        "type": "defense",
+        "description": "Cannot be killed at night by any means. Blocks all attacks, including Unstoppable Attacks. Only lynching during the day can kill someone with Invincible Defense.",
+        "blocks": [
+            "BasicAttack",
+            "PowerfulAttack",
+            "UnstoppableAttack"
+        ],
+        "bypassed_by": [],
+        "notes": [
+            "The only way to kill a role with Invincible Defense is to lynch them during the day (no night attack works)."
+        ]
+    },
+    "BasicAttack": {
+        "type": "attack",
+        "description": "Can kill players with No Defense. Will fail against targets with any Defense level.",
+        "notes": [
+            "If a Basic Attack fails due to target's defense, the attacker receives the message 'Your target's defense was too strong to kill.'"
+        ],
+        "blocked_by": [
+            "BasicDefense",
+            "PowerfulDefense",
+            "InvincibleDefense"
+        ],
+        "bypasses": [
+            "NoDefense"
+        ]
+    },
+    "PowerfulAttack": {
+        "type": "attack",
+        "description": "A stronger attack that can kill roles with Basic Defense or no defense. It fails against roles with Powerful Defense or Invincible Defense.",
+        "notes": [
+            "A Powerful Attack will penetrate Basic Defense but not Powerful Defense.",
+            "Attacks that are Powerful give the message 'Your target's defense was too strong' if used on someone with Powerful or Invincible Defense."
+        ],
+        "blocked_by": [
+            "PowerfulDefense",
+            "InvincibleDefense"
+        ],
+        "bypasses": [
+            "NoDefense",
+            "BasicDefense"
+        ]
+    },
+    "UnstoppableAttack": {
+        "type": "attack",
+        "description": "The highest level of attack that can kill roles with any defense except Invincible. It fails only against Invincible Defense.",
+        "notes": [
+            "Unstoppable Attacks bypass Basic and Powerful defenses, killing those roles.",
+            "If used on someone with Invincible Defense (e.g., Pestilence), it will not kill them."
+        ],
+        "blocked_by": [
+            "InvincibleDefense"
+        ],
+        "bypasses": [
+            "NoDefense",
+            "BasicDefense",
+            "PowerfulDefense"
+        ]
+    },
+    "RoleBlockImmunity": {
+        "type": "immunity",
+        "description": "The role cannot be prevented from acting by role-blocking abilities (Escort, Consort, Tavern Keeper, Pirate role-block, etc.). If role-blocked, the role will still perform their action, and they typically receive a message that someone tried to role-block them but they are immune!",
+        "notes": [
+            "Jail still overrides actions even if a role is role-block immune (Jailor jailing someone stops their action, except Jailor's partial immunity for jailing vs executing).",
+            "Partial Role Block Immunity exists: some roles only have certain parts of their abilities unaffected."
+        ]
+    },
+    "ControlImmunity": {
+        "type": "immunity",
+        "description": "The role cannot be controlled by a Witch or Coven Leader. Attempts to force their action on another target will fail.",
+        "notes": [
+            "Control immune roles can still be chosen as a secondary target (for example, a Witch could attempt to use them on someone else but it fails).",
+            "Roles with no night ability are inherently control immune (nothing to control)."
+        ]
+    },
+    "DetectionImmunity": {
+        "type": "immunity",
+        "description": "Appears innocent to Sheriff investigations despite being evil or otherwise suspicious. They are effectively undetectable by direct investigative checks like the Sheriff (\"Not Suspicious\" result).",
+        "notes": [
+            "Detection Immunity does not hide a role from Lookouts, Trackers, or other investigative means that are not Sheriff. (Lookout and Tracker can still see their actions.)",
+            "Framer or Hex Master can interfere and cause a normally non-immune target to appear suspicious or vice versa, but a detection-immune role will always appear innocent unless framed."
+        ]
+    },
+    "NonHarmfulVisit": {
+        "type": "visit",
+        "description": "A visit where the player does not attack their target. Non-harmful visits will trigger effects related to visiting (e.g., they can be seen by Lookouts and can set off traps), but do not by themselves cause harm.",
+        "notes": [
+            "Example: Investigator visiting a target is a non-harmful visit; the Investigator triggers visiting-related effects (like Crusader might accidentally attack them, or they could die to Pestilence for visiting), but they don't harm the target."
+        ]
+    },
+    "HarmfulVisit": {
+        "type": "visit",
+        "description": "A visit that involves an attack on the target (Basic Attack or higher). Harmful visitors will be intercepted by Bodyguards or Trappers protecting the target and can be affected by other visit interactions.",
+        "notes": [
+            "Any role that directly attacks (Vigilante, Mafioso, etc.) is making a harmful visit. This means a Bodyguard on the target will counterattack them, and a Trapper on the target will trigger on them."
+        ]
+    },
+    "AstralVisit": {
+        "type": "visit",
+        "description": "A visit that does not involve physically going to the target's location. Astral visits are not seen by Lookouts or Trackers and do not trigger any roles or effects that rely on visiting.",
+        "notes": [
+            "Roles with Astral visits effectively stay home while their action occurs (e.g., Coven Leader's control or Guardian Angel's protection). Lookouts/Trackers will not detect these roles visiting.",
+            "Astral visits also cannot be stopped by roles like Bodyguard or Crusader since the visitor isn't 'there' to be attacked or intercepted."
+        ]
+    }
+}

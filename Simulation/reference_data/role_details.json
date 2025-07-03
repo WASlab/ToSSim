@@ -1,0 +1,1378 @@
+{"Bodyguard": {
+    "name": "Bodyguard",
+    "faction": "Town",
+    "alignment": "Town Protective",
+    "abilities": [
+        "Protect one player each night from attacks (counterattacks attackers).",
+        "Use a bulletproof vest on self once per game."
+    ],
+    "mechanics": {
+        "protection": "Can protect a target from one attack each night, counterattacking the attacker. Both Bodyguard and attacker suffer a Powerful Attack.",
+        "vest": "If targeting self, consumes vest, grants Basic Defense for the night. Vest does not counterattack.",
+        "multiple_attackers": "If multiple killers attack the protected target, Bodyguard kills one attacker and dies; others can still attack.",
+        "exceptions": [
+            "Cannot protect from Jailor executions, Veteran alerts, Ambusher, Medusa (Stone Gaze at home), Hex Master (Hex Bomb), Arsonists (Ignition), Jesters (Haunt).",
+            "Cannot save another Bodyguard who dies in a counterattack.",
+            "Some attacks (e.g., Pestilence or Juggernaut with Powerful Attack) may kill the Bodyguard and/or the protected target."
+        ]
+    },
+    "notifications": [
+        "If you die protecting someone, your cause of death will state that you \"died guarding someone.\"",
+        "An attacker killed by a Bodyguard will see that they \"were killed by a Bodyguard.\"",
+        "Certain roles (Necromancer's ghoul, Pirate duel, Serial Killer, etc.) have unique interactions with Bodyguard protection."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "Cannot be a Lover or VIP in related game modes.",
+        "If multiple Bodyguards protect the same target, each will counterattack a different attacker."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Doctor": {
+    "name": "Doctor",
+    "faction": "Town",
+    "alignment": "Town Protective",
+    "abilities": [
+        "Heal one person each night, preventing them from dying."
+    ],
+    "mechanics": {
+        "self_heal": "You may heal yourself once per game. Using a self-heal grants you Powerful Defense for that night.",
+        "heal_effect": "If your target is attacked at night, they will survive. You will know if your heal prevented a death.",
+        "limitations": [
+            "You cannot heal a revealed Mayor.",
+            "Healing does not protect against direct lynching or certain unstoppable attacks (e.g., Pestilence)."
+        ]
+    },
+    "notifications": [
+        "If your target was attacked and you healed them, you receive a notification that your target was attacked.",
+        "If you have no self-heals left and try to self-heal, you will be told you cannot."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": null,
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Crusader": {
+    "name": "Crusader",
+    "faction": "Town",
+    "alignment": "Town Protective",
+    "abilities": [
+        "Protect one person each night, attacking one of their visitors."
+    ],
+    "mechanics": {
+        "protection": "If your target is attacked at night, the Crusader will deal a Powerful Attack to one attacker, preventing the attack.",
+        "visit_attack": "If no one attacks your target, the Crusader will instead attack one random player who visited your target (except the Crusader themselves).",
+        "collateral_damage": "The Crusader's attack can kill benign visitors (e.g., a Transporter or Doctor) by mistake if they visit your protected target.",
+        "exceptions": [
+            "Does not counterattack unstoppable attacks (those would kill the Crusader before he can attack)."
+        ]
+    },
+    "notifications": [
+        "If you kill someone (attacker or visitor) while protecting, you will see that you defended your target.",
+        "Your target will not be notified of your protection unless your attack saves them from death (depending on game settings)."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "Your attack ignores Basic Defense (so it can kill roles with Basic Defense)."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Trapper": {
+    "name": "Trapper",
+    "faction": "Town",
+    "alignment": "Town Protective",
+    "abilities": [
+        "Set a trap at a player's house. The trap will inform you who visited and can attack one visitor when triggered."
+    ],
+    "mechanics": {
+        "setup": "It takes one night to place a trap on a target player. You can only maintain one trap at a time.",
+        "trigger": "On any later night, if someone visits the player with your trap, the trap will trigger: you will learn the roles of visitors, and if one of them is evil (or meets trap conditions), the trap deals a Powerful Attack to that visitor.",
+        "reusability": "Once triggered (either by killing a visitor or being triggered by any visitor), the trap is expended. You will have to build a new one on a subsequent night."
+    },
+    "notifications": [
+        "When your trap is triggered, you will see a list of roles that visited your trapped target.",
+        "If your trap kills someone, you will be notified of a successful kill."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "If you die, any trap you placed is destroyed."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Escort": {
+    "name": "Escort",
+    "faction": "Town",
+    "alignment": "Town Support",
+    "abilities": [
+        "Distract someone each night, preventing them from using their night ability."
+    ],
+    "mechanics": {
+        "role_block": "Your distraction causes the target to be role-blocked for the night, canceling their night action.",
+        "immunity": "You are immune to role-blocks from others (you cannot be role-blocked).",
+        "risks": [
+            "If you role-block a Serial Killer, they will attack and kill you instead of their intended target."
+        ]
+    },
+    "notifications": [
+        "If your target is role-block immune or cannot be role-blocked, you will see a message that your role-block failed.",
+        "If you role-block a Serial Killer, you will receive a death note from the Serial Killer (and you will die)."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": null,
+    "immunities": [
+        "RoleBlockImmunity"
+    ],
+    "visit_type": "Non-Harmful"
+},
+"Transporter": {
+    "name": "Transporter",
+    "faction": "Town",
+    "alignment": "Town Support",
+    "abilities": [
+        "Choose two people to transport with each other at night."
+    ],
+    "mechanics": {
+        "swap": "Your targets are swapped: any night actions targeting one will affect the other instead.",
+        "self_transport": "You can transport yourself with someone else as one of the two targets.",
+        "priority": "Transporter actions have a very high priority, meaning swaps occur before most other night actions take effect."
+    },
+    "notifications": [
+        "Players who are transported will receive a notification that they were transported to another location.",
+        "You are not directly informed of the outcomes beyond knowing your transport occurred."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "Transporting can redirect attacks, protections, and investigative results.",
+        "Transporting can also cause confusion among investigative results."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Mayor": {
+    "name": "Mayor",
+    "faction": "Town",
+    "alignment": "Town Support",
+    "abilities": [
+        "You may reveal yourself as the Mayor of the Town."
+    ],
+    "mechanics": {
+        "reveal": "During the day, you may reveal yourself; once revealed, your vote counts as 3 votes.",
+        "limitations": [
+            "After revealing, you cannot be healed by a Doctor or Guardian Angel.",
+            "You cannot whisper or be whispered to in some game modes after revealing (to prevent coordination abuse)."
+        ]
+    },
+    "notifications": [
+        "When you reveal, all players will see a system message announcing you as the Mayor.",
+        "Your vote count is automatically applied in trials once revealed."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "You should reveal when it can secure a critical vote, but be cautious as you become a high-priority target."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Medium": {
+    "name": "Medium",
+    "faction": "Town",
+    "alignment": "Town Support",
+    "abilities": [
+        "Communicate with the dead at night."
+    ],
+    "mechanics": {
+        "seance": "Each night while alive, you can chat with deceased players anonymously.",
+        "final_seance": "After you die, you may perform a one-time seance during the day to speak to the living and deliver a message."
+    },
+    "notifications": [
+        "If there are no dead players, you will receive no messages in seance.",
+        "Alive players will not know your identity when you speak to them via a seance after death; it will simply appear as a message from a Medium."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": null,
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Retributionist": {
+    "name": "Retributionist",
+    "faction": "Town",
+    "alignment": "Town Support",
+    "abilities": [
+        "Resurrect a dead Town member once per game."
+    ],
+    "mechanics": {
+        "revival": "At night, you may choose a dead Town-aligned player to resurrect. That player will be revived and return to the game at dawn.",
+        "limitations": [
+            "You can only resurrect one person in total (single use ability).",
+            "Cannot resurrect a role that was lynched by the Town in some game modes (depending on settings)."
+        ]
+    },
+    "notifications": [
+        "The resurrected player will be announced to all players in the morning as having been resurrected.",
+        "If your revival target is prevented (e.g., cleaned by Janitor, or role not allowed), you will be informed it failed."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "Using your ability makes you a target for evildoers, as reviving powerful Town roles can swing the game."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Sheriff": {
+    "name": "Sheriff",
+    "faction": "Town",
+    "alignment": "Town Investigative",
+    "abilities": [
+        "Check one person each night for suspicious activity."
+    ],
+    "mechanics": {
+        "investigation": "Your target will be investigated for guilt. If they are Mafia (except the Godfather) or a Serial Killer, you will see them as suspicious. Otherwise, you will see them as not suspicious (innocent).",
+        "detection_limits": [
+            "Detection-immune roles (e.g., Godfather, Serial Killer with certain perks) will appear innocent.",
+            "Framed or Hexed targets might appear suspicious depending on other roles' actions (Framer, Hex Master effects)."
+        ]
+    },
+    "notifications": [
+        "If you find someone suspicious, you get a message indicating \"Your target is suspicious!\"",
+        "If they are innocent (or detection-immune), you get a message that \"Your target is not suspicious.\""
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": null,
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Investigator": {
+    "name": "Investigator",
+    "faction": "Town",
+    "alignment": "Town Investigative",
+    "abilities": [
+        "Investigate one person each night for a clue to their role."
+    ],
+    "mechanics": {
+        "clues": "You receive an investigative result that could match one of several roles. Each result is a vague description or grouping of roles.",
+        "result_groups": [
+            "For example, you might see \"Your target could be a Bodyguard, Godfather, or Arsonist\" (depending on target's role).",
+            "The Coven Expansion uses fixed result groupings for roles; Framed or Hexed targets will show the Framer/Hex Master grouping."
+        ]
+    },
+    "notifications": [
+        "You will receive a message each night with your investigation result for the target.",
+        "If your target was framed or hexed, your result may correspond to the Framer/Hex Master instead of the target's real alignment."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": null,
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Lookout": {
+    "name": "Lookout",
+    "faction": "Town",
+    "alignment": "Town Investigative",
+    "abilities": [
+        "Watch one person at night to see who visits them."
+    ],
+    "mechanics": {
+        "surveillance": "At night, choose a target. You will learn the names of all players who visit that target during the same night.",
+        "limitations": [
+            "Does not differentiate between friend or foe visitors; you only get names.",
+            "If no one visits your target, you will receive a message that no one visited."
+        ]
+    },
+    "notifications": [
+        "If someone visits your target, you get a list of visitors: e.g., \"Your target was visited by X and Y.\"",
+        "If no one visits, you see \"No one visited your target.\""
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": null,
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Spy": {
+    "name": "Spy",
+    "faction": "Town",
+    "alignment": "Town Investigative",
+    "abilities": [
+        "Bug a player's house to see what happens to them, and intercept secret messages."
+    ],
+    "mechanics": {
+        "bug": "Each night, you may place a bug on a target. You will learn who visits your target (similar to a Lookout, but also possibly what actions happened to them like if they were attacked or healed depending on game version).",
+        "espionage": "You can overhear the Mafia and Coven chat at night (hearing whispers of their plans) and see whispers between players during the day."
+    },
+    "notifications": [
+        "You'll see lines in the night indicating what the Mafia/Coven said if applicable.",
+        "If you bug someone, you might see messages like \"Your target was visited by...\" or outcome of actions."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "In some versions, Spy only sees visits of Mafia/Coven and know who they visited, as well as the exact targets of the Mafia/Coven."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Tracker": {
+    "name": "Tracker",
+    "faction": "Town",
+    "alignment": "Town Investigative",
+    "abilities": [
+        "Track one person at night to see whom they visit."
+    ],
+    "mechanics": {
+        "tracking": "You follow your target and learn the name of the player (if any) that your target visits during the night.",
+        "no_visit": "If your target does not visit anyone, you will be notified that they stayed home."
+    },
+    "notifications": [
+        "If your target visits someone, you'll see: \"Your target visited [Player].\"",
+        "If they visit no one, you'll see: \"Your target did not visit anyone.\""
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": null,
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Psychic": {
+    "name": "Psychic",
+    "faction": "Town",
+    "alignment": "Town Investigative",
+    "abilities": [
+        "Receive visions each night that reveal information about other players."
+    ],
+    "mechanics": {
+        "visions": "On odd-numbered nights, you receive a vision of three players, at least one of whom is Evil. On even-numbered nights, you receive a vision of two players, at least one of whom is Good.",
+        "clarity": "The Psychic's visions do not repeat the same player in consecutive nights' visions (in original game rules). The information is broad but can narrow down suspects over time."
+    },
+    "notifications": [
+        "A sample odd-night message: \"You have a vision that PlayerA, PlayerB, or PlayerC is Evil.\"",
+        "A sample even-night message: \"You have a vision that either PlayerX or PlayerY is Good.\""
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "Your visions include players who may already be confirmed by other means, so share your information carefully."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Jailor": {
+    "name": "Jailor",
+    "faction": "Town",
+    "alignment": "Town Killing",
+    "abilities": [
+        "Choose one person during the day to jail at night, and optionally execute them."
+    ],
+    "mechanics": {
+        "jail": "The jailed target is removed from their home at night. They cannot perform their night action and are safe from outside attacks while jailed.",
+        "interrogation": "You can anonymously talk with your prisoner at night. The prisoner can only speak to you.",
+        "execution": "You have a limited number of executions (e.g., 3 in a standard game). If you choose to execute the prisoner, it will kill them with an Unstoppable Attack. Execution bypasses most defenses except a Guardian Angel's protection on that target.",
+        "limits": [
+            "If you execute a Town member, you will forfeit any remaining executions (as punishment)."
+        ]
+    },
+    "notifications": [
+        "If you execute your prisoner, all players will see that the prisoner was executed by the Jailor in the morning.",
+        "If you run out of executions, you will be notified that you cannot execute further."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "Unique Role: only one Jailor can be in a game.",
+        "Your executed prisoners' roles and last wills are revealed the next day as normal."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Vigilante": {
+    "name": "Vigilante",
+    "faction": "Town",
+    "alignment": "Town Killing",
+    "abilities": [
+        "Shoot someone at night (3 bullet supply)."
+    ],
+    "mechanics": {
+        "shots": "You have 3 bullets. Each night you may choose to shoot your target (Basic Attack). If you choose to not shoot, you do not use up a bullet.",
+        "penalty": "If you kill a Town-aligned player, you will commit suicide the following night due to guilt."
+    },
+    "notifications": [
+        "If you shoot someone, you will be notified if they died or if they were immune (\"Your target's defense was too strong\").",
+        "If you kill a Town member, you get a message of overwhelming guilt and will die the next night."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "You cannot shoot on the first night (N1) in classic rules.",
+        "If you run out of bullets, you cannot perform any more attacks."
+    ],
+    "immunities": null,
+    "visit_type": "Harmful"
+},
+"Veteran": {
+    "name": "Veteran",
+    "faction": "Town",
+    "alignment": "Town Killing",
+    "abilities": [
+        "Go on alert up to 3 times, killing anyone who visits you on those nights."
+    ],
+    "mechanics": {
+        "alert": "When you go on alert (limited uses, usually 3), you gain Powerful Defense for that night and will perform an Unstoppable Attack on each person who visits you.",
+        "cooldown": "You cannot cancel an alert once chosen that night, and each alert is consumed whether someone visits you or not."
+    },
+    "notifications": [
+        "If someone visits you while you are on alert, they will die and you will see who you killed in the morning.",
+        "If no one visits you on an alert night, you receive a message that nobody visited."
+    ],
+    "win_condition": "Lynch every criminal and evildoer.",
+    "wins_with": [
+        "Town",
+        "Survivor"
+    ],
+    "notes": [
+        "Unique Role: only one Veteran in a game.",
+        "You ignore role-blocks on nights you alert (role-blockers will still die)."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Disguiser": {
+    "name": "Disguiser",
+    "faction": "Mafia",
+    "alignment": "Mafia Deception",
+    "abilities": [
+        "Choose a target to disguise yourself as at night."
+    ],
+    "mechanics": {
+        "disguise": "If your target dies that night, their role will appear as your role instead of their true role to other players. Essentially, you 'disguise' the dead player as you.",
+        "one_use": "Disguiser may have a limited number of disguises (depending on mode, e.g., 3 times). Each disguise is consumed upon a successful use."
+    },
+    "notifications": [
+        "If your disguise succeeds (your target dies that night), the next day their role reveal will be altered to your role.",
+        "You will know if your disguise was successful."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Disguising does not fool investigative results at night; it only alters the role reveal on death.",
+        "If you disguise someone who is lynched or otherwise killed outside of your timing, it has no effect."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Forger": {
+    "name": "Forger",
+    "faction": "Mafia",
+    "alignment": "Mafia Deception",
+    "abilities": [
+        "Forge a player's Last Will at night."
+    ],
+    "mechanics": {
+        "forgery": "You have a limited number of forgeries (usually 2 or 3). If your target dies that night, you replace their Last Will with one of your choosing.",
+        "fake_will": "You prepare a fake will to plant on the target. The fake will is what players will see instead of the target's real will."
+    },
+    "notifications": [
+        "If your target dies, players will see your forged will during the day as if it was written by the target.",
+        "You will be notified if your forgery was used (because the target died)."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Forging a will does not change the target's role that is revealed, only their will.",
+        "If the target does not have a will or you don't provide one, a forged blank will might appear."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Framer": {
+    "name": "Framer",
+    "faction": "Mafia",
+    "alignment": "Mafia Deception",
+    "abilities": [
+        "Frame someone each night to make them appear suspicious."
+    ],
+    "mechanics": {
+        "frame": "Your target will appear suspicious to the Sheriff for that night and will show an investigator a fake role (as if they were a Framer/Hex Master).",
+        "temporary": "Framing lasts only for the night it is applied. If no investigative checks the target that night, the frame has no effect."
+    },
+    "notifications": [
+        "You do not get feedback on whether your frame affected an investigation.",
+        "If your framed target is checked by Sheriff, they will appear suspicious (though you are not directly informed)."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "If multiple framers frame the same target, it has no additional effect beyond one frame.",
+        "Framed targets might also trigger Trap or Lookout differences in some game versions (rare interactions)."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Hypnotist": {
+    "name": "Hypnotist",
+    "faction": "Mafia",
+    "alignment": "Mafia Deception",
+    "abilities": [
+        "Visit one person each night to give them a false message."
+    ],
+    "mechanics": {
+        "hypnotize": "You select a target and a message to deliver. The target will receive a system message corresponding to something that did NOT actually happen, confusing them.",
+        "messages": [
+            "Possible fake messages include: \"You were healed last night!\", \"Someone tried to role block you but failed!\", \"You were transported to another location!\", etc."
+        ]
+    },
+    "notifications": [
+        "Your target will see the fake notification you chose at night or in the morning, but you will not be informed of their reaction.",
+        "If your action is successful, you know you visited them but not the effect beyond that."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Your fake messages cannot contradict actual events that the target experiences (if they were actually attacked and saved, they might get two messages, which can raise suspicion)."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Janitor": {
+    "name": "Janitor",
+    "faction": "Mafia",
+    "alignment": "Mafia Deception",
+    "abilities": [
+        "Clean a player at night, removing their role and will on death."
+    ],
+    "mechanics": {
+        "clean": "You have a limited number of cleans (usually 3). If your target dies that night (by any cause), their role and Last Will will not be revealed to the Town the next day.",
+        "knowledge": "As the Janitor, you will privately learn the cleaned target's true role and see their Last Will (if they had one) even though the Town does not."
+    },
+    "notifications": [
+        "If you successfully clean someone (they die that night), the town will see \"Someone died, but their role and last will were cleaned!\" and you get a message revealing their role/will.",
+        "If your target does not die or you run out of cleanings, nothing happens."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Be cautious cleaning a Mafia member; if Mafia dies and you clean them, Town might suspect a Janitor is in play."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Blackmailer": {
+    "name": "Blackmailer",
+    "faction": "Mafia",
+    "alignment": "Mafia Support",
+    "abilities": [
+        "Blackmail one person each night, preventing them from speaking the next day."
+    ],
+    "mechanics": {
+        "silence": "Your target will be unable to talk publicly or whisper during the next day. They can still vote and use night abilities the following night, but cannot communicate.",
+        "lasting_effect": "The blackmail lasts only for that next day; after that, they can speak normally unless blackmailed again."
+    },
+    "notifications": [
+        "Your target will get a notification at night: \"Someone threatened you! You are blackmailed and cannot speak tomorrow.\"",
+        "You do not receive explicit feedback except knowing you visited them."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "A blackmailed player cannot reveal vital information they know, making this a powerful control tool. They may still communicate via last will."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Consigliere": {
+    "name": "Consigliere",
+    "faction": "Mafia",
+    "alignment": "Mafia Support",
+    "abilities": [
+        "Investigate one person each night to discover their exact role."
+    ],
+    "mechanics": {
+        "investigate": "Your target's exact role will be revealed to you by morning. You effectively learn the same information as a Sheriff/Investigator combined in one - the precise role.",
+        "limit": "You cannot investigate the same person twice in a row (in some game modes, to encourage spreading out checks)."
+    },
+    "notifications": [
+        "You will receive a message like: \"Your target is a [RoleName].\" giving you their exact role.",
+        "If you are role-blocked or otherwise prevented, you will receive no information."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Typically, only one Consigliere can appear (since it's a unique investigative role for Mafia, but not unique in the official sense)."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Consort": {
+    "name": "Consort",
+    "faction": "Mafia",
+    "alignment": "Mafia Support",
+    "abilities": [
+        "Distract someone each night, preventing them from using their night ability."
+    ],
+    "mechanics": {
+        "role_block": "Functions identically to the Town Escort's ability: the target is role-blocked for the night.",
+        "difference": "Unlike the Escort, the Consort is not immune to role-blocks inherently (unless specified by game mode)."
+    },
+    "notifications": [
+        "If a Consort role-blocks a target who is role-block immune, the Consort would be informed their target could not be role-blocked (if game provides that feedback).",
+        "If the Consort role-blocks a Serial Killer, typically the SK will kill the Consort (in classic mode, though in some modes the SK might not kill mafia roleblockers - in original game SK kills any roleblocker)."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Often claiming Escort is a cover for a Consort if caught visiting by Lookout."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Bootlegger": {
+    "name": "Bootlegger",
+    "faction": "Mafia",
+    "alignment": "Mafia Support",
+    "abilities": [
+        "Spike someone's drink each night, preventing them from acting (role-block)."
+    ],
+    "mechanics": {
+        "role_block": "Your target is role-blocked for the night, similar to a Consort/Escort effect, unable to perform their action.",
+        "immunity": "You are naturally immune to being role-blocked by others (role-block immune)."
+    },
+    "notifications": [
+        "If your target is successfully role-blocked, you don't get explicit feedback (only their action doesn't occur).",
+        "If your target is role-block immune (very rare for town roles), you'll get a message that your attempt failed."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Bootlegger is essentially a variant name for Consort introduced in Town Traitor modes, with the added twist of themselves being immune to role blocks."
+    ],
+    "immunities": [
+        "RoleBlockImmunity"
+    ],
+    "visit_type": "Non-Harmful"
+},
+"Godfather": {
+    "name": "Godfather",
+    "faction": "Mafia",
+    "alignment": "Mafia Killing",
+    "abilities": [
+        "Order a Mafia member to kill a target at night (or kill by own hand if alone)."
+    ],
+    "mechanics": {
+        "night_immune": "You have Basic Defense at night (night immunity to Basic attacks). Only Powerful or Unstoppable attacks can kill you at night.",
+        "kill_order": "If a Mafioso is present, the Mafioso will carry out the kill. If no Mafioso is alive, the Godfather will personally perform the kill (Basic Attack).",
+        "appear_innocent": "You appear innocent to Sheriffs (Detection Immunity)."
+    },
+    "notifications": [
+        "If you send a Mafioso to kill and they succeed or fail, you'll be aware of the outcome indirectly through Mafia chat but not via a system message.",
+        "If you personally attack (no Mafioso), you will see if your target died or not (e.g., if they had defense, you'll see it was too strong)."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Unique Role: only one Godfather can exist in the Mafia.",
+        "If the Godfather dies and a Mafioso remains, the Mafioso can continue killing (becoming effectively the killer without promotion in original game)."
+    ],
+    "immunities": [
+        "BasicDefense",
+        "DetectionImmunity"
+    ],
+    "visit_type": "Harmful"
+},
+"Mafioso": {
+    "name": "Mafioso",
+    "faction": "Mafia",
+    "alignment": "Mafia Killing",
+    "abilities": [
+        "Carry out the Mafia's kills on orders from the Godfather, or on your own if no Godfather."
+    ],
+    "mechanics": {
+        "order": "If a Godfather is alive, you will attack the target the Godfather orders. If no Godfather, you choose your own target to kill at night.",
+        "promotion": "If the Godfather dies, the Mafioso may become the next Godfather (in classic game)."
+    },
+    "notifications": [
+        "As the Mafioso, you will see the result of your attack (whether your target died or their defense was too strong, etc.).",
+        "If you attempt to kill a target but are role-blocked or otherwise prevented, you may see no kill occur."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "There can be multiple Mafiosi if promoted or in some modes, but generally one active killer at a time in Mafia.",
+        "Mafioso has no special immunity or detection immunity by default."
+    ],
+    "immunities": null,
+    "visit_type": "Harmful"
+},
+"Ambusher": {
+    "name": "Ambusher",
+    "faction": "Mafia",
+    "alignment": "Mafia Killing",
+    "abilities": [
+        "Choose a target's house to lay an ambush, killing one visitor who comes there."
+    ],
+    "mechanics": {
+        "ambush": "At night, select a player. If anyone visits that player (excluding yourself), you will attack and kill one of those visitors (Powerful Attack).",
+        "one_per_night": "You can only kill one person per night. If multiple people visit your target, one random visitor (who is not a fellow Mafia) will be killed."
+    },
+    "notifications": [
+        "If you successfully ambush someone, that victim will see a message before dying, e.g., \"You were ambushed by the Mafia!\"",
+        "You will be notified of a successful ambush and who you killed."
+    ],
+    "win_condition": "Kill anyone who will not submit to the Mafia.",
+    "wins_with": [
+        "Mafia"
+    ],
+    "notes": [
+        "Ambusher becomes a Mafioso if there is no other Mafioso or Godfather alive (similar to how other Mafia Killing roles default)."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Coven Leader": {
+    "name": "Coven Leader",
+    "faction": "Coven",
+    "alignment": "Coven Evil",
+    "abilities": [
+        "Control someone each night, forcing them to use their ability on a target of your choice."
+    ],
+    "mechanics": {
+        "control": "At night, you select a target and another player. Your target is forced to use their night ability on the other player (if possible). You learn your target's role.",
+        "necronomicon": "If you obtain the Necronomicon (typically after a certain number of nights or if all Coven members dead except one), your control target is also dealt a Basic Attack and you gain Basic Defense on the nights you have Necronomicon."
+    },
+    "notifications": [
+        "Your control victim will get a message that they felt a terrible force dominating them (and they know they were controlled).",
+        "You will get a message revealing the role of the person you controlled."
+    ],
+    "win_condition": "Kill all who oppose the Coven.",
+    "wins_with": [
+        "Coven",
+        "Witch"
+    ],
+    "notes": [
+        "Unique Role: only one Coven Leader in a game.",
+        "Control can be thwarted by role having Control Immunity or being jailed."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Potion Master": {
+    "name": "Potion Master",
+    "faction": "Coven",
+    "alignment": "Coven Evil",
+    "abilities": [
+        "Use one of three potions on a player each night (Attack, Heal, or Reveal)."
+    ],
+    "mechanics": {
+        "potions": "You have an Attack potion (deals a Basic Attack), a Healing potion (heals target), and an Revealing potion (reveals target's role to you, similar to Investigator/Consigliere). Each potion can only be used once every 3 nights (cooldown).",
+        "necronomicon": "With the Necronomicon, your potions no longer have a cooldown, allowing you to use any potion on consecutive nights."
+    },
+    "notifications": [
+        "If you attack someone with the attack potion, it will appear as a regular Coven attack in the night results.",
+        "If you heal someone with a potion, they will be saved from death and may see they were healed (similar to being healed by a Doctor).",
+        "If you use the reveal potion, you will receive the target's role in a night message."
+    ],
+    "win_condition": "Kill all who oppose the Coven.",
+    "wins_with": [
+        "Coven",
+        "Witch"
+    ],
+    "notes": [
+        "Unique Role: only one Potion Master in a game.",
+        "Use potions strategically; e.g., save attack for when you suspect a powerful target."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Hex Master": {
+    "name": "Hex Master",
+    "faction": "Coven",
+    "alignment": "Coven Evil",
+    "abilities": [
+        "Hex a player each night. If all living non-Coven players are hexed, all hexed targets will die."
+    ],
+    "mechanics": {
+        "hex": "Each night, place a Hex on a target. Hexed players do not know they are hexed.",
+        "hex_bomb": "If every non-Coven player alive has been hexed at least once, a 'Hex Bomb' triggers and all hexed players die at once (Unstoppable Attack).",
+        "necronomicon": "With the Necronomicon, your visits become Astral (undetectable) and your hexing also deals a Basic Attack to the target that night in addition to placing a hex."
+    },
+    "notifications": [
+        "You will not see immediate results from hexing someone, only the eventual bomb if it triggers.",
+        "When the Hex Bomb triggers, you will see a message that your hexes have killed all targets."
+    ],
+    "win_condition": "Kill all who oppose the Coven.",
+    "wins_with": [
+        "Coven",
+        "Witch"
+    ],
+    "notes": [
+        "Unique Role: only one Hex Master in a game.",
+        "Even if a hexed player dies by other means, they count as hexed for the bomb condition."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Necromancer": {
+    "name": "Necromancer",
+    "faction": "Coven",
+    "alignment": "Coven Evil",
+    "abilities": [
+        "Reanimate a dead player to use their ability on a target of your choice."
+    ],
+    "mechanics": {
+        "reanimate": "At night, you pick a dead player and a target. The dead player is temporarily resurrected as a zombie (Ghoul) and uses their ability on your chosen target on your behalf.",
+        "single_use": "Each corpse can only be used once. If there are no available dead bodies with usable abilities, you cannot act.",
+        "necronomicon": "With the Necronomicon, you can instead summon a Ghoul to perform a Basic Attack on your target by targeting yourself (not needing a specific corpse)."
+    },
+    "notifications": [
+        "If you reanimate a dead player to attack or do something, that effect happens and is usually attributed to a \"Ghoul\" or the role itself, but the identity isn't directly revealed.",
+        "You will get a message telling you the outcome (if any) of the reanimated ability, especially for attacks."
+    ],
+    "win_condition": "Kill all who oppose the Coven.",
+    "wins_with": [
+        "Coven",
+        "Witch"
+    ],
+    "notes": [
+        "Unique Role: only one Necromancer in a game.",
+        "Reanimated bodies cannot be role-blocked or controlled; they act immediately and then return to being dead."
+    ],
+    "immunities": null,
+    "visit_type": "Non-Harmful"
+},
+"Poisoner": {
+    "name": "Poisoner",
+    "faction": "Coven",
+    "alignment": "Coven Evil",
+    "abilities": [
+        "Poison a player, causing them to die the following night unless cured."
+    ],
+    "mechanics": {
+        "poison": "Your target is poisoned and will die one day after being poisoned (at the end of the next night) unless they are healed by a role like Doctor or Guardian Angel before then.",
+        "necronomicon": "With the Necronomicon, your poison becomes incurable by healing (poisoned players cannot be saved by a Doctor or any healing once you have the book)."
+    },
+    "notifications": [
+        "When you poison someone, they get a subtle notification (often they are told they feel ill after the night).",
+        "If a poisoned player is healed the next night (and you don't have Necronomicon), they will survive and be cured."
+    ],
+    "win_condition": "Kill all who oppose the Coven.",
+    "wins_with": [
+        "Coven",
+        "Witch"
+    ],
+    "notes": [
+        "Unique Role: only one Poisoner in a game.",
+        "Poison can bypass some defenses by delaying the kill (but not Invincible defense)."
+    ],
+    "immunities": null,
+    "visit_type": "Harmful"
+},
+"Medusa": {
+    "name": "Medusa",
+    "faction": "Coven",
+    "alignment": "Coven Evil",
+    "abilities": [
+        "Turn players who visit you into stone."
+    ],
+    "mechanics": {
+        "stone_gaze": "On nights you choose to use your ability (you have limited charges, usually 3), any player who visits you that night will be turned to stone (killed).",
+        "necronomicon": "With the Necronomicon, you can target another player to visit; you will stone gaze that target (turning them to stone) instead of only working on visitors. This makes your attack proactive."
+    },
+    "notifications": [
+        "If someone visits you while you have activated your Stone Gaze, they will die and see a flavor message about turning to stone.",
+        "If you visit someone with the Necronomicon, they will die and appear petrified to others."
+    ],
+    "win_condition": "Kill all who oppose the Coven.",
+    "wins_with": [
+        "Coven",
+        "Witch"
+    ],
+    "notes": [
+        "Unique Role: only one Medusa in a game.",
+        "Be careful using Stone Gaze on consecutive nights; if no one visits you, you waste a charge."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Survivor": {
+    "name": "Survivor",
+    "faction": "Neutral",
+    "alignment": "Neutral Benign",
+    "abilities": [
+        "Put on a bulletproof vest at night (4 vests available) to protect yourself."
+    ],
+    "mechanics": {
+        "vests": "You have 4 bulletproof vests. On any night, you may choose to use a vest, granting yourself Basic Defense for that night (protecting against one Basic Attack).",
+        "objective": "You have no attack or investigative abilities; your only goal is to survive until the end of the game."
+    },
+    "notifications": [
+        "If you use a vest, you will get a message that you don the vest and how many you have left.",
+        "If you are attacked while vested, you survive and usually see a message that you were attacked but your vest saved you."
+    ],
+    "win_condition": "Survive to see the town lose or the game end (you win with any side as long as you live).",
+    "wins_with": [
+        "Town",
+        "Mafia",
+        "Coven",
+        "Witches",
+        "Vampires",
+        "Serial Killer",
+        "Arsonist",
+        "Werewolf",
+        "Juggernaut",
+        "Plaguebearer/Pestilence",
+        "Pirate"
+    ],
+    "notes": [
+        "If all evildoers are eliminated and only Town remain (and you), you still win as long as you survived (Town victory includes Survivor typically).",
+        "Be careful claiming Survivor, as evils may attack you anyway or town may lynch you out of suspicion."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Amnesiac": {
+    "name": "Amnesiac",
+    "faction": "Neutral",
+    "alignment": "Neutral Benign",
+    "abilities": [
+        "Remember who you were by choosing a role from the graveyard."
+    ],
+    "mechanics": {
+        "remember": "At night, if there are dead roles in the graveyard, you may choose one of them to \"remember\". You will then change into that role on the next day, effectively becoming that role (with its abilities and win condition).",
+        "limitation": "You can only successfully remember once. If you do, you adopt the alignment and objectives of the new role going forward."
+    },
+    "notifications": [
+        "Upon remembering, all players see a message like \"An Amnesiac has remembered they were [Role]!\" revealing your new role.",
+        "If you attempt to remember a role but are role-blocked or otherwise prevented, it fails and you can try again another night."
+    ],
+    "win_condition": "Initially, you have no win condition until you remember a role. After remembering, you adopt that role's win condition.",
+    "wins_with": null,
+    "notes": [
+        "If you remember a role that had a unique condition (like a unique role when one already exists alive), it might not be allowed depending on the game (some games restrict remembering unique roles if one is still alive)."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Guardian Angel": {
+    "name": "Guardian Angel",
+    "faction": "Neutral",
+    "alignment": "Neutral Benign",
+    "abilities": [
+        "Protect your target (one chosen player) from harm. If they die, you become a Survivor."
+    ],
+    "mechanics": {
+        "protection": "You are assigned a target at the start of the game (a random non-Guardian Angel player). You can choose nights to protect them from attacks (usually two protections available). When you protect them, they cannot be killed by any attack that night (you grant Powerful Defense).",
+        "conversion": "If your target dies by any means (and you failed to save them or have no saves left), you will become a Survivor for the rest of the game.",
+        "immunity": "You have Role Block immunity and Control immunity to ensure you can guard effectively. Your protections can even stop a Jailor execution."
+    },
+    "notifications": [
+        "If your protection saves your target, your target will know someone protected them (and you will know you used a protection).",
+        "If your target dies, you will see a message that your reason for living is gone and you have become a Survivor."
+    ],
+    "win_condition": "Keep your target alive until the end of the game. (If target dies and you become Survivor, then just survive.)",
+    "wins_with": [
+        "Survivor",
+        "Town",
+        "Mafia",
+        "Coven",
+        "Witch",
+        "Vampires",
+        "Serial Killer",
+        "Arsonist",
+        "Werewolf",
+        "Juggernaut",
+        "Plaguebearer/Pestilence",
+        "Pirate"
+    ],
+    "notes": [
+        "Unique Role: only one Guardian Angel can spawn, and their target is unique.",
+        "Guardian Angel's protection can stop an Unstoppable attack only in the case of Jailor's execution (special exception). Otherwise Unstoppable attacks (like Werewolf, Pestilence) will still kill through GA protection."
+    ],
+    "immunities": [
+        "RoleBlockImmunity",
+        "ControlImmunity"
+    ],
+    "visit_type": "Astral"
+},
+"Witch": {
+    "name": "Witch",
+    "faction": "Neutral",
+    "alignment": "Neutral Evil",
+    "abilities": [
+        "Control someone each night, redirecting their action to a target of your choice."
+    ],
+    "mechanics": {
+        "control": "Similar to the Coven Leader without the book: choose a target and another player. The target will use their ability on the other player (if possible). You learn your target's role.",
+        "survival": "You do not side with Coven, you simply want to survive and see the Town lose. You typically win if evils win (Mafia or Coven or others)."
+    },
+    "notifications": [
+        "Your controlled victim gets a message that they were controlled by a Witch.",
+        "You get a message revealing your target's role."
+    ],
+    "win_condition": "Survive to see the Town lose the game.",
+    "wins_with": [
+        "Mafia",
+        "Coven",
+        "Serial Killer",
+        "Arsonist",
+        "Werewolf",
+        "Juggernaut",
+        "Vampires",
+        "Pirate",
+        "Plaguebearer/Pestilence"
+    ],
+    "notes": [
+        "There can only be one Witch in a game (unique Neutral Evil role, separate from Coven Leader).",
+        "If all Town are dead and you are alive, you win (even if say Mafia and SK remain, as long as Town lost)."
+    ],
+    "immunities": null,
+    "visit_type": "Astral"
+},
+"Executioner": {
+    "name": "Executioner",
+    "faction": "Neutral",
+    "alignment": "Neutral Evil",
+    "abilities": [
+        "Get your target (a Town member) lynched by any means necessary."
+    ],
+    "mechanics": {
+        "target": "At game start, you are assigned a random Town target (who is not a unique role like Jailor usually). You win if that specific player is lynched by the town.",
+        "jester_conversion": "If your target dies at night (not lynched), you will become a Jester for the rest of the game, since your main goal can no longer be achieved in the intended way."
+    },
+    "notifications": [
+        "You are informed at game start who your target is (their name).",
+        "If your target is killed at night, you will get a message that you have become a Jester."
+    ],
+    "win_condition": "Get your target lynched by the Town.",
+    "wins_with": [
+        "Neutral Evil"
+    ],
+    "notes": [
+        "Executioners are immune to detection (Sheriff will see them as innocent).",
+        "You have Basic Defense at night (night immune to Basic Attacks) to help you survive until you get your target lynched."
+    ],
+    "immunities": [
+        "BasicDefense",
+        "DetectionImmunity"
+    ],
+    "visit_type": "Astral"
+},
+"Jester": {
+    "name": "Jester",
+    "faction": "Neutral",
+    "alignment": "Neutral Evil",
+    "abilities": [
+        "Trick the Town into lynching you, then take revenge from beyond the grave."
+    ],
+    "mechanics": {
+        "lynch": "Your goal is to be executed by a lynch vote during the day. If you are lynched, you win (even if the game continues).",
+        "haunt": "After being lynched, you can choose one of the guilty voters who voted against you to haunt and kill them the following night (Unstoppable Attack)."
+    },
+    "notifications": [
+        "If you successfully get lynched, all players see a message indicating a Jester’s haunting will occur.",
+        "The night after you are lynched, your chosen victim will see a message and then die by haunting (if you choose one)."
+    ],
+    "win_condition": "Get yourself lynched by the Town.",
+    "wins_with": [
+        "Neutral Evil"
+    ],
+    "notes": [
+        "You are immune to detection (Sheriff sees you as innocent) to help avoid being caught too easily.",
+        "Be careful not to get killed at night; you only win if lynched, not if killed at night."
+    ],
+    "immunities": [
+        "DetectionImmunity"
+    ],
+    "visit_type": "Astral"
+},
+"Serial Killer": {
+    "name": "Serial Killer",
+    "faction": "Neutral",
+    "alignment": "Neutral Killing",
+    "abilities": [
+        "Kill someone each night."
+    ],
+    "mechanics": {
+        "kill": "You may choose one target to attack each night with a Basic attack (in some modes, you can choose between an aggressive mode and a cautious mode regarding role-blocks).",
+        "role_block": "If you are role-blocked at night (for example by an Escort/Consort), you will automatically attack and kill the role-blocker instead of your original target.",
+        "detection": "You appear innocent to a Sheriff (Detection Immunity) so as not to be easily found."
+    },
+    "notifications": [
+        "If you are role-blocked and you kill the role-blocker, you will see that you attacked someone who visited you (and your original target will survive).",
+        "If your target had a defense higher than Basic, you will see that your attack failed."
+    ],
+    "win_condition": "Kill everyone who would oppose you (be the last one standing or tie with another NK).",
+    "wins_with": [
+        "Witch"
+    ],
+    "notes": [
+        "You have no innate defense in classic (can be killed at night by attacks unless you choose a specific mode like 'cautious' in some game versions which grants Basic Defense but disables killing roleblockers)."
+    ],
+    "immunities": [
+        "DetectionImmunity"
+    ],
+    "visit_type": "Harmful"
+},
+"Arsonist": {
+    "name": "Arsonist",
+    "faction": "Neutral",
+    "alignment": "Neutral Killing",
+    "abilities": [
+        "Douse players in gasoline at night and ignite all doused players on a later night."
+    ],
+    "mechanics": {
+        "douse": "On nights you choose to douse, your target becomes Doused in gasoline (they are not informed). Doused players remain doused indefinitely.",
+        "ignite": "Instead of dousing, you can ignite on a night. Igniting will kill all currently doused players with an Unstoppable Attack, burning them to death.",
+        "self_cleanup": "You can choose to douse yourself (or using a night to clean yourself) to remove gasoline if another Arsonist doused you, etc. (This is more relevant if multiple Arsonists, usually not applicable in classic.)"
+    },
+    "notifications": [
+        "Doused players receive a subtle message like \"You smell gas\" the night they are doused (so observant players might realize it).",
+        "When you ignite, all doused players will die that night and will have a unique death description. You will be notified how many people you ignited."
+    ],
+    "win_condition": "Kill everyone who would oppose you (be last alive or tie with other NK).",
+    "wins_with": [
+        "Witch"
+    ],
+    "notes": [
+        "You have Basic Defense at night (night immune to Basic attacks).",
+        "You are partially role-block immune: being role-blocked does not remove your already doused targets or stop the passives (but it will stop you from dousing or igniting that night)."
+    ],
+    "immunities": [
+        "BasicDefense"
+    ],
+    "visit_type": "Astral"
+},
+"Werewolf": {
+    "name": "Werewolf",
+    "faction": "Neutral",
+    "alignment": "Neutral Killing",
+    "abilities": [
+        "Transform into a Werewolf on full moon nights to savage your target and all visitors."
+    ],
+    "mechanics": {
+        "full_moon": "You only can attack on Full Moon nights (typically every other night, starting Night 2). On those nights, if you choose a target, you will rampage at their location.",
+        "rampage": "Your attack on a target is a Powerful Attack that also kills any other players who visit that target on the same night, as well as anyone who visits you while you are rampaging (because you leave home and they find you gone?).",
+        "no_attack": "On non-Full Moon nights, you cannot attack. If you try, nothing will happen."
+    },
+    "notifications": [
+        "When you transform, you will be notified that you have turned into a Werewolf and savaged your victims (listing who died by your hand).",
+        "If you attempt to attack on a non-Full Moon night, you'll get a message that you were too calm or that you can only transform during a full moon."
+    ],
+    "win_condition": "Kill everyone who would oppose you (last one standing or tie with other NK).",
+    "wins_with": [
+        "Witch"
+    ],
+    "notes": [
+        "You have Basic Defense on Full Moon nights while transformed (making you night immune on those nights).",
+        "If you are role-blocked on a Full Moon night, you will attack the role-blocker (similar to SK, because you go berserk when stopped)."
+    ],
+    "immunities": [
+        "BasicDefense"
+    ],
+    "visit_type": "Harmful"
+},
+"Juggernaut": {
+    "name": "Juggernaut",
+    "faction": "Neutral",
+    "alignment": "Neutral Killing",
+    "abilities": [
+        "Gain power each time you kill. You can attack at night, becoming stronger over time."
+    ],
+    "mechanics": {
+        "growth": "You start with a Basic attack. Each time you successfully kill someone, your power grows, unlocking new abilities or strength:",
+        "milestones": [
+            "After 1 kill: Your attack becomes Powerful (can kill through Basic Defense).",
+            "After 2 kills: You gain Basic Defense (night immunity to Basic attacks).",
+            "After 3 kills: Your attack becomes Unstoppable (can kill through Powerful Defense).",
+            "After 4 kills: You rampage when attacking (killing your target and anyone who visits them, similar to a Werewolf)."
+        ]
+    },
+    "notifications": [
+        "You receive a notification each time you grow stronger, indicating your new ability (e.g., \"Your power grows... your attacks are now Powerful!\").",
+        "If you attempt to attack and are stopped (role-block or otherwise) and fail to kill, you do not gain a kill count."
+    ],
+    "win_condition": "Kill everyone who would oppose you (be last one standing or tie with other NK).",
+    "wins_with": [
+        "Witch"
+    ],
+    "notes": [
+        "Juggernaut only appears in Coven expansion (or certain modes) as a unique Neutral Killing.",
+        "You have no attack on Night 1 (some versions) and only begin killing from Night 2 onward."
+    ],
+    "immunities": null,
+    "visit_type": "Harmful"
+},
+"Plaguebearer": {
+    "name": "Plaguebearer",
+    "faction": "Neutral",
+    "alignment": "Neutral Chaos",
+    "abilities": [
+        "Infect a player with the plague each night. Once everyone is infected, become Pestilence."
+    ],
+    "mechanics": {
+        "infect": "Each night, choose a player to infect with the plague. That infection spreads passively: if an infected player visits someone or is visited, those players also become infected (the plague spreads between any interaction).",
+        "pestilence": "When all living players are infected (except you), you will transform into Pestilence, Horseman of the Apocalypse, the following night."
+    },
+    "notifications": [
+        "You do not get direct feedback on whom the infection spreads to, just knowledge of whom you infected directly.",
+        "When you become Pestilence, everyone will see a message that Pestilence has arisen."
+    ],
+    "win_condition": "Spread the plague and become Pestilence. As Pestilence, kill everyone who opposes you (be last one standing).",
+    "wins_with": [
+        "Witch"
+    ],
+    "notes": [
+        "You are immune to role-block and control while Plaguebearer (to ensure you can spread plague). Once Pestilence, you have full immunities and unstoppable attack."
+    ],
+    "immunities": [
+        "RoleBlockImmunity",
+        "ControlImmunity"
+    ],
+    "visit_type": "Non-Harmful"
+},
+"Pestilence": {
+    "name": "Pestilence",
+    "faction": "Neutral",
+    "alignment": "Neutral Chaos",
+    "abilities": [
+        "An unstoppable force of death. Attack every night and cannot be killed."
+    ],
+    "mechanics": {
+        "attack": "You attack every night with an Unstoppable Attack. When you select a target, you rampage at their house (killing the target and anyone who visits them, similar to Werewolf but every night).",
+        "defense": "You have Invincible Defense, meaning you cannot be killed by any night attack.",
+        "plaguebearer": "You become Pestilence only after starting as a Plaguebearer and infecting everyone."
+    },
+    "notifications": [
+        "When you attack as Pestilence, all victims see messages of being trampled by the Horseman Pestilence.",
+        "If someone tries to attack you at night, they will see that you were too powerful to kill (and they likely die if it was a direct confrontation)."
+    ],
+    "win_condition": "Kill everyone who would oppose you (be the last alive).",
+    "wins_with": [
+        "Witch"
+    ],
+    "notes": [
+        "Unique Condition: Pestilence is usually unstoppable by any means except lynching.",
+        "Even a Bodyguard or Veteran cannot stop Pestilence due to Invincible defense."
+    ],
+    "immunities": [
+        "InvincibleDefense",
+        "RoleBlockImmunity",
+        "ControlImmunity"
+    ],
+    "visit_type": "Harmful"
+},
+"Pirate": {
+    "name": "Pirate",
+    "faction": "Neutral",
+    "alignment": "Neutral Chaos",
+    "abilities": [
+        "Choose a player to duel at night. If they don't stop you, you may kill them in a duel."
+    ],
+    "mechanics": {
+        "duel": "At night, pick a target to duel. The pirate and the target play a mini-game of choosing attack and defense stances. If the pirate's choice wins against the target's choice, the pirate kills the target (Basic attack). If the target wins, they survive the duel.",
+        "win_condition": "You need to win a certain number of duels (typically 2) to fulfill your goal, after which you leave town or simply count as win achieved."
+    },
+    "notifications": [
+        "Your target will be notified that a Pirate has challenged them to a duel and they must pick a defense (like high, low, or middle stance).",
+        "You'll see the outcome of the duel: whether you won (and thus killed them) or lost (they survived). You also see the choices both of you made."
+    ],
+    "win_condition": "Successfully plunder (win) two duels.",
+    "wins_with": [
+        "Witch"
+    ],
+    "notes": [
+        "Pirate is role-block immune and control immune (since a role-block would prevent the duel which they are immune to to ensure the duel mini-game).",
+        "If you try to duel the same person twice in a row, it fails (you cannot target your last target consecutively)."
+    ],
+    "immunities": [
+        "RoleBlockImmunity",
+        "ControlImmunity",
+        "DetectionImmunity"
+    ],
+    "visit_type": "Harmful"
+}
+}
+

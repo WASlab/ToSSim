@@ -1,0 +1,60 @@
+{
+    "name": "get_role_details",
+    "class": "environment_static",
+    "description": "Get the public details of a specified role in the game.",
+    "inputs": [
+      {"name": "role", "type": "string", "description": "The role to look up."}
+    ],
+    "outputs": [
+      {"name": "role_details", "type": "object", "description": "Role details JSON object"}
+    ],
+    "examples": [
+      {
+        "input": {"role": "Bodyguard"},
+        "output": {
+          "role_info": {
+            "name": "Bodyguard",
+            "faction": "Town",
+            "alignment": "Town Protective",
+            "abilities": [
+              "Protect one player each night from attacks (counterattacks attackers).",
+              "Use a bulletproof vest on self once per game."
+            ],
+            "mechanics": {
+              "protection": "Can protect a target from one attack each night, counterattacking the attacker. Both Bodyguard and attacker suffer a Powerful Attack.",
+              "vest": "If targeting self, consumes vest, grants Basic Defense for the night. Vest does not counterattack.",
+              "multiple_attackers": "If multiple killers attack the protected target, Bodyguard kills one attacker and dies; others can still attack.",
+              "exceptions": [
+                "Cannot protect from Jailor executions, Veteran alerts, Ambusher, Medusa (gazing at home), Hex Master, Arsonists, Jesters.",
+                "Cannot save another Bodyguard dying in a counterattack.",
+                "Some attacks (e.g., Pestilence, Juggernaut with Powerful Attack) may kill Bodyguard and/or target."
+              ]
+            },
+            "notifications": [
+              "If you die protecting, your death will state 'died guarding someone.'",
+              "Killed attackers see 'was killed by a Bodyguard.'",
+              "Specific notifications for interactions with Necromancer, Pirate, Serial Killer, etc."
+            ],
+            "win_condition": "Lynch every criminal and evildoer.",
+            "wins_with": ["Town", "Survivor"],
+            "notes": [
+              "Cannot be a Lover or VIP.",
+              "If multiple Bodyguards protect the same target, each counters a separate attacker."
+            ],
+            "immunities": null,
+            "visit_type": "Astral"
+          }
+        }
+      },
+      {
+        "input": {"role": "Jailor"},
+        "output": {
+          "role_info": {
+            "name": "Jailor",
+            "immunities": null
+          }
+        }
+      }
+    ]
+  }
+
