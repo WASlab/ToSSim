@@ -18,9 +18,13 @@ Key rules implemented here:
 """
 
 import re
-from typing import Tuple, Optional
+from typing import Tuple, Optional, TYPE_CHECKING
 
 from Simulation.tools.registry import execute_tool, get_tool_registry
+
+if TYPE_CHECKING:
+    from Simulation.game import Game
+    from Simulation.player import Player
 
 _TOOL_TAG_RE = re.compile(r"<(?P<name>[a-zA-Z_][\w]*)>(?P<arg>.*?)</\1>", re.DOTALL)
 _TOOL_NAMES = set(get_tool_registry().keys())
@@ -28,7 +32,7 @@ _TOOL_NAMES = set(get_tool_registry().keys())
 
 # Public API -----------------------------------------------------------------
 
-def apply_first_tool_call(raw_text: str) -> Tuple[str, Optional[str]]:
+def apply_first_tool_call(raw_text: str, *, game: Optional["Game"] = None, player: Optional["Player"] = None) -> Tuple[str, Optional[str]]:
     """Detect and execute the first tool call in *raw_text*.
 
     Returns `(patched_text, observation)` where:
@@ -36,12 +40,15 @@ def apply_first_tool_call(raw_text: str) -> Tuple[str, Optional[str]]:
       (if it was missing) so that tags are balanced.
     • *observation* is the string returned by the tool executor or *None* if no
       tool tag was found.
+    
+    Parameters:
+    • *game* and *player* provide context for tools that need access to game state.
     """
     match = _TOOL_TAG_RE.search(raw_text)
     if match is None:
         return raw_text, None
 
-    tool_name, arg = match.group("name"), match.group("arg").strip()
+    tool_name, arg = match.group(1), match.group(2).strip()
 
     # Ignore tags that are not registered tools (e.g., <speak>, <whisper>, <vote>)
     if tool_name not in _TOOL_NAMES:
@@ -70,6 +77,6 @@ def apply_first_tool_call(raw_text: str) -> Tuple[str, Optional[str]]:
     # ------------------------------------------------------------------
     # Execute the tool (unknown tools handled inside execute_tool)
     # ------------------------------------------------------------------
-    observation = execute_tool(tool_name, arg)
+    observation = execute_tool(tool_name, arg, game=game, player=player)
     return patched_text, observation
 

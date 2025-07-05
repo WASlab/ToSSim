@@ -1,0 +1,14 @@
+{
+  "name": "view_will",
+  "description": "View the last will of a dead player. This only works for players who have died and whose wills were not cleaned or hidden.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "player": {
+        "type": "string",
+        "description": "The name of the dead player whose will you want to view."
+      }
+    },
+    "required": ["player"]
+  }
+} 

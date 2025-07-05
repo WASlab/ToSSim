@@ -29,6 +29,9 @@ class DayPhase:
         # Config
         self.nomination_threshold: int = max(1, len(self.alive_players) // 2)
 
+        # Max three trials per day as per design
+        self.trials_remaining: int = 3
+
     # ------------------------------------------------------------------
     # Public methods for InteractionHandler
     # ------------------------------------------------------------------
@@ -53,7 +56,8 @@ class DayPhase:
         if len(self.nominations[target]) >= self.nomination_threshold:
             print(f"{target.name} has received enough nominations and is put on trial!")
             self.on_trial = target
-            self.game.phase = self.game.Phase.VOTING
+            from .enums import Phase as PhaseEnum
+            self.game.phase = PhaseEnum.DEFENSE
         
         return f"Success: You nominated {target.name}."
 
@@ -103,9 +107,17 @@ class DayPhase:
         else:
             print(f"The town has found {self.on_trial.name} INNOCENT. (G:{guilty} / I:{innocent} / A:{abstain})")
 
-        # Reset for the day
+        # After verdict we decrement trial counter
+        self.trials_remaining = max(0, self.trials_remaining - 1)
+
+        # Reset for the day – either continue nominations or move to pre-night
+        from .enums import Phase as PhaseEnum
         self.on_trial = None
-        self.game.phase = self.game.Phase.DAY # Revert to general day phase
+        if self.trials_remaining == 0:
+            # Controller will interpret this and jump to PRE_NIGHT
+            self.game.phase = PhaseEnum.PRE_NIGHT
+        else:
+            self.game.phase = PhaseEnum.NOMINATION
 
     # ------------------------------------------------------------------
     # Internal Mechanics

@@ -271,33 +271,39 @@ class InteractionHandler:
     # --- Voting Handlers (Special) ---
 
     def _handle_nominate(self, actor: 'Player', content: str) -> str:
-        # This will need to be connected to the DayPhase object
-        if self.game.phase != Phase.DISCUSSION and self.game.phase != Phase.DAY:
-             return "Error: The nomination phase is not active."
-        
+        from Simulation.enums import Phase as PhaseEnum
+        if self.game.phase != PhaseEnum.NOMINATION:
+            return "Error: You cannot nominate during this phase."
+        if not content:
+            return "Error: Please specify a target to nominate."
         target = self._resolve_target(actor, content)
         if isinstance(target, str):
             return target
-        
-        # This interaction now depends on a DayPhase object being active
         if not self.game.day_phase_manager:
-            return "Error: Day phase manager not initialized."
-            
+            return "Error: Nomination system not active."
         return self.game.day_phase_manager.add_nomination(actor, target)
 
     def _handle_vote(self, actor: 'Player', content: str) -> str:
-        # This will handle the verdict vote (guilty/innocent)
-        if self.game.phase != Phase.VOTING:
-             return "Error: The verdict voting phase is not active."
-        
-        verdict = content.strip().upper()
-        if verdict not in ["GUILTY", "INNOCENT", "ABSTAIN"]:
-            return f"Error: Invalid vote '{content}'. Must be GUILTY, INNOCENT, or ABSTAIN."
+        from Simulation.enums import Phase as PhaseEnum
 
-        if not self.game.day_phase_manager:
-            return "Error: Day phase manager not initialized."
+        if self.game.phase == PhaseEnum.NOMINATION:
+            # Voting to nominate someone (<vote>Bob</vote>)
+            target = self._resolve_target(actor, content)
+            if isinstance(target, str):
+                return target
+            if not self.game.day_phase_manager:
+                return "Error: Nomination system not active."
+            return self.game.day_phase_manager.add_nomination(actor, target)
 
-        return self.game.day_phase_manager.add_verdict(actor, verdict)
+        if self.game.phase == PhaseEnum.JUDGEMENT:
+            verdict = content.strip().upper()
+            if verdict not in {"GUILTY", "INNOCENT", "ABSTAIN"}:
+                return "Error: Vote must be GUILTY, INNOCENT, or ABSTAIN."
+            if not self.game.day_phase_manager:
+                return "Error: Voting system not active."
+            return self.game.day_phase_manager.add_verdict(actor, verdict)
+
+        return "Error: Voting is not allowed in the current phase."
 
     def _handle_distract(self, actor: 'Player', content: str) -> str:
         """Generic role‐block action used by Tavern Keeper/Escort (Town) and Bootlegger/Consort (Mafia)."""
@@ -907,4 +913,23 @@ class InteractionHandler:
             return target
 
         self.game.submit_night_action(actor, target)
-        return f"Success: You will hypnotize {target.name} tonight." 
+        return f"Success: You will hypnotize {target.name} tonight."
+
+    # --- Skip/Pass Aliases ---
+    def _handle_skip(self, actor: 'Player', content: str) -> str:
+        """Skip action - alias for not performing any night action."""
+        if self.game.time != Time.NIGHT:
+            return "Error: You can only skip during the night."
+        
+        # Submit None as target to indicate no action
+        self.game.submit_night_action(actor, None)
+        return "Success: You will skip your night action."
+
+    def _handle_pass(self, actor: 'Player', content: str) -> str:
+        """Pass action - alias for not performing any night action."""
+        if self.game.time != Time.NIGHT:
+            return "Error: You can only pass during the night."
+        
+        # Submit None as target to indicate no action
+        self.game.submit_night_action(actor, None)
+        return "Success: You will pass your night action." 

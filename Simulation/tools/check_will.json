@@ -1,0 +1,9 @@
+{
+  "name": "check_will",
+  "description": "Check your own last will. This shows you what you have written so far that would be revealed if you die.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+} 

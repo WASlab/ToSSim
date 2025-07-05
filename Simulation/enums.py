@@ -224,6 +224,12 @@ class Phase(Enum):
     STANDARD_ACTIONS = auto()
     OBSERVATION = auto()
     FINALIZATION = auto()
+    # --- Refined agent-facing phases (used by MatchRunner FSM) ---
+    DISCUSSION = auto()   # open chat, no nominations yet
+    NOMINATION = auto()   # players cast votes to put someone on trial
+    JUDGEMENT = auto()    # guilty / innocent / abstain voting
+    LAST_WORDS = auto()   # lynched player speaks
+    PRE_NIGHT = auto()    # short filler before night
 
 #Immunity types
 class ImmunityType(Enum):

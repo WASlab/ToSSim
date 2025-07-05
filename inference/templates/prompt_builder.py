@@ -11,6 +11,7 @@ except (ImportError, ModuleNotFoundError):
         return {}
 
 from Simulation.enums import RoleName  # For type hints only – avoids heavy Role import
+from Simulation.phase_prompt import render_phase_prompt
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -84,6 +85,24 @@ def generate_agent_name() -> str:
     return random.choice(_DEFAULT_NAMES)
 
 
+def _tool_catalogue() -> dict:
+    """Return a mapping of available tool-name → lightweight spec.
+
+    The concrete object returned by ``get_tool_registry`` is implementation
+    defined.  We only rely on two *optional* attributes per entry so the
+    function never crashes if they are missing.
+    """
+    registry = get_tool_registry() or {}
+    catalogue: dict[str, dict[str, str]] = {}
+
+    for name, obj in registry.items():
+        catalogue[name] = {
+            "signature": getattr(obj, "signature", "<args?>"),
+            "help": getattr(obj, "__doc__", ""),
+        }
+    return catalogue
+
+
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
@@ -108,14 +127,18 @@ def build_role_card(role: "Role") -> RoleCard:  # type: ignore
     )
 
 
-def build_system_prompt(agent_name: str, role_card: RoleCard) -> str:
+def build_system_prompt(agent_name: str, role_card: RoleCard, *, tools: dict | None = None) -> str:
     """Render the system prompt string given an agent name and RoleCard."""
 
     # Ensure the template file exists; if not, fall back to an inline template.
     template_name = "system_prompt.jinja"
     if (TEMPLATE_DIR / template_name).exists():
         template = _env.get_template(template_name)
-        return template.render(agent_name=agent_name, rc=role_card.to_dict())
+        return template.render(
+            agent_name=agent_name,
+            rc=role_card.to_dict(),
+            tools=tools or {},
+        )
 
     # Inline minimal template (used during initial bootstrapping).
     inline_tpl = (
@@ -147,4 +170,45 @@ Guidelines:
 </system>
 """
     )
-    return jinja2.Template(inline_tpl).render(agent_name=agent_name, rc=role_card.to_dict())
+    return jinja2.Template(inline_tpl).render(
+        agent_name=agent_name, rc=role_card.to_dict(), tools=tools or {}
+    )
+
+
+# ---------------------------------------------------------------------------
+# High-level chat assembly
+# ---------------------------------------------------------------------------
+
+def build_chat_messages(
+    role: "Role",  # type: ignore
+    public_state: dict,
+    observation: str | None,
+    history: list[dict],
+    *,
+    observation_role: str = "user",
+) -> list[dict]:
+    """Return the message list (system+user+history) ready for vLLM.
+
+    ``observation`` is appended as *another* user message instead of using the
+    special "tool" role – this matches the XML–only tool-calling pattern used
+    by ToSSim.
+    """
+
+    agent_name = history[0].get("agent_name") if history else generate_agent_name()
+    role_card = build_role_card(role)
+
+    system_msg = {
+        "role": "system",
+        "content": build_system_prompt(agent_name, role_card, tools=_tool_catalogue()),
+    }
+
+    # The phase-dependent USER message is rendered elsewhere; we inject the
+    # public state dict verbatim for now so the caller can substitute.
+    user_msg = {"role": "user", "content": render_phase_prompt(public_state)}
+
+    msgs: list[dict] = [system_msg, user_msg] + history
+
+    if observation:
+        msgs.append({"role": observation_role, "content": observation})
+
+    return msgs

@@ -1,16 +1,13 @@
 """
-Universal training entry point for 🤗 Transformers / PEFT
+Single-GPU SFT training entry point for 🤗 Transformers / PEFT
 
 Features
 ========
-* 1 GPU → classic Trainer
-* ≥2 GPUs → Fully-Sharded Data Parallel (FSDP) **or** DeepSpeed ZeRO
+* Single GPU training with classic Trainer
 * Flash-Attention 2 + torch.compile() when available
 * LoRA fine-tuning via PEFT
 * Loss computed **only on assistant tokens** (Gemma-3 template)
-* Automatic hub push on rank 0
-
-
+* Automatic hub push
 """
 from __future__ import annotations
 import os, sys, json, warnings, getpass
@@ -82,7 +79,7 @@ def build_tokeniser(tokeniser, instr_tok: str, resp_tok: str, cfg: Dict[str, Any
 
     return _tok
 
-
+# TODO: add instr_tok and resp_tok for other models, you should probably add it to the config file
 def prepare_dataset(cfg: Dict[str, Any], tokenizer):
     rows = load_jsonl(cfg["training_file"])
     ds = Dataset.from_list(rows)
@@ -155,12 +152,17 @@ def load_model_and_tokenizer(cfg: Dict[str, Any]):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Single GPU - explicit device placement
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model"],
-        device_map="auto",
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         **quant_kwargs,
     )
+    
+    if torch.cuda.is_available():
+        model = model.to(device)
 
     if detect_flash_attention():
         try:
@@ -181,11 +183,7 @@ def main(cfg_path: str = "train.json"):
     with cfg_path.open() as f:
         cfg: Dict[str, Any] = json.load(f)
 
-    # Robustly resolve dataset paths. We first try the path as-is (absolute or
-    # relative to the **config file** directory). If that doesn't exist we try
-    # a couple of sensible fall-backs so users can provide paths relative to
-    # the project root or the current working directory without thinking about
-    # it.
+    # Robustly resolve dataset paths
     for key in ("training_file", "test_file"):
         raw = cfg.get(key)
         if not raw:
@@ -210,7 +208,7 @@ def main(cfg_path: str = "train.json"):
             cfg[key] = str(cand_cwd)
             continue
 
-        # 4) Relative to repository root (directory containing this train.py).
+        # 4) Relative to repository root (directory containing this script).
         repo_root = Path(__file__).resolve().parent
         cand_repo = (repo_root / path).resolve()
         if cand_repo.exists():
@@ -230,10 +228,7 @@ def main(cfg_path: str = "train.json"):
 
     train_ds, val_ds = prepare_dataset(cfg, tokenizer)
 
-    # ── TrainingArguments / SFTConfig ──
-    #        Distributed strategy is **fully delegated to Accelerate**.
-    #        When launched with `accelerate launch`, the environment
-    #        variables tell Trainer whether to wrap in FSDP / DeepSpeed.
+    # ── Single GPU TrainingArguments / SFTConfig ──
     targs = SFTConfig(
         chat_template_path=cfg["model"],
         output_dir=cfg["output_dir"],
@@ -256,19 +251,13 @@ def main(cfg_path: str = "train.json"):
             and torch.version.cuda is not None
             and torch.__version__ >= "2.1"
         ),
-        # The keys below allow **native** FSDP / DeepSpeed selection
-        fsdp=cfg.get("fsdp", None),                     # e.g. "full_shard auto_wrap"
-        fsdp_transformer_layer_cls_to_wrap=cfg.get(
-            "fsdp_transformer_layer_cls_to_wrap", None
-        ),
-        deepspeed=cfg.get("deepspeed_config", None),    # optional json path
         report_to=None,
         seed=cfg["seed"],
     )
 
     trainer = SFTTrainer(
         model=model,
-        args=targs,          # type: ignore[arg-type]
+        args=targs,
         train_dataset=train_ds,
         eval_dataset=val_ds,
     )
@@ -282,25 +271,21 @@ def main(cfg_path: str = "train.json"):
         except Exception as e:
             warnings.warn(f"Evaluation failed: {e}")
 
-    # ── Push to Hub on rank-0 only ──
-    from accelerate import Accelerator
-
-    accelerator = Accelerator()
-    if accelerator.is_main_process:
-        token = _resolve_hf_token()
-        if token:
-            try:
-                if cfg.get("merge_before_push", True) and hasattr(model, "merge_and_unload"):
-                    model.merge_and_unload()
-                repo_id = cfg["finetuned_model_id"]
-                private = cfg.get("push_to_private", True)
-                model.push_to_hub(repo_id, private=private, token=token)
-                tokenizer.push_to_hub(repo_id, private=private, token=token)
-                print(f"✅ Pushed to https://huggingface.co/{repo_id}")
-            except Exception as e:
-                warnings.warn(f"Hub push failed: {e}")
-        else:
-            warnings.warn("No HF token provided – model saved only locally.")
+    # ── Push to Hub ──
+    token = _resolve_hf_token()
+    if token:
+        try:
+            if cfg.get("merge_before_push", True) and hasattr(model, "merge_and_unload"):
+                model.merge_and_unload()
+            repo_id = cfg["finetuned_model_id"]
+            private = cfg.get("push_to_private", True)
+            model.push_to_hub(repo_id, private=private, token=token)
+            tokenizer.push_to_hub(repo_id, private=private, token=token)
+            print(f"✅ Pushed to https://huggingface.co/{repo_id}")
+        except Exception as e:
+            warnings.warn(f"Hub push failed: {e}")
+    else:
+        warnings.warn("No HF token provided – model saved only locally.")
 
 
 # ────────────────── utilities ──────────────────
@@ -327,4 +312,4 @@ def _resolve_hf_token() -> str | None:
 
 # ────────────────── CLI ──────────────────
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "train.json")
+    main(sys.argv[1] if len(sys.argv) > 1 else "train.json") 

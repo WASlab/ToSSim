@@ -1,0 +1,5 @@
+{
+  "name": "attributes_placeholder",
+  "description": "Placeholder tool spec; real attribute lookup not implemented yet",
+  "class": "environment_static"
+}

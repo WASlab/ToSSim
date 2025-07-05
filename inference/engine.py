@@ -6,12 +6,13 @@ import subprocess
 import time
 import requests
 from typing import List, Tuple
-from .allocator import RoundRobinAllocator
+from .allocator import AgentAllocator
 
 import pynvml
 pynvml.nvmlInit()
 
 import os
+import json
 
 class InferenceEngine:
     """
@@ -37,11 +38,15 @@ class InferenceEngine:
         if not available_lanes:
             raise RuntimeError("Failed to launch any vLLM servers. Check GPU availability and drivers.")
 
-        self.allocator = RoundRobinAllocator(available_lanes)
+        self.allocator = AgentAllocator(available_lanes)
+        self._lane_process: dict[Tuple[int, str], subprocess.Popen] = {
+            lane: proc for lane, proc in zip(available_lanes, self.servers)
+        }
+        self._agent_to_lane: dict[str, Tuple[int, str]] = {}
         print(f"Inference Engine ready. Managing {len(available_lanes)} agent lanes.")
 
 
-    def get_vllm_launch_command(self, gpu_id: int, port: int) -> list:
+    def get_vllm_launch_command(self, gpu_id: int, port: int, model_name: str) -> list:
         """
         Returns the vLLM server launch command for a given GPU and port.
         """
@@ -51,7 +56,7 @@ class InferenceEngine:
                 "--port", str(port),
                 "--tensor-parallel-size", "1", # Each server is self-contained
                 # Removed --device call because we set it in the env["CUDA...""]
-                "--model", "/PATH/TO/MODEL"
+                "--model", model_name
             ]
 
     def isMPS(self, gpu_id: int) -> bool:
@@ -146,7 +151,7 @@ class InferenceEngine:
                     env["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(pct)
 
                     current_port = port_base + port_offset
-                    command = self.get_vllm_launch_command(gpu_id, current_port)
+                    command = self.get_vllm_launch_command(gpu_id, current_port, "facebook/opt-125m")
 
                     print(f"Launching vLLM server on GPU {gpu_id} at port {current_port}...")
                     server_process = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -160,7 +165,7 @@ class InferenceEngine:
                 env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
                 current_port = port_base + port_offset
-                command = self.get_vllm_launch_command(gpu_id, current_port)
+                command = self.get_vllm_launch_command(gpu_id, current_port, "facebook/opt-125m")
 
                 print(f"Launching vLLM server on GPU {gpu_id} at port {current_port}...")
                 server_process = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -175,15 +180,66 @@ class InferenceEngine:
         pynvml.nvmlShutdown()
         return lanes
 
-    def register_agent(self, agent_id: str, model_checkpoint: str):
+    def _server_has_model(self, lane_url: str, model_name: str) -> bool:
+        try:
+            resp = requests.get(f"{lane_url}/v1/models", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                return any(m.get("id") == model_name for m in data.get("data", []))
+        except requests.RequestException:
+            pass
+        return False
+
+    def _load_model_on_server(self, lane_url: str, model_name: str):
+        """Issue POST to load model if not present."""
+        if self._server_has_model(lane_url, model_name):
+            return
+        try:
+            resp = requests.post(f"{lane_url}/v1/models", json={"name": model_name}, timeout=10)
+            if resp.status_code != 200:
+                print(f"[Engine] Failed to load model {model_name} on {lane_url}: {resp.text}")
+        except requests.RequestException as e:
+            print(f"[Engine] Error contacting {lane_url}: {e}")
+
+    def _unload_model_on_server(self, lane_url: str, model_name: str):
+        try:
+            requests.delete(f"{lane_url}/v1/models/{model_name}", timeout=5)
+        except requests.RequestException:
+            pass
+
+    def preload_models(self, model_list: List[str]):
+        """Synchronously ensure every model is loaded on some lane."""
+        unique_models = list(dict.fromkeys(model_list))  # preserve order, uniq
+        for m in unique_models:
+            lane = self.allocator.acquire(f"__preload_{m}")
+            self._load_model_on_server(lane[1], m)
+            self.allocator.release(f"__preload_{m}")
+        print(f"[Engine] Preloaded {len(unique_models)} models.")
+
+    def register_agent(self, agent_id: str, model_name: str):
         """
-        Assigns an agent to a GPU lane and potentially loads its model.
+        Assigns an agent to a GPU lane hosting *model_name*. If the model is
+        not loaded yet, the engine will trigger a one-time load on that lane.
         (Implementation to follow based on docs)
         """
-        lane = self.allocator.get_lane(agent_id)
-        print(f"Agent '{agent_id}' assigned to GPU {lane[0]} on {lane[1]}.")
-        # Here you would send a request to the vLLM server at lane[1] to
-        # ensure the specified model_checkpoint is loaded.
+        lane = self.allocator.acquire(agent_id)
+        self._agent_to_lane[agent_id] = lane
+        print(f"Agent '{agent_id}' will use model '{model_name}' on GPU {lane[0]} ({lane[1]}).")
+
+        # Restart process if current model differs
+        if not self._server_has_model(lane[1], model_name):
+            print(f"[Engine] Restarting vLLM server on {lane[1]} with model {model_name}.")
+            proc = self._lane_process[lane]
+            proc.terminate(); proc.wait()
+
+            gpu_id = lane[0]
+            port = int(lane[1].split(":")[-1])
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            command = self.get_vllm_launch_command(gpu_id, port, model_name)
+            new_proc = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            self._lane_process[lane] = new_proc
+            time.sleep(5)  # give it time to warm up
 
     def shutdown(self):
         """
@@ -195,3 +251,20 @@ class InferenceEngine:
         for server in self.servers:
             server.wait()
         print("Shutdown complete.")
+
+    def release_agent(self, agent_id: str):
+        """Call when an agent no longer needs inference (game finished)."""
+        lane = self._agent_to_lane.pop(agent_id, None)
+        if lane:
+            # terminate server process and restart empty for future use
+            proc = self._lane_process[lane]
+            proc.terminate(); proc.wait()
+            gpu_id = lane[0]
+            port = int(lane[1].split(":")[-1])
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            # start blank server with dummy model for idle state
+            command = self.get_vllm_launch_command(gpu_id, port, "facebook/opt-125m")
+            new_proc = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            self._lane_process[lane] = new_proc
+            self.allocator.release(agent_id)

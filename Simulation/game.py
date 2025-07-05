@@ -13,7 +13,8 @@ class Game:
         self.players = players
         self.day = 0
         self.time = Time.DAY
-        self.phase = Phase.DAY
+        from .enums import Phase as PhaseEnum
+        self.phase = PhaseEnum.DISCUSSION  # start with open discussion before Day 0
         self.graveyard = []
         self.day_actions = {}
         self.night_actions = {}
@@ -75,12 +76,16 @@ class Game:
         
         This should be called by the external game loop controller.
         """
+        from .enums import Phase as PhaseEnum
         self.day += 1
         self.time = Time.DAY
-        #The day starts with discussion, where nominations can happen.
-        self.phase = Phase.DAY
+        # Explicit discussion sub-phase
+        self.phase = PhaseEnum.DISCUSSION
         self.day_phase_manager = DayPhase(self)
         print(f"\n----- Day {self.day} -----")
+
+        # Start new chat period (archive previous period)
+        self.chat.start_new_period(self.day, is_night=False)
 
         #Handle Amnesiac role conversions that were scheduled last night
         for p in self.players:
@@ -123,10 +128,24 @@ class Game:
         
         This should be called by the external game loop controller.
         """
+        from .enums import Phase as PhaseEnum
         self.time = Time.NIGHT
-        self.phase = Phase.NIGHT
+        self.phase = PhaseEnum.NIGHT
         night_num = self.day + 1  #First night is Night 1 when day == 0
         print(f"\n----- Night {night_num} -----")
+
+        # Start new chat period (archive day messages)
+        self.chat.start_new_period(self.day, is_night=True)
+        
+        # Add pre-night environment message
+        if self.day == 0:
+            self.chat.add_environment_message("The first night will now begin")
+        else:
+            self.chat.add_environment_message("It's too late to continue voting")
+            
+        # Add full moon message on even nights
+        if night_num % 2 == 0:
+            self.chat.add_environment_message("There is a full moon out tonight")
 
         self._setup_night_chat()
         self._assign_necronomicon()
@@ -504,6 +523,7 @@ class Game:
         """
 
         if not self.deaths_last_night:
+            self.chat.add_environment_message("No one died last night.")
             print("No one died last night.")
             return
 
@@ -520,22 +540,40 @@ class Game:
 
             cleaned_by = getattr(victim, "cleaned_by", None)
 
+            # Generate death announcement for chat history
             if cleaned_by:
+                death_msg = f"{victim.name} died last night. Their role was cleaned!"
+                self.chat.add_environment_message(death_msg)
                 print(f"{victim.name} was found dead. Their role was cleaned!")
             else:
                 display_role = getattr(victim, 'disguised_as_role', None) or victim.role.name
+                # Generate proper death cause message
+                death_cause = self._get_death_cause_message(attacker, victim)
+                death_msg = f"{victim.name} died last night. {death_cause}"
+                self.chat.add_environment_message(death_msg)
+                
+                role_msg = f"{victim.name}'s role was {display_role.value}."
+                self.chat.add_environment_message(role_msg)
+                
                 print(f"{victim.name} ({display_role.value}) was found dead.")
 
             #Reveal last will (unless cleaned)
             if victim.was_forged:
+                will_msg = "A forged last will was found next to their body."
+                self.chat.add_environment_message(will_msg)
                 print("A forged last will was found, its contents are suspicious:")
-                #Show nothing or placeholder; true content hidden
                 print("\"We cannot trust this will.\"")
             elif victim.last_will_bloodied:
+                will_msg = "Their last will was too bloody to read."
+                self.chat.add_environment_message(will_msg)
                 print("Their last will was too bloody to read.")
             elif victim.last_will:
+                will_msg = f"We found a will next to their body."
+                self.chat.add_environment_message(will_msg)
                 print(f"Last Will of {victim.name}: {victim.last_will}")
             else:
+                will_msg = "We could not find a last will."
+                self.chat.add_environment_message(will_msg)
                 print("No last will was found.")
 
             #If cleaned, secretly inform the Janitor of the info and consume a charge.
@@ -552,6 +590,8 @@ class Game:
             if not cleaned_by:
                 death_note = getattr(attacker.role, 'death_note', '')
                 if death_note:
+                    note_msg = f"We found a Death Note next to the body."
+                    self.chat.add_environment_message(note_msg)
                     print(f"A death note was found next to the body: {death_note}")
 
             #Ensure the victim is in the graveyard list once
@@ -566,6 +606,39 @@ class Game:
 
         #Clear for next night
         self.deaths_last_night = []
+
+    def _get_death_cause_message(self, attacker: 'Player', victim: 'Player') -> str:
+        """Generate a death cause message based on the attacker's role."""
+        if not attacker or not attacker.role:
+            return "They were killed by an unknown cause."
+        
+        # Map attacker roles to death messages
+        death_messages = {
+            "Mafioso": "They were killed by the Mafia.",
+            "Godfather": "They were killed by the Mafia.",
+            "Ambusher": "They were killed by the Mafia.",
+            "Serial Killer": "They were killed by a Serial Killer.",
+            "Werewolf": "They were mauled by a Werewolf.",
+            "Arsonist": "They were killed in an arson.",
+            "Juggernaut": "They were killed by a Juggernaut.",
+            "Coven Leader": "They were killed by the Coven.",
+            "Hex Master": "They were killed by the Coven.",
+            "Medusa": "They were killed by the Coven.",
+            "Necromancer": "They were killed by the Coven.",
+            "Poisoner": "They were killed by the Coven.",
+            "Potion Master": "They were killed by the Coven.",
+            "Vampire": "They were killed by a Vampire.",
+            "Vigilante": "They were shot by a Vigilante.",
+            "Veteran": "They were shot by a Veteran.",
+            "Jailor": "They were executed by the Jailor.",
+            "Bodyguard": "They were killed while protecting someone.",
+            "Crusader": "They were killed by a Crusader.",
+            "Pirate": "They were killed by a Pirate.",
+            "Pestilence": "They were killed by Pestilence.",
+        }
+        
+        role_name = attacker.role.name.value
+        return death_messages.get(role_name, f"They were killed by {role_name}.")
 
     def _send_notifications(self):
         for player in self.players:
