@@ -38,7 +38,7 @@ This research platform consists of several interconnected components:
 - **Template System**: Jinja2-based prompt building with role-specific context
 - **Tool Router**: Automatic tool call detection and execution
 - **Model Management**: Hot-swapping and model lifecycle management
-
+- ❌**Missing Validation** Until we run the environment we will not truly know whether it is working
 #### Training Systems 
 - **Base SFT Training** (`train_single_gpu.py`): One GPU training script without FSDP/Deepseed support 
 - **Misalignment Pipeline** (`emergent-misalignment/`): Forked from Betley et al with QLoRA fine-tuning
@@ -51,6 +51,16 @@ This research platform consists of several interconnected components:
 - **Tool Loop Tests**: Validation of agent-tool interactions
 
 ### 🚧 **IN PROGRESS / PARTIALLY IMPLEMENTED**
+#### General
+**Missing instr resp tokens**: Please change the token to the format for your model, even better make it a cfg
+**
+#### Multi-GPU Training
+**How to do it easily**: Add auto to the device map of SFT.py for DDP
+**What do we need to do better** Docker containers and files for FSDP/Deepspeed
+#### Emergent Misalignment Replication
+**Perform Eval of Gemma-3 Models**
+
+
 
 #### Match Runner (`runner/`)
 - **Game Orchestration**: Basic match running with agent integration ⚠️ *Needs completion*
@@ -251,7 +261,7 @@ This is a research project with specific academic goals. Key areas needing devel
 
 ## 📚 Related Work
 
-- **Emergent Misalignment**: [Betley et al. repository](https://github.com/anthropics/emergent-misalignment)
+- **Emergent Misalignment**: [Betley et al. repository](https://github.com/emergent-misalignment/emergent-misalignment)
 - **GRPO**: Group Relative Policy Optimization methodology
 - **Social Deduction Games**: Town of Salem as a testbed for AI deception research
 
