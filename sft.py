@@ -158,6 +158,7 @@ def load_model_and_tokenizer(cfg: Dict[str, Any]):
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model"],
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto" if torch.cuda.is_available() else None,
         **quant_kwargs,
     )
     
