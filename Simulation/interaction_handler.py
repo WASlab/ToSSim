@@ -2,6 +2,7 @@ import re
 from typing import TYPE_CHECKING, List, Union
 
 from Simulation.enums import Time, Phase, RoleName, Attack, DuelMove, Faction
+from Simulation.errors import ErrorCode, format_error, format_success
 
 if TYPE_CHECKING:
     from .game import Game
@@ -25,7 +26,7 @@ class InteractionHandler:
         Returns a Player object on success or an error string on failure.
         """
         if not target_name:
-            return "Error: Target name is empty."
+            return format_error(ErrorCode.INVALID_TARGET, "Target name is empty")
         
         target_name = target_name.strip()
 
@@ -37,7 +38,7 @@ class InteractionHandler:
         matches_ci = [p for p in alive_players if p.name.lower() == target_name.lower()]
 
         if not matches_ci:
-            return f"Error: No living player named '{target_name}' found."
+            return format_error(ErrorCode.TARGET_NOT_FOUND, f"No living player named '{target_name}' found")
         
         if len(matches_ci) == 1:
             return matches_ci[0]
@@ -49,7 +50,7 @@ class InteractionHandler:
             return matches_cs[0]
         
         # 3. Ambiguous if multiple CS matches (e.g. "Bob", "bob") or no CS match
-        return f"Error: Ambiguous target '{target_name}'. Multiple players have similar names."
+        return format_error(ErrorCode.INVALID_TARGET, f"Ambiguous target '{target_name}'. Multiple players have similar names")
 
     def parse_and_execute(self, actor: 'Player', text: str) -> List[str]:
         """
@@ -67,19 +68,39 @@ class InteractionHandler:
             
             debug_seen.append(f"<{tool_name}>{content}")
             
+            # TODO: RESEARCH METRICS - Track total tool calls
+            actor.research_metrics['total_tool_calls'] += 1
+            
             handler_method = getattr(self, f"_handle_{tool_name}", None)
             
             if not handler_method:
-                results.append(f"Error: Unknown tool '{tool_name}'.")
+                # TODO: RESEARCH METRICS - Track unknown/invalid tool attempts
+                actor.research_metrics['unsuccessful_tool_uses'] += 1
+                results.append(format_error(ErrorCode.UNKNOWN_TOOL, f"Unknown tool '{tool_name}'"))
                 continue
             
             try:
                 result = handler_method(actor, content)
                 print(f"[Debug] Handler result for {tool_name}: {result}")
+                
+                # TODO: RESEARCH METRICS - Track successful vs unsuccessful tool uses
+                if result.startswith("Success:"):
+                    actor.research_metrics['successful_tool_uses'] += 1
+                elif result.startswith("Error:"):
+                    actor.research_metrics['unsuccessful_tool_uses'] += 1
+                    
+                    # TODO: RESEARCH METRICS - Classify error types for research
+                    if "during the day" in result or "at night" in result or "during" in result:
+                        actor.research_metrics['invalid_phase_tool_attempts'] += 1
+                    elif "You are not" in result or "Your role cannot" in result:
+                        actor.research_metrics['wrong_role_tool_attempts'] += 1
+                
                 results.append(result)
             except Exception as e:
+                # TODO: RESEARCH METRICS - Track handler errors as unsuccessful
+                actor.research_metrics['unsuccessful_tool_uses'] += 1
                 # Catch potential errors in handler logic
-                results.append(f"Error executing '{tool_name}': {e}")
+                results.append(format_error(ErrorCode.HANDLER_ERROR, f"Error executing '{tool_name}': {e}"))
         
         if debug_seen:
             print(f"[Debug] Parsed commands from '{actor.name}': {', '.join(debug_seen)}")
@@ -932,4 +953,16 @@ class InteractionHandler:
         
         # Submit None as target to indicate no action
         self.game.submit_night_action(actor, None)
-        return "Success: You will pass your night action." 
+        return "Success: You will pass your night action."
+
+    def _handle_notebook(self, actor: 'Player', content: str) -> str:
+        """Write to notebook - terminal action that ends the turn."""
+        if not actor.is_alive:
+            return "Error: You cannot use notebook while dead."
+        
+        # TODO: RESEARCH METRICS - Track notebook usage
+        actor.research_metrics['times_used_notebook'] += 1
+        
+        # Use the notebook tool directly
+        from Simulation.tools.registry import _exec_notebook
+        return _exec_notebook(content, game=self.game, player=actor) 

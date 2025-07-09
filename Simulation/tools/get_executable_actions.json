@@ -1,0 +1,27 @@
+{
+  "name": "get_executable_actions",
+  "class": "environment_static",
+  "description": "Get the list of valid terminal actions (tags) for the current game phase.",
+  "inputs": [],
+  "outputs": [
+    {"name": "actions", "type": "array", "description": "List of valid terminal action tags"}
+  ],
+  "examples": [
+    {
+      "input": {},
+      "output": {
+        "actions": ["speak", "vote", "nominate", "wait", "whisper"],
+        "phase": "Day Discussion",
+        "message": "Valid actions for Day Discussion: speak, vote, nominate, wait, whisper"
+      }
+    },
+    {
+      "input": {},
+      "output": {
+        "actions": ["kill", "investigate", "protect", "skip", "pass"],
+        "phase": "Night",
+        "message": "Valid actions for Night (as Sheriff): investigate, skip, pass"
+      }
+    }
+  ]
+} 

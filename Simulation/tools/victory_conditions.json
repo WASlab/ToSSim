@@ -1,0 +1,17 @@
+{
+  "name": "victory_conditions",
+  "class": "environment_static",
+  "description": "View victory conditions for all factions and how they interact.",
+  "inputs": [],
+  "outputs": [
+    {"name": "victory_info", "type": "string", "description": "Detailed victory condition information"}
+  ],
+  "examples": [
+    {
+      "input": {},
+      "output": {
+        "victory_info": "Town: Lynch all criminals and evildoers\nMafia: Equal/outnumber Town with no hostile neutrals\nCoven: Same as Mafia\nNK: Survive to end (varies by role)\nNE: Achieve role-specific goal"
+      }
+    }
+  ]
+} 

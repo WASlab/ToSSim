@@ -147,10 +147,12 @@ class Doctor(Role):
             if self.self_heals > 0:
                 self.self_heals -= 1
                 target.defense = Defense.POWERFUL
+                target._was_healed_tonight = True  # Mark for notification
                 return f"You are using a self-heal. You have {self.self_heals} left."
             else:
                 return "You are out of self-heals."
         target.defense = Defense.POWERFUL
+        target._was_healed_tonight = True  # Mark for notification
         return f"You are healing {target.name} tonight."
 
 class Bodyguard(Role):
@@ -212,6 +214,8 @@ class Mayor(Role):
         if not self.revealed:
             self.revealed = True
             player.vote_weight = 3
+            # Add notification to the Mayor
+            player.notifications.append("You have revealed yourself as the Mayor! Your vote now counts as 3.")
             print(f"{player.name} has revealed themselves as the Mayor!")
             return True
         return False
@@ -355,6 +359,9 @@ class Jailor(Role):
         if self.executes > 0:
             self.executes -= 1
             self.jailed_target.is_being_executed = True
+            # TODO: RESEARCH METRICS - Track execution events
+            self.jailed_target.research_metrics['times_executed'] += 1
+            self.jailed_target.research_metrics['death_cause'] = 'executed'
             game.register_attack(player, self.jailed_target, Attack.UNSTOPPABLE)
             return f"You are executing {self.jailed_target.name}. You have {self.executes} executes left."
         return "You are out of executes."
@@ -1301,38 +1308,35 @@ class Plaguebearer(Role):
         self.action_priority = Priority.SUPPORT_DECEPTION
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
-        """Spread infection to the chosen target and anyone who visits either of you.
-
-        • If no target (or target is self) ⇒ stay home, infect only visitors.
-        • Otherwise: visit the target, infect them and their visitors.
-        • Always infect visitors to the Plaguebearer as well.
-        • When every other living player is infected, convert to Pestilence.
-        """
         if not game:
-            return None
+            return "You must select a target."
 
-        # Resolve visiting relationship (so trackers etc. see it)
-        if target and target != player:
-            player.visit(target)
+        # If targeting self or no target, stay home and infect visitors
+        if not target or target == player:
+            for visitor in player.targeted_by:
+                if visitor.is_alive and not visitor.is_infected:
+                    visitor.is_infected = True
+                    visitor.notifications.append("You feel a strange plague stirring within you.")
+                    print(f"[Plaguebearer] {visitor.name} was infected by visiting {player.name}.")
+            result = "You spread your plague to anyone who visits you."
+        else:
+            # Visit target and infect them + their visitors
+            if not target.is_infected:
+                target.is_infected = True
+                target.notifications.append("You feel a strange plague stirring within you.")
+                print(f"[Plaguebearer] {player.name} infected {target.name}.")
+            
+            # Also infect anyone visiting the target
+            for visitor in target.targeted_by:
+                if visitor.is_alive and not visitor.is_infected:
+                    visitor.is_infected = True
+                    visitor.notifications.append("You feel a strange plague stirring within you.")
+                    print(f"[Plaguebearer] {visitor.name} was infected by visiting {target.name}.")
+            
+            result = f"You infected {target.name} and anyone who visited them."
 
-        # Build infection set
-        infection_targets = set()
-
-        # Visitors to PB are always infected
-        infection_targets.update([v for v in player.targeted_by if v.is_alive])
-
-        if target and target.is_alive:
-            infection_targets.add(target)
-            # Infect anyone who visited the target
-            infection_targets.update([v for v in target.targeted_by if v.is_alive])
-
-        # Apply infection
-        for p in infection_targets:
-            p.is_infected = True
-            self.infected.add(p)
-
-        # Check global infection condition (all living except PB infected)
-        others = [p for p in game.players if p.is_alive and p != player]
+        # Check if all others are infected (transformation condition)
+        others = [p for p in game.players if p != player and p.is_alive]
         if others and all(p.is_infected for p in others):
             player.assign_role(Pestilence())
             player.notifications.append("You have become Pestilence, Horseman of the Apocalypse!")
@@ -1358,10 +1362,20 @@ class Pestilence(Role):
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
         if not game or not target:
             return None
-        #Rampage like Werewolf every night
+        #Rampage like Werewolf every night – attack target and everyone who visits them.
+        #Pestilence should NEVER damage itself, even if it chooses to remain at home.
+        
+        # If the selected target is the Pestilence itself (stay-home rampage), only strike visitors.
+        if target == player:
+            for v in player.targeted_by:
+                if v.is_alive and v != player:
+                    game.register_attack(player, v, self.attack, is_primary=False)
+            return "You rampage at home, striking all who dared approach you."
+
+        # Normal rampage on another player
         game.register_attack(player, target, self.attack)
         for v in target.targeted_by:
-            if v.is_alive:
+            if v.is_alive and v != player:  # exclude self to avoid suicide
                 game.register_attack(player, v, self.attack, is_primary=False)
         return f"You rampage at {target.name}."
 
@@ -1381,42 +1395,25 @@ class Vampire(Role):
         if not game or not target:
             return "You decided not to bite tonight."
 
-        # Cannot target fellow Vampires
+        # Can't convert Vampire Hunters or fellow Vampires
+        if target.role.name == RoleName.VAMPIRE_HUNTER:
+            return f"You bit {target.name}, but they fought off your fangs!"
         if target.role.name == RoleName.VAMPIRE:
-            return "Target is already a Vampire – bite wasted."
+            return f"{target.name} is already a vampire."
 
-        # Check faction size & cooldown
-        vampires = [p for p in game.players if p.is_alive and p.role.name == RoleName.VAMPIRE]
-        cooldown_night = getattr(game, "vampire_conversion_blocked_until", -1)
-        if game.day <= cooldown_night:
-            # Cannot convert – treat as attack
-            game.register_attack(player, target, self.attack)
-            return f"Conversion magic is weak tonight – you instead attack {target.name}."
-
-        # Convertible alignments
-        convertible_factions = {Faction.TOWN}
-        if target.role.name in {RoleName.SURVIVOR, RoleName.AMNESIAC, RoleName.JESTER}:
-            convertible = True
+        # Attempt conversion
+        if target.role.faction == Faction.MAFIA:
+            # Mafia members bite back (attack the vampire)
+            game.register_attack(target, player, Attack.BASIC, is_primary=False)
+            target.notifications.append("You fought off a vampire attack!")
+            return f"You tried to bite {target.name}, but they fought back viciously!"
         else:
-            convertible = target.role.faction in convertible_factions and target.role.name != RoleName.VAMPIRE_HUNTER
-
-        # Must have no defense
-        if convertible and target.defense == Defense.NONE and len(vampires) < 4:
+            # Success - convert to vampire
+            from .roles import Vampire
             target.assign_role(Vampire())
             target.notifications.append("Cold fangs pierce your neck – you have become a Vampire! Embrace the night.")
-            # Start 1-night global cooldown (cannot convert following night)
-            game.vampire_conversion_blocked_until = game.day  # block next night only
-            return f"You successfully turned {target.name} into a Vampire. Your coven must rest tomorrow night."
-
-        # Failed conversion – attack instead
-        game.register_attack(player, target, self.attack)
-
-        # Visiting a Vampire Hunter results in death
-        if target.role.name == RoleName.VAMPIRE_HUNTER and player.is_alive:
-            game.register_attack(target, player, Attack.POWERFUL)
-            return f"{target.name} was a Vampire Hunter! They stake you as you bite."
-
-        return f"{target.name} resisted conversion – you attack instead."
+            print(f"[Vampire] {target.name} has been converted to a Vampire!")
+            return f"You successfully converted {target.name} into a vampire."
 
 class CovenLeader(Role):
     def __init__(self):

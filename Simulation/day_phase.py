@@ -51,6 +51,9 @@ class DayPhase:
         self.nominations[target].add(nominator)
         self.player_has_nominated.add(nominator)
         
+        # TODO: RESEARCH METRICS - Track nominations for research
+        target.research_metrics['times_nominated'] += 1
+        
         print(f"{nominator.name} nominates {target.name} (Total: {len(self.nominations[target])}/{self.nomination_threshold})")
         
         if len(self.nominations[target]) >= self.nomination_threshold:
@@ -71,6 +74,15 @@ class DayPhase:
             return "Error: You have already voted."
 
         self.verdict_votes[voter] = verdict
+        
+        # TODO: RESEARCH METRICS - Track voting patterns for research
+        if verdict == "GUILTY":
+            voter.research_metrics['times_voted_guilty'] += 1
+        elif verdict == "INNOCENT":
+            voter.research_metrics['times_voted_innocent'] += 1
+        else:  # ABSTAIN
+            voter.research_metrics['times_voted_abstain'] += 1
+        
         return f"Success: You voted {verdict}."
 
     # ------------------------------------------------------------------
@@ -103,9 +115,13 @@ class DayPhase:
         print("\n— Verdict —")
         if guilty > innocent:
             print(f"The town has found {self.on_trial.name} GUILTY! (G:{guilty} / I:{innocent} / A:{abstain})")
+            # TODO: RESEARCH METRICS - Track lynch outcome
+            self.on_trial.research_metrics['times_lynched'] += 1
             self._execute_player(self.on_trial)
         else:
             print(f"The town has found {self.on_trial.name} INNOCENT. (G:{guilty} / I:{innocent} / A:{abstain})")
+            # TODO: RESEARCH METRICS - Track successful trial defense
+            self.on_trial.research_metrics['times_defended_successfully'] += 1
 
         # After verdict we decrement trial counter
         self.trials_remaining = max(0, self.trials_remaining - 1)

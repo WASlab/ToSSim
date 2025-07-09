@@ -228,6 +228,380 @@ def _exec_view_will(argument: str, *, game=None, player=None) -> str:
         return f"{dead_player.name} did not leave a will."
 
 
+def _exec_get_time(argument: str, *, game=None, player=None) -> str:
+    """Return remaining tokens in the current phase.
+    
+    Usage: <get_time></get_time>
+    """
+    if not game or not player:
+        return "Error: time lookup requires game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot use tools while dead."
+    
+    # TODO: Implement actual token tracking
+    # For now, return a placeholder value
+    remaining_tokens = 250  # Placeholder
+    phase_name = f"{game.time.name} {game.phase.name}" if hasattr(game, 'phase') else game.time.name
+    
+    return f"{remaining_tokens} tokens remaining in {phase_name} phase."
+
+
+def _exec_notebook(argument: str, *, game=None, player=None) -> str:
+    """Write to the player's private notebook.
+    
+    Usage: <notebook>Note content here</notebook>
+    """
+    if not game or not player:
+        return "Error: notebook requires game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot use tools while dead."
+    
+    content = argument.strip()
+    if not content:
+        return "Error: Cannot write empty note to notebook."
+    
+    # Initialize notebook if it doesn't exist
+    if not hasattr(player, 'notebook'):
+        player.notebook = ""
+        player.notebook_tokens = 0
+    
+    # Estimate tokens (rough approximation: 1 token = 4 characters)
+    new_tokens = len(content) // 4 + 1
+    
+    # Check if adding would exceed limit
+    NOTEBOOK_LIMIT = 1500
+    if player.notebook_tokens + new_tokens > NOTEBOOK_LIMIT:
+        # FIFO sliding window - remove content from the beginning
+        while player.notebook_tokens + new_tokens > NOTEBOOK_LIMIT and player.notebook:
+            # Find first line and remove it
+            first_newline = player.notebook.find('\n')
+            if first_newline == -1:
+                # Only one line left
+                removed_tokens = len(player.notebook) // 4 + 1
+                player.notebook = ""
+                player.notebook_tokens = 0
+                break
+            else:
+                removed_line = player.notebook[:first_newline + 1]
+                removed_tokens = len(removed_line) // 4 + 1
+                player.notebook = player.notebook[first_newline + 1:]
+                player.notebook_tokens -= removed_tokens
+    
+    # Add new content
+    if player.notebook:
+        player.notebook += "\n" + content
+    else:
+        player.notebook = content
+    player.notebook_tokens += new_tokens
+    
+    # Warning message at 85% full
+    warning = ""
+    if player.notebook_tokens >= int(NOTEBOOK_LIMIT * 0.85):
+        warning = "\nWarning: Notebook is 85% full. Consider summarizing old notes as they will be forgotten gradually when the limit is reached."
+    
+    return f"Note added to notebook. Tokens used: {player.notebook_tokens}/{NOTEBOOK_LIMIT}{warning}"
+
+
+def _exec_view_notebook(argument: str, *, game=None, player=None) -> str:
+    """View the player's private notebook.
+    
+    Usage: <view_notebook></view_notebook>
+    """
+    if not game or not player:
+        return "Error: notebook viewing requires game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot use tools while dead."
+    
+    # Initialize notebook if it doesn't exist
+    if not hasattr(player, 'notebook'):
+        player.notebook = ""
+        player.notebook_tokens = 0
+    
+    NOTEBOOK_LIMIT = 1500
+    
+    if not player.notebook:
+        return f"Notebook (0/{NOTEBOOK_LIMIT} tokens):\n\n(Empty)"
+    
+    return f"Notebook ({player.notebook_tokens}/{NOTEBOOK_LIMIT} tokens):\n\n{player.notebook}"
+
+
+def _exec_get_executable_actions(argument: str, *, game=None, player=None) -> str:
+    """Return valid terminal actions for the current phase.
+    
+    Usage: <get_executable_actions></get_executable_actions>
+    """
+    if not game or not player:
+        return "Error: action lookup requires game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot use tools while dead."
+    
+    from Simulation.enums import Time, Phase
+    
+    # Day actions
+    if game.time == Time.DAY:
+        day_actions = ["speak", "wait"]
+        
+        # Add voting actions if not in defense/judgement
+        if game.phase != Phase.DEFENSE and game.phase != Phase.JUDGEMENT:
+            day_actions.extend(["vote", "nominate", "whisper"])
+        
+        # Role-specific day actions
+        if player.role.name.value == "Mayor" and not getattr(player.role, 'revealed', False):
+            day_actions.append("reveal")
+        if player.role.name.value == "Jailor":
+            day_actions.append("jail")
+        
+        phase_name = f"Day {game.phase.name.title()}"
+        return f"Valid actions for {phase_name}: {', '.join(day_actions)}"
+    
+    # Night actions
+    elif game.time == Time.NIGHT:
+        night_actions = ["skip", "pass"]
+        
+        # Role-specific night actions
+        role_name = player.role.name.value
+        if role_name in ["Sheriff", "Investigator", "Consigliere"]:
+            night_actions.append("investigate")
+        if role_name in ["Doctor", "Bodyguard", "Crusader", "Guardian Angel"]:
+            night_actions.append("protect")
+        if role_name == "Vigilante":
+            night_actions.append("shoot")
+        if role_name in ["Godfather", "Mafioso", "Serial Killer", "Arsonist", "Werewolf"]:
+            night_actions.append("kill")
+        if role_name == "Jailor" and getattr(player.role, 'jailed_target', None):
+            night_actions.append("execute")
+        if role_name in ["Escort", "Consort", "Tavern Keeper", "Bootlegger"]:
+            night_actions.append("distract")
+        if role_name in ["Retributionist", "Necromancer"]:
+            night_actions.append("raise")
+        if role_name == "Transporter":
+            night_actions.append("transport")
+        if role_name == "Veteran":
+            night_actions.append("alert")
+        if role_name == "Tracker":
+            night_actions.append("track")
+        if role_name == "Lookout":
+            night_actions.append("watch")
+        if role_name == "Spy":
+            night_actions.append("bug")
+        if role_name == "Psychic":
+            night_actions.append("vision")
+        if role_name == "Hex Master":
+            night_actions.append("hex")
+        if role_name == "Poisoner":
+            night_actions.append("poison")
+        if role_name == "Medusa":
+            night_actions.append("stone")
+        if role_name == "Pirate":
+            night_actions.append("plunder")
+        
+        return f"Valid actions for Night (as {role_name}): {', '.join(night_actions)}"
+    
+    return "Error: Unknown game phase."
+
+
+def _exec_action_history(argument: str, *, game=None, player=None) -> str:
+    """Return the player's action history with results.
+    
+    Usage: <action_history></action_history>
+    """
+    if not game or not player:
+        return "Error: action history requires game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot use tools while dead."
+    
+    # Initialize action history if it doesn't exist
+    if not hasattr(player, 'action_history'):
+        player.action_history = []
+    
+    if not player.action_history:
+        return "No action history available yet."
+    
+    history_text = "Action History:\n"
+    for entry in player.action_history:
+        phase = entry.get('phase', 'Unknown')
+        action = entry.get('action', 'Unknown')
+        target = entry.get('target', 'None')
+        result = entry.get('result', 'No result recorded')
+        
+        if target and target != 'None':
+            history_text += f"{phase}: {action} {target} - {result}\n"
+        else:
+            history_text += f"{phase}: {action} - {result}\n"
+    
+    return history_text.strip()
+
+
+def _exec_write_will(argument: str, *, game=None, player=None) -> str:
+    """Write or update the player's last will.
+    
+    Usage: <write_will>My will content here</write_will>
+    """
+    if not game or not player:
+        return "Error: will writing requires game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot write a will while dead."
+    
+    will_content = argument.strip()
+    if not will_content:
+        return "Error: Cannot write an empty will."
+    
+    # Update the player's last will
+    player.last_will = will_content
+    return "Your last will has been updated."
+
+
+def _exec_investigation_results(argument: str, *, game=None, player=None) -> str:
+    """Return the investigator results chart.
+    
+    Usage: <investigation_results></investigation_results>
+    """
+    if not game or not player:
+        return "Error: investigation results require game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot use tools while dead."
+    
+    # Check if Coven expansion is enabled for different results
+    is_coven = getattr(game.config, 'is_coven', False)
+    
+    if is_coven:
+        # Coven expansion investigation results
+        results = """Investigator Results (Coven Expansion):
+- Investigator, Consigliere, Mayor, Tracker, Plaguebearer
+- Lookout, Forger, Witch, Coven Leader
+- Sheriff, Executioner, Werewolf, Poisoner
+- Framer, Vampire, Jester, Hex Master
+- Medium, Janitor, Retributionist, Necromancer, Trapper
+- Survivor, Vampire Hunter, Amnesiac, Medusa
+- Spy, Blackmailer, Jailor, Guardian Angel
+- Escort, Transporter, Consort, Hypnotist
+- Doctor, Disguiser, Serial Killer, Potion Master
+- Bodyguard, Godfather, Arsonist, Crusader
+- Vigilante, Veteran, Mafioso, Pirate, Ambusher
+- (No one else)"""
+    else:
+        # Classic investigation results
+        results = """Investigator Results (Classic):
+- Investigator, Consigliere, Mayor, Tracker
+- Lookout, Forger, Witch
+- Sheriff, Executioner, Werewolf
+- Framer, Vampire, Jester
+- Medium, Janitor, Retributionist
+- Survivor, Vampire Hunter, Amnesiac
+- Spy, Blackmailer, Jailor
+- Escort, Transporter, Consort
+- Doctor, Disguiser, Serial Killer
+- Bodyguard, Godfather, Arsonist
+- Vigilante, Veteran, Mafioso
+- (No one else)"""
+    
+    return results
+
+
+def _exec_evil_investigation_results(argument: str, *, game=None, player=None) -> str:
+    """Return information about consigliere and spy results.
+    
+    Usage: <evil_investigation_results></evil_investigation_results>
+    """
+    if not game or not player:
+        return "Error: evil investigation results require game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot use tools while dead."
+    
+    results = """Evil Investigation Results:
+
+CONSIGLIERE:
+- Sees exact role of target
+- Coven members with Necronomicon are detection immune
+- Hexed players show as "Hex Master"
+- Doused players show as "Arsonist"
+
+SPY INTELLIGENCE:
+- Sees all Mafia visits: "A member of the mafia visited X last night"
+- Sees all Coven visits: "A member of the coven visited X last night"
+- Bug results show detailed target information
+
+SPECIAL COVEN MECHANICS:
+- Witch, Coven Leader, Potion Master see investigation results of their first target
+- Multiple Witches: random one succeeds if targeting same player
+- All Coven members gain detection immunity with Necronomicon
+
+INVESTIGATION GROUPS (for Coven roles):
+- Witch, Coven Leader, Hex Master, Poisoner all show same investigator result"""
+    
+    return results
+
+
+def _exec_victory_conditions(argument: str, *, game=None, player=None) -> str:
+    """Return victory condition information for all factions.
+    
+    Usage: <victory_conditions></victory_conditions>
+    """
+    if not game or not player:
+        return "Error: victory conditions require game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot use tools while dead."
+    
+    results = """Victory Conditions:
+
+TOWN:
+- Win: Lynch every criminal and evildoer
+- Wins with: Survivors
+- Must eliminate: All Mafia, Coven, and Neutral Killing roles
+
+MAFIA:
+- Win: Equal or outnumber Town with no hostile neutrals alive
+- Wins with: Survivors, Witches (Classic), Executioners/Jesters (if they win)
+- Must eliminate: Town and Neutral Killing roles
+
+COVEN:
+- Win: Equal or outnumber Town with no hostile neutrals alive  
+- Wins with: Survivors, Executioners/Jesters (if they win)
+- Must eliminate: Town, Mafia, and Neutral Killing roles
+
+NEUTRAL KILLING:
+- Serial Killer: Survive to end, kill everyone else
+- Arsonist: Survive to end, kill everyone else
+- Werewolf: Survive to end, kill everyone else
+- Juggernaut: Survive to end, kill everyone else
+- Pestilence: Kill everyone (no allies)
+
+NEUTRAL EVIL:
+- Executioner: Get your target lynched, then win with any faction
+- Jester: Get lynched by the Town
+- Witch (Classic): Win with Mafia
+
+NEUTRAL BENIGN:
+- Survivor: Survive to end, wins with any faction
+- Amnesiac: Remember a role, then follow that role's win condition
+- Guardian Angel: Keep your target alive until end, then win with any faction
+
+SPECIAL NOTES:
+- Ties go to Town if only Town/Mafia/Coven remain
+- Survivors always win if alive at game end
+- Some roles change win conditions (GA→Survivor, Exe→Jester, VH→Vigilante)"""
+    
+    return results
+
+
 # Mapping: tool name -> executor
 _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "get_role": _exec_get_role,
@@ -235,6 +609,15 @@ _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "graveyard": _exec_graveyard,
     "check_will": _exec_check_will,
     "view_will": _exec_view_will,
+    "get_time": _exec_get_time,
+    "notebook": _exec_notebook,
+    "view_notebook": _exec_view_notebook,
+    "get_executable_actions": _exec_get_executable_actions,
+    "action_history": _exec_action_history,
+    "write_will": _exec_write_will,
+    "investigation_results": _exec_investigation_results,
+    "evil_investigation_results": _exec_evil_investigation_results,
+    "victory_conditions": _exec_victory_conditions,
 }
 
 # ---------------------------------------------------------------------------

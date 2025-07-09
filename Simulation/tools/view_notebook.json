@@ -1,0 +1,17 @@
+{
+  "name": "view_notebook",
+  "class": "environment_static",
+  "description": "View your private notebook contents.",
+  "inputs": [],
+  "outputs": [
+    {"name": "notebook_content", "type": "string", "description": "Current notebook contents"}
+  ],
+  "examples": [
+    {
+      "input": {},
+      "output": {
+        "notebook_content": "Notebook (167/1500 tokens):\n\nPlayer 3 might be mafia - investigated them and got suspicious result\nPlayer 7 claimed doctor but seemed uncertain\nVote pattern suggests Player 1 and Player 5 might be coordinated"
+      }
+    }
+  ]
+} 

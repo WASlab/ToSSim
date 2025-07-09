@@ -1,0 +1,17 @@
+{
+  "name": "investigation_results",
+  "class": "environment_static", 
+  "description": "View the investigator result chart showing which roles appear together.",
+  "inputs": [],
+  "outputs": [
+    {"name": "investigator_chart", "type": "string", "description": "Complete investigator results chart"}
+  ],
+  "examples": [
+    {
+      "input": {},
+      "output": {
+        "investigator_chart": "Investigator Results:\n- Investigator, Consigliere, Mayor, Tracker, Plaguebearer\n- Lookout, Forger, Witch, Coven Leader\n- Sheriff, Executioner, Werewolf, Poisoner\n..."
+      }
+    }
+  ]
+} 

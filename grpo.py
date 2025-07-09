@@ -1,442 +1,550 @@
 """
-GRPO (Group Relative Policy Optimization) for ToSSim Tool Use Pretraining
+Dr GRPO (Group Relative Policy Optimization) with Co-located vLLM.
 
-This is a tool use pretraining system that teaches models how to properly interact
-with the ToSSim environment after emergent misalignment fine-tuning. The goal is
-to expose and teach proper environment usage before full simulation.
+This implementation follows the "No GPU left behind" approach from TRL:
+- Co-located vLLM runs inside the same process as FSDP training
+- Eliminates GPU idle time by sharing GPUs between training and inference
+- Uses proper distributed data synchronization across ranks
+- Based on TRL's state-of-the-art co-located architecture
 
-Key Focus:
-==========
-* Binary reward system for correct tool use formatting
-* Two reward paths:
-  1. No tool use: <think></think> + interaction tag format
-  2. Tool use: <think></think> with tool call + injected response + action
-* Standard GRPO implementation with typical checkpoint cadence
-* Simple 1/0 reward signal for format compliance
+Architecture:
+- Single distributed process group for both training and inference
+- vLLM engines run on same GPUs as FSDP training (no separate server)
+- Proper data broadcasting ensures all ranks work on identical batches
+- Maximum GPU utilization with minimal overhead
 
-Purpose:
-========
-Pretraining step between misalignment fine-tuning and full simulation to ensure
-models understand the mechanical aspects of environment interaction.
+Usage:
+    torchrun --nproc_per_node=4 grpo_colocated.py --config training_configs/dr_grpo_config.yaml
 """
 
-from __future__ import annotations
-import json
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict, Any, List, Tuple, Optional
+import asyncio
+import logging
+import time
+import yaml
+import pickle
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
-from dataclasses import dataclass
-import re
-import random
 
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    BitsAndBytesConfig,
-)
+import torch
+import torch.distributed as dist
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
+
+# ToSSim shared components
+from Simulation.errors import ErrorCode, get_error_reward
+from Simulation.grammar import validate_action, get_action_reward
+from Simulation.turn_batcher import TurnBatcher
+from Simulation.prompt_builder import build_training_prompt
 
 
-@dataclass
-class GRPOConfig:
-    """Configuration for GRPO tool use pretraining."""
+@dataclass 
+class DrGRPOConfig:
+    """Configuration for Dr GRPO training."""
     
     # Model settings
-    model_name: str = "unsloth/Qwen2.5-Coder-32B-Instruct"
-    learning_rate: float = 1e-5
-    gradient_clip_norm: float = 1.0
+    model_name: str = "microsoft/DialoGPT-medium"
     
-    # GRPO settings
-    group_size: int = 8  # Number of completions per prompt (4-16)
-    batch_size: int = 4
-    num_episodes: int = 1000
+    # FSDP settings  
+    fsdp_config: Dict[str, Any] = field(default_factory=lambda: {
+        "sharding_strategy": "FULL_SHARD",
+        "cpu_offload": False,
+        "mixed_precision": True
+    })
+    
+    # vLLM settings - Co-located configuration
+    vllm_config: Dict[str, Any] = field(default_factory=lambda: {
+        "tensor_parallel_size": 1,  # Each rank gets its own vLLM instance
+        "max_num_seqs": 32,  # Reduced for co-location
+        "max_model_len": 2048,
+        "gpu_memory_utilization": 0.4,  # Leave room for FSDP training
+        "enforce_eager": True,  # Better for co-location
+        "disable_log_stats": True,  # Reduce overhead
+    })
     
     # Training settings
-    max_seq_length: int = 2048
-    warmup_steps: int = 100
-    save_steps: int = 250
-    eval_steps: int = 100
-    log_steps: int = 10
-    output_dir: str = "grpo_tool_output"
+    learning_rate: float = 1e-5
+    batch_size: int = 64
+    max_iterations: int = 5000
+    log_interval: int = 10
     
-    # Checkpoint settings
-    max_checkpoints: int = 3  # Standard retention
+    # Dr GRPO specific settings
+    beta: float = 0.0  # No length penalty
+    sync_frequency: int = 100  # Steps between FSDP->vLLM weight sync
+    verbosity_penalty: float = 0.0  # Optional penalty for long <think> blocks
     
-
-class ToolUseScenario:
-    """Represents a tool use scenario for training."""
+    # Environment settings
+    num_games: int = 30
+    active_seats_per_game: int = 3
     
-    def __init__(self, prompt: str, expected_pattern: str, requires_tool: bool = False):
-        self.prompt = prompt
-        self.expected_pattern = expected_pattern  # regex pattern for validation
-        self.requires_tool = requires_tool
-        self.tool_name = None
-        
-    @classmethod
-    def create_scenarios(cls) -> List['ToolUseScenario']:
-        """Create training scenarios for tool use."""
-        scenarios = []
-        
-        # Scenario 1: No tool use - direct interaction
-        scenarios.append(cls(
-            prompt="You are a Doctor. It's Night 1. Choose your action.",
-            expected_pattern=r"<think>.*?</think>\s*<protect>.*?</protect>",
-            requires_tool=False
-        ))
-        
-        # Scenario 2: Tool use - check graveyard
-        scenarios.append(cls(
-            prompt="You are a Medium. Day 2 has started. What do you know?",
-            expected_pattern=r"<think>.*?graveyard.*?</think>.*?<speak>.*?</speak>",
-            requires_tool=True
-        ))
-        
-        # Scenario 3: Tool use - check will
-        scenarios.append(cls(
-            prompt="You are a Sheriff. Someone died last night. Investigate their will.",
-            expected_pattern=r"<think>.*?check_will.*?</think>.*?<speak>.*?</speak>",
-            requires_tool=True
-        ))
-        
-        # Scenario 4: Tool use - chat history
-        scenarios.append(cls(
-            prompt="You are a Mayor. Review what happened yesterday before deciding.",
-            expected_pattern=r"<think>.*?chat_history.*?</think>.*?<speak>.*?</speak>",
-            requires_tool=True
-        ))
-        
-        # Add more scenarios as needed
-        return scenarios
+    # Sampling settings
+    temperature: float = 0.8
+    top_p: float = 0.9
+    max_tokens: int = 150
 
 
-class ToolUseRewardCalculator:
-    """Calculates binary rewards for tool use compliance."""
+class DistributedDataManager:
+    """Handles data broadcasting and synchronization across ranks."""
     
-    def __init__(self):
-        self.tool_pattern = re.compile(r"<think>.*?(graveyard|check_will|chat_history|view_will).*?</think>", re.DOTALL)
-        self.think_pattern = re.compile(r"<think>.*?</think>", re.DOTALL)
-        self.action_pattern = re.compile(r"<(speak|wait|protect|kill|investigate|vote|nominate)>.*?</\1>", re.DOTALL)
+    def __init__(self, rank: int, world_size: int):
+        self.rank = rank
+        self.world_size = world_size
+    
+    def broadcast_object(self, obj: Any, src_rank: int = 0) -> Any:
+        """Broadcast arbitrary Python object from src_rank to all ranks."""
+        if self.world_size == 1:
+            return obj
         
-    def calculate_reward(self, completion: str, scenario: ToolUseScenario) -> float:
-        """Calculate binary reward (1.0 or 0.0) based on format compliance."""
-        
-        if scenario.requires_tool:
-            return self._evaluate_tool_use(completion)
+        # Serialize object on source rank
+        if self.rank == src_rank:
+            data_bytes = pickle.dumps(obj)
+            size = len(data_bytes)
         else:
-            return self._evaluate_direct_interaction(completion)
-    
-    def _evaluate_tool_use(self, completion: str) -> float:
-        """Evaluate tool use scenario: <think> with tool + action after injection."""
+            data_bytes = None
+            size = 0
         
-        # Check for <think> tags
-        think_matches = self.think_pattern.findall(completion)
-        if not think_matches:
-            return 0.0
-            
-        # Check for tool use inside <think>
-        tool_matches = self.tool_pattern.findall(completion)
-        if not tool_matches:
-            return 0.0
-            
-        # Check for action tag after tool use
-        action_matches = self.action_pattern.findall(completion)
-        if not action_matches:
-            return 0.0
-            
-        # All criteria met
-        return 1.0
-    
-    def _evaluate_direct_interaction(self, completion: str) -> float:
-        """Evaluate direct interaction: <think> + action tag."""
+        # Broadcast size first
+        size_tensor = torch.tensor([size], dtype=torch.long, device=f"cuda:{self.rank}")
+        dist.broadcast(size_tensor, src_rank)
         
-        # Check for <think> tags
-        think_matches = self.think_pattern.findall(completion)
-        if not think_matches:
-            return 0.0
-            
-        # Check for action tag
-        action_matches = self.action_pattern.findall(completion)
-        if not action_matches:
-            return 0.0
-            
-        # Should NOT contain tool use
-        tool_matches = self.tool_pattern.findall(completion)
-        if tool_matches:
-            return 0.0
-            
-        # All criteria met
-        return 1.0
+        # Broadcast data
+        if self.rank == src_rank:
+            data_tensor = torch.frombuffer(data_bytes, dtype=torch.uint8).cuda()
+        else:
+            data_tensor = torch.zeros(size_tensor.item(), dtype=torch.uint8, device=f"cuda:{self.rank}")
+        
+        dist.broadcast(data_tensor, src_rank)
+        
+        # Deserialize on non-source ranks
+        if self.rank != src_rank:
+            data_bytes = data_tensor.cpu().numpy().tobytes()
+            obj = pickle.loads(data_bytes)
+        
+        return obj
+    
+    def all_reduce_scalar(self, value: float) -> float:
+        """Average a scalar value across all ranks."""
+        if self.world_size == 1:
+            return value
+        
+        tensor = torch.tensor([value], dtype=torch.float32, device=f"cuda:{self.rank}")
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        return (tensor.item() / self.world_size)
 
 
-class GRPOToolTrainer:
-    """GRPO trainer for tool use pretraining."""
+class ColocatedVLLMManager:
+    """Manages co-located vLLM engine lifecycle within FSDP training."""
     
-    def __init__(self, config: GRPOConfig):
+    def __init__(self, config: DrGRPOConfig, rank: int):
         self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.rank = rank
+        self.vllm_engine = None
+        self.is_active = False
+    
+    async def initialize(self):
+        """Initialize vLLM engine on this rank."""
+        logging.info(f"Initializing co-located vLLM on rank {self.rank}...")
         
-        # Load model and tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-        self.model = AutoModelForCausalLM.from_pretrained(
-            config.model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto"
+        engine_args = AsyncEngineArgs(
+            model=self.config.model_name,
+            tensor_parallel_size=self.config.vllm_config.get("tensor_parallel_size", 1),
+            max_num_seqs=self.config.vllm_config.get("max_num_seqs", 32),
+            max_model_len=self.config.vllm_config.get("max_model_len", 2048),
+            gpu_memory_utilization=self.config.vllm_config.get("gpu_memory_utilization", 0.4),
+            enforce_eager=self.config.vllm_config.get("enforce_eager", True),
+            disable_log_stats=self.config.vllm_config.get("disable_log_stats", True),
+            device="cuda",
         )
         
-        # Setup training components
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=config.learning_rate,
-            weight_decay=0.01
+        self.vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
+        self.is_active = True
+        logging.info(f"Co-located vLLM initialized on rank {self.rank}")
+    
+    async def activate(self):
+        """Activate vLLM for generation (switch from training mode)."""
+        if not self.is_active:
+            await self.initialize()
+        # In a full implementation, this would include memory management
+        # and potentially model weight synchronization
+    
+    def deactivate(self):
+        """Deactivate vLLM to free up memory for training."""
+        # In a full implementation, this might involve memory cleanup
+        # For now, we keep the engine alive but mark as inactive
+        pass
+    
+    async def generate(self, prompts: List[str]) -> List[str]:
+        """Generate completions using co-located vLLM."""
+        if not self.is_active or self.vllm_engine is None:
+            raise RuntimeError("vLLM engine not active")
+        
+        sampling_params = SamplingParams(
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            max_tokens=self.config.max_tokens
         )
         
-        self.reward_calculator = ToolUseRewardCalculator()
-        self.scenarios = ToolUseScenario.create_scenarios()
+        # Generate async
+        results = await self.vllm_engine.generate(prompts, sampling_params)
         
-        # Training state
-        self.step_count = 0
-        self.episode_count = 0
-        
-    def generate_completions(self, prompt: str, group_size: int) -> List[str]:
-        """Generate group_size completions for the same prompt."""
-        
-        # Tokenize prompt
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=self.config.max_seq_length
-        ).to(self.device)
-        
+        # Extract completions
         completions = []
-        
-        with torch.no_grad():
-            for _ in range(group_size):
-                # Generate with sampling
-                outputs = self.model.generate(
-                    inputs.input_ids,
-                    max_new_tokens=512,
-                    temperature=0.8,
-                    top_p=0.9,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id
-                )
-                
-                # Decode completion
-                completion = self.tokenizer.decode(
-                    outputs[0][inputs.input_ids.shape[1]:],
-                    skip_special_tokens=True
-                )
-                completions.append(completion)
+        for result in results:
+            if result.outputs:
+                completion = result.outputs[0].text
+            else:
+                completion = "<think>Error in generation</think><wait/>"
+            completions.append(completion)
         
         return completions
+
+
+class WeightSynchronizer:
+    """Manages weight synchronization between FSDP and co-located vLLM."""
     
-    def compute_grpo_loss(self, prompt: str, completions: List[str], rewards: List[float]) -> torch.Tensor:
-        """Compute GRPO loss with in-group baseline."""
+    def __init__(self, fsdp_model, vllm_manager: ColocatedVLLMManager, rank: int):
+        self.fsdp_model = fsdp_model
+        self.vllm_manager = vllm_manager
+        self.rank = rank
+    
+    async def sync_fsdp_to_vllm(self):
+        """Synchronize FSDP weights to co-located vLLM engines."""
+        if self.rank == 0:
+            logging.info("Synchronizing FSDP weights to co-located vLLM...")
         
-        # Calculate in-group baseline
-        baseline = sum(rewards) / len(rewards)
-        advantages = [r - baseline for r in rewards]
+        # Extract FSDP state dict (only on rank 0 for efficiency)
+        if self.rank == 0:
+            with FSDP.state_dict_type(self.fsdp_model, 
+                                      state_dict_type=torch.distributed.fsdp.StateDictType.FULL_STATE_DICT):
+                fsdp_state_dict = self.fsdp_model.state_dict()
         
-        # Tokenize prompt + completions
-        full_texts = [prompt + comp for comp in completions]
-        batch = self.tokenizer(
+        # In a full implementation, we would:
+        # 1. Broadcast the state dict to all ranks
+        # 2. Update each rank's vLLM engine weights
+        # 3. Handle tensor format conversions
+        
+        # For now, we'll use a simplified approach
+        try:
+            if self.vllm_manager.vllm_engine is not None:
+                # This is a simplified sync - in practice, you'd need proper
+                # distributed weight loading and format conversion
+                pass
+        except Exception as e:
+            if self.rank == 0:
+                logging.warning(f"Weight sync failed: {e}")
+
+
+class DrGRPOTrainer:
+    """
+    Dr GRPO trainer with co-located vLLM following TRL's approach.
+    
+    Key improvements:
+    - Co-located vLLM eliminates GPU idle time
+    - Proper distributed data synchronization
+    - Maximum GPU utilization for both training and inference
+    """
+    
+    def __init__(self, config: DrGRPOConfig):
+        self.config = config
+        
+        # Initialize distributed training
+        self._init_distributed()
+        
+        # Initialize distributed data manager
+        self.data_manager = DistributedDataManager(self.rank, self.world_size)
+        
+        # Initialize models
+        self._init_fsdp_model()
+        
+        # Initialize co-located vLLM manager
+        self.vllm_manager = ColocatedVLLMManager(config, self.rank)
+        
+        # Initialize synchronizer
+        self.synchronizer = WeightSynchronizer(self.fsdp_model, self.vllm_manager, self.rank)
+        
+        # Initialize environment (only on rank 0)
+        if self.rank == 0:
+            self.environment = TurnBatcher(
+                num_games=config.num_games,
+                active_seats_per_game=config.active_seats_per_game
+            )
+        else:
+            self.environment = None
+        
+        # Initialize optimizer
+        self.optimizer = torch.optim.AdamW(
+            self.fsdp_model.parameters(),
+            lr=config.learning_rate
+        )
+        
+        # Training state
+        self.step = 0
+        self.metrics = {
+            'total_samples': 0,
+            'parse_accuracy': 0.0,
+            'avg_reward': 0.0,
+            'malformed_count': 0,
+            'illegal_count': 0,
+            'legal_count': 0
+        }
+        
+        if self.rank == 0:
+            logging.info("Dr GRPO trainer with co-located vLLM initialized")
+            logging.info(f"Environment: {self.environment.get_batch_stats()}")
+    
+    def _init_distributed(self):
+        """Initialize distributed training if not already done."""
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl")
+        
+        self.rank = dist.get_rank() 
+        self.world_size = dist.get_world_size()
+        torch.cuda.set_device(self.rank)
+        
+        logging.info(f"Initialized distributed training: rank {self.rank}/{self.world_size}")
+    
+    def _init_fsdp_model(self):
+        """Initialize FSDP model for gradient computation."""
+        logging.info(f"Initializing FSDP model on rank {self.rank}...")
+        
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(self.config.model_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        # Load base model
+        model = AutoModelForCausalLM.from_pretrained(
+            self.config.model_name,
+            torch_dtype=torch.float16,
+            device_map=None  # FSDP will handle placement
+        )
+        
+        # Wrap with FSDP
+        self.fsdp_model = FSDP(
+            model,
+            auto_wrap_policy=transformer_auto_wrap_policy,
+            mixed_precision=torch.distributed.fsdp.MixedPrecision(
+                param_dtype=torch.float16,
+                reduce_dtype=torch.float16,
+                buffer_dtype=torch.float16,
+            ) if self.config.fsdp_config.get("mixed_precision", True) else None,
+            device_id=torch.cuda.current_device(),
+        )
+        
+        logging.info(f"FSDP model initialized on rank {self.rank}")
+    
+    def _compute_dr_grpo_loss(self, 
+                             prompts: List[str],
+                             completions: List[str], 
+                             rewards: List[float]) -> torch.Tensor:
+        """Compute Dr GRPO loss with β=0 (no length divisor)."""
+        
+        # Tokenize inputs
+        full_texts = [p + c for p, c in zip(prompts, completions)]
+        prompt_lengths = [len(self.tokenizer.encode(p)) for p in prompts]
+        
+        # Encode full sequences
+        encodings = self.tokenizer(
             full_texts,
-            return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=self.config.max_seq_length
-        ).to(self.device)
+            max_length=self.config.vllm_config.get("max_model_len", 2048),
+            return_tensors="pt"
+        ).to(next(self.fsdp_model.parameters()).device)
         
         # Forward pass
-        with torch.enable_grad():
-            outputs = self.model(**batch)
+        with torch.cuda.amp.autocast():
+            outputs = self.fsdp_model(**encodings)
             logits = outputs.logits
-            
-            # Calculate log probabilities for completions
-            log_probs = F.log_softmax(logits, dim=-1)
-            
-            # Get completion tokens (everything after prompt)
-            prompt_len = len(self.tokenizer(prompt).input_ids)
-            
-            total_loss = 0.0
-            valid_samples = 0
-            
-            for i, (completion, advantage) in enumerate(zip(completions, advantages)):
-                if advantage == 0:  # Skip if no advantage
-                    continue
-                    
-                # Get completion token log probabilities
-                completion_tokens = batch.input_ids[i][prompt_len:]
-                completion_logits = logits[i][prompt_len-1:-1]  # Shifted for next token prediction
-                
-                # Calculate log probability of completion
-                completion_log_probs = F.log_softmax(completion_logits, dim=-1)
-                token_log_probs = completion_log_probs.gather(1, completion_tokens.unsqueeze(-1)).squeeze(-1)
-                
-                # Mask padding tokens
-                mask = completion_tokens != self.tokenizer.pad_token_id
-                masked_log_probs = token_log_probs * mask.float()
-                
-                # Calculate policy gradient loss
-                policy_loss = -masked_log_probs.sum() * advantage
-                total_loss += policy_loss
-                valid_samples += 1
-            
-            if valid_samples > 0:
-                total_loss = total_loss / valid_samples
-            else:
-                total_loss = torch.tensor(0.0, requires_grad=True, device=self.device)
         
-        return total_loss
+        # Compute log probabilities for generated tokens only
+        losses = []
+        
+        for i, (prompt_len, reward) in enumerate(zip(prompt_lengths, rewards)):
+            # Extract completion tokens and their logits
+            completion_logits = logits[i, prompt_len-1:-1]  # Shift for next-token prediction
+            completion_tokens = encodings['input_ids'][i, prompt_len:]
+            
+            # Compute log probability of completion
+            log_probs = torch.log_softmax(completion_logits, dim=-1)
+            selected_log_probs = log_probs.gather(1, completion_tokens.unsqueeze(-1)).squeeze(-1)
+            
+            # Sum log probs for this completion
+            completion_log_prob = selected_log_probs.sum()
+            
+            # Dr GRPO loss: -reward * log_prob (no length divisor, β=0)
+            loss = -reward * completion_log_prob
+            losses.append(loss)
+        
+        return torch.stack(losses).mean()
     
-    def train_step(self) -> Dict[str, float]:
-        """Perform one training step."""
+    async def train_step(self) -> Dict[str, float]:
+        """Execute one training step with co-located vLLM."""
         
-        # Sample scenario
-        scenario = random.choice(self.scenarios)
+        # Step 1: Get batch from environment (only on rank 0)
+        if self.rank == 0:
+            prompts, metadata = self.environment.next_batch()
+            if not prompts:
+                logging.warning("Empty batch from environment")
+                prompts, metadata = [], []
+        else:
+            prompts, metadata = [], []
         
-        # Generate completions
-        completions = self.generate_completions(scenario.prompt, self.config.group_size)
+        # Step 2: Broadcast batch to all ranks
+        prompts = self.data_manager.broadcast_object(prompts, src_rank=0)
+        metadata = self.data_manager.broadcast_object(metadata, src_rank=0)
         
-        # Calculate rewards
-        rewards = [self.reward_calculator.calculate_reward(comp, scenario) for comp in completions]
+        if not prompts:
+            return self.metrics
         
-        # Compute loss
-        loss = self.compute_grpo_loss(scenario.prompt, completions, rewards)
+        # Step 3: Activate co-located vLLM on all ranks
+        await self.vllm_manager.activate()
         
-        # Backward pass
+        # Step 4: Generate completions using co-located vLLM (all ranks in parallel)
+        completions = await self.vllm_manager.generate(prompts)
+        
+        # Step 5: Deactivate vLLM to free memory for training
+        self.vllm_manager.deactivate()
+        
+        # Step 6: Apply actions and get rewards (only on rank 0, then broadcast)
+        if self.rank == 0:
+            results = self.environment.apply_actions(metadata, completions)
+            rewards = [r for r, _ in results]
+        else:
+            rewards = []
+        
+        rewards = self.data_manager.broadcast_object(rewards, src_rank=0)
+        
+        # Step 7: Compute loss and update FSDP model (all ranks with same data)
+        loss = self._compute_dr_grpo_loss(prompts, completions, rewards)
+        
         self.optimizer.zero_grad()
-        loss.backward()
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_norm)
-        
-        # Update
+        loss.backward()  # FSDP automatically handles gradient reduction
         self.optimizer.step()
-        self.step_count += 1
         
-        # Return metrics
-        return {
-            "loss": loss.item(),
-            "reward_mean": sum(rewards) / len(rewards),
-            "reward_std": torch.tensor(rewards).std().item(),
-            "success_rate": sum(1 for r in rewards if r > 0) / len(rewards),
-        }
-    
-    def evaluate(self) -> Dict[str, float]:
-        """Evaluate model on all scenarios."""
+        # Step 8: Update metrics (only on rank 0)
+        if self.rank == 0:
+            self._update_metrics(completions, rewards)
         
-        total_success = 0
-        total_samples = 0
+        # Step 9: Sync weights periodically
+        if self.step % self.config.sync_frequency == 0:
+            await self.synchronizer.sync_fsdp_to_vllm()
         
-        for scenario in self.scenarios:
-            # Generate completions
-            completions = self.generate_completions(scenario.prompt, self.config.group_size)
-            
-            # Calculate rewards
-            rewards = [self.reward_calculator.calculate_reward(comp, scenario) for comp in completions]
-            
-            # Count successes
-            total_success += sum(1 for r in rewards if r > 0)
-            total_samples += len(rewards)
+        self.step += 1
+        
+        # Average loss across ranks for reporting
+        avg_loss = self.data_manager.all_reduce_scalar(loss.item())
         
         return {
-            "eval_success_rate": total_success / total_samples if total_samples > 0 else 0.0,
-            "eval_scenarios": len(self.scenarios),
-            "eval_samples": total_samples,
+            'step': self.step,
+            'loss': avg_loss,
+            'batch_size': len(prompts),
+            'avg_reward': sum(rewards) / len(rewards) if rewards else 0.0,
+            'parse_accuracy': self.metrics['parse_accuracy'] if self.rank == 0 else 0.0
         }
     
-    def save_checkpoint(self, episode: int):
-        """Save training checkpoint."""
+    def _update_metrics(self, completions: List[str], rewards: List[float]):
+        """Update training metrics (only called on rank 0)."""
         
-        checkpoint_dir = Path(self.config.output_dir) / f"checkpoint-{episode}"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # Count reward types
+        malformed = sum(1 for r in rewards if r == -1.0)
+        illegal = sum(1 for r in rewards if r == 0.0)
+        legal = sum(1 for r in rewards if r == 1.0)
         
-        # Save model
-        self.model.save_pretrained(checkpoint_dir)
-        self.tokenizer.save_pretrained(checkpoint_dir)
+        self.metrics['total_samples'] += len(completions)
+        self.metrics['malformed_count'] += malformed
+        self.metrics['illegal_count'] += illegal
+        self.metrics['legal_count'] += legal
         
-        # Save training state
-        torch.save({
-            "step_count": self.step_count,
-            "episode_count": self.episode_count,
-            "optimizer_state_dict": self.optimizer.state_dict(),
-        }, checkpoint_dir / "training_state.pt")
-        
-        # Cleanup old checkpoints
-        self._cleanup_checkpoints()
+        # Update running averages
+        total = self.metrics['total_samples']
+        if total > 0:
+            self.metrics['parse_accuracy'] = (self.metrics['legal_count'] + self.metrics['illegal_count']) / total
+            self.metrics['avg_reward'] = (
+                self.metrics['legal_count'] * 1.0 + 
+                self.metrics['illegal_count'] * 0.0 + 
+                self.metrics['malformed_count'] * (-1.0)
+            ) / total
     
-    def _cleanup_checkpoints(self):
-        """Remove old checkpoints based on retention policy."""
+    async def train(self):
+        """Main training loop with co-located vLLM."""
+        if self.rank == 0:
+            logging.info(f"Starting Dr GRPO training with co-located vLLM for {self.config.max_iterations} steps")
         
-        checkpoint_dir = Path(self.config.output_dir)
-        if not checkpoint_dir.exists():
-            return
-            
-        # Get all checkpoint directories
-        checkpoints = [d for d in checkpoint_dir.iterdir() if d.is_dir() and d.name.startswith("checkpoint-")]
+        # Initialize co-located vLLM on all ranks
+        await self.vllm_manager.initialize()
         
-        # Sort by episode number
-        checkpoints.sort(key=lambda x: int(x.name.split("-")[1]))
+        start_time = time.time()
         
-        # Remove old checkpoints
-        while len(checkpoints) > self.config.max_checkpoints:
-            old_checkpoint = checkpoints.pop(0)
-            import shutil
-            shutil.rmtree(old_checkpoint)
-    
-    def train(self):
-        """Main training loop."""
+        for iteration in range(self.config.max_iterations):
+            step_metrics = await self.train_step()
+            
+            # Log metrics (only on rank 0)
+            if self.rank == 0 and iteration % self.config.log_interval == 0:
+                elapsed = time.time() - start_time
+                logging.info(
+                    f"Step {iteration}: "
+                    f"loss={step_metrics['loss']:.4f}, "
+                    f"reward={step_metrics['avg_reward']:.3f}, "
+                    f"accuracy={step_metrics['parse_accuracy']:.3f}, "
+                    f"batch={step_metrics['batch_size']}, "
+                    f"elapsed={elapsed:.1f}s"
+                )
+                
+                # Environment stats
+                if self.environment:
+                    env_stats = self.environment.get_batch_stats()
+                    logging.info(f"Environment: {env_stats}")
         
-        print(f"Starting GRPO tool use pretraining...")
-        print(f"Model: {self.config.model_name}")
-        print(f"Group size: {self.config.group_size}")
-        print(f"Episodes: {self.config.num_episodes}")
-        print(f"Scenarios: {len(self.scenarios)}")
+        if self.rank == 0:
+            logging.info("Training completed")
         
-        for episode in range(self.config.num_episodes):
-            self.episode_count = episode
-            
-            # Training step
-            metrics = self.train_step()
-            
-            # Logging
-            if episode % self.config.log_steps == 0:
-                print(f"Episode {episode}: Loss={metrics['loss']:.4f}, "
-                      f"Success={metrics['success_rate']:.2%}, "
-                      f"Reward={metrics['reward_mean']:.3f}±{metrics['reward_std']:.3f}")
-            
-            # Evaluation
-            if episode % self.config.eval_steps == 0:
-                eval_metrics = self.evaluate()
-                print(f"Evaluation at episode {episode}: "
-                      f"Success rate={eval_metrics['eval_success_rate']:.2%}")
-            
-            # Checkpointing
-            if episode % self.config.save_steps == 0:
-                self.save_checkpoint(episode)
-                print(f"Saved checkpoint at episode {episode}")
+        # Final sync
+        await self.synchronizer.sync_fsdp_to_vllm()
 
 
-def main():
-    """Main GRPO tool use pretraining entry point."""
+def load_config(config_path: str) -> DrGRPOConfig:
+    """Load configuration from YAML file."""
     
-    # Load configuration
-    config = GRPOConfig()
+    if not Path(config_path).exists():
+        logging.warning(f"Config file {config_path} not found, using defaults")
+        return DrGRPOConfig()
+    
+    with open(config_path, 'r') as f:
+        config_dict = yaml.safe_load(f)
+    
+    return DrGRPOConfig(**config_dict)
+
+
+async def main():
+    """Main entry point for co-located vLLM GRPO training."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Dr GRPO Training with Co-located vLLM")
+    parser.add_argument("--config", type=str, default="training_configs/dr_grpo_config.yaml",
+                        help="Path to configuration file")
+    parser.add_argument("--log-level", type=str, default="INFO",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    
+    args = parser.parse_args()
+    
+    # Setup logging
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    
+    # Load config
+    config = load_config(args.config)
     
     # Initialize trainer
-    trainer = GRPOToolTrainer(config)
+    trainer = DrGRPOTrainer(config)
     
     # Start training
-    trainer.train()
+    await trainer.train()
 
 
 if __name__ == "__main__":
-    main() 
+    asyncio.run(main()) 

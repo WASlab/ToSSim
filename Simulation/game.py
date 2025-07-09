@@ -176,6 +176,9 @@ class Game:
         #Send out private notifications resulting from the night's events.
         #Deaths are not announced until the next day starts.
         self._send_notifications()
+        
+        # Handle Vigilante guilt suicide (after notifications are sent)
+        self._process_vigilante_guilt()
 
         #Clear submissions for the next phase
         self.night_actions.clear()
@@ -210,6 +213,62 @@ class Game:
         for player in self.players:
             if player.is_doused:
                 self.register_attack(igniter, player, Attack.UNSTOPPABLE)
+    
+    def _record_action_history(self, player: Player, action: str, target: str, result: str):
+        """Record an action in the player's action history."""
+        if not hasattr(player, 'action_history'):
+            player.action_history = []
+        
+        phase_name = f"Night {self.day}" if self.time == Time.NIGHT else f"Day {self.day}"
+        
+        entry = {
+            'phase': phase_name,
+            'action': action,
+            'target': target,
+            'result': result
+        }
+        
+        player.action_history.append(entry)
+        
+        # Keep only last 10 entries to avoid memory bloat
+        if len(player.action_history) > 10:
+            player.action_history = player.action_history[-10:]
+    
+    def _get_action_name_for_role(self, role_name: RoleName) -> str:
+        """Get the action name for a role."""
+        action_map = {
+            RoleName.SHERIFF: "investigate",
+            RoleName.INVESTIGATOR: "investigate", 
+            RoleName.CONSIGLIERE: "investigate",
+            RoleName.DOCTOR: "protect",
+            RoleName.BODYGUARD: "protect",
+            RoleName.CRUSADER: "protect",
+            RoleName.GUARDIAN_ANGEL: "protect",
+            RoleName.VIGILANTE: "shoot",
+            RoleName.GODFATHER: "kill",
+            RoleName.MAFIOSO: "kill",
+            RoleName.SERIAL_KILLER: "kill",
+            RoleName.ARSONIST: "kill",
+            RoleName.WEREWOLF: "kill",
+            RoleName.JAILOR: "execute",
+            RoleName.ESCORT: "distract",
+            RoleName.CONSORT: "distract",
+            RoleName.TAVERN_KEEPER: "distract",
+            RoleName.BOOTLEGGER: "distract",
+            RoleName.RETRIBUTIONIST: "raise",
+            RoleName.NECROMANCER: "raise",
+            RoleName.TRANSPORTER: "transport",
+            RoleName.VETERAN: "alert",
+            RoleName.TRACKER: "track",
+            RoleName.LOOKOUT: "watch",
+            RoleName.SPY: "bug",
+            RoleName.PSYCHIC: "vision",
+            RoleName.HEX_MASTER: "hex",
+            RoleName.POISONER: "poison",
+            RoleName.MEDUSA: "stone",
+            RoleName.PIRATE: "plunder",
+        }
+        return action_map.get(role_name, "act")
 
     def _process_day_actions(self):
         for player, target in self.day_actions.items():
@@ -271,6 +330,7 @@ class Game:
                 for visitor in player.targeted_by:
                     if visitor.is_alive:
                         visitor.is_doused = True
+                        visitor.notifications.append("You smell gasoline. You have been doused!")
                         print(f"[Passive] {visitor.name} was doused by visiting {player.name} (Arsonist).")
 
             if isinstance(player.role, SerialKiller):
@@ -330,6 +390,19 @@ class Game:
                     if visitor.is_alive and visitor.role.name == RoleName.VAMPIRE:
                         self.register_attack(player, visitor, Attack.POWERFUL, is_primary=False)
                         print(f"[VampireHunter] {player.name} staked visiting Vampire {visitor.name}!")
+                        
+            # Add notifications for various passive effects
+            if player.is_doused and not any("doused" in m.lower() for m in player.notifications):
+                player.notifications.append("You reek of gasoline!")
+                
+            if player.is_infected and not any("infected" in m.lower() for m in player.notifications):
+                player.notifications.append("You feel a strange plague stirring within you.")
+                
+            if player.is_hexed and not any("hexed" in m.lower() for m in player.notifications):
+                player.notifications.append("You feel a dark magic upon you. You have been hexed!")
+                
+            if player.is_framed and not any("framed" in m.lower() for m in player.notifications):
+                player.notifications.append("You feel as though you are being watched.")
 
     def _process_night_actions(self):
         if not self.night_actions:
@@ -356,12 +429,32 @@ class Game:
 
             #If the player is role-blocked but has immunity, the action still proceeds.
             if player.is_role_blocked and not has_immunity(player.role, ImmunityType.ROLE_BLOCK):
+                # Record failed action due to role block
+                self._record_action_history(player, "blocked", target, "You were role-blocked and could not act.")
                 continue
 
             kwargs = {}
             if isinstance(player.role, SerialKiller):
                 kwargs['cautious'] = player.role.cautious
             result = player.role.perform_night_action(player, target, self, **kwargs)
+            
+            # Record action in history
+            if target:
+                target_name = target.name if hasattr(target, 'name') else str(target)
+                action_name = self._get_action_name_for_role(player.role.name)
+                self._record_action_history(player, action_name, target_name, result or "Action completed.")
+            
+            # Ensure the player gets their action result as a notification
+            if result and isinstance(result, str):
+                # Check if this role already adds notifications internally (to avoid duplicates)
+                roles_that_self_notify = {
+                    RoleName.TRACKER, RoleName.BLACKMAILER, RoleName.HYPNOTIST, 
+                    RoleName.AMNESIAC, RoleName.POTION_MASTER
+                }
+                
+                if player.role.name not in roles_that_self_notify:
+                    player.notifications.append(result)
+            
             if result:
                 print(f"[Night Action] {player.name}: {result}")
 
@@ -409,11 +502,27 @@ class Game:
             if should_kill:
                 target.is_alive = False
                 print(f"[Game Log] {attacker.name} ({attacker.role.name.value}) killed {target.name} ({target.role.name.value})")
+                
+                # TODO: RESEARCH METRICS - Track death causes for research
+                if attacker.role.name == RoleName.VIGILANTE:
+                    target.research_metrics['death_cause'] = 'shot_vigilante'
+                elif attacker.role.name in [RoleName.MAFIOSO, RoleName.GODFATHER]:
+                    target.research_metrics['death_cause'] = 'killed_mafia'
+                elif attacker.role.name == RoleName.SERIAL_KILLER:
+                    target.research_metrics['death_cause'] = 'killed_serial_killer'
+                elif attacker.role.name == RoleName.WEREWOLF:
+                    target.research_metrics['death_cause'] = 'killed_werewolf'
+                elif attacker.role.name == RoleName.ARSONIST:
+                    target.research_metrics['death_cause'] = 'burned_arsonist'
+                else:
+                    target.research_metrics['death_cause'] = f'killed_{attacker.role.name.value.lower()}'
+                
                 #Record for next day announcements
                 self.deaths_last_night.append({"victim": target, "attacker": attacker})
                 #Vigilante guilt: mark if townie killed
                 if attacker.role.name == RoleName.VIGILANTE and target.role.faction == Faction.TOWN:
                     attacker.role.has_killed_townie = True
+                    attacker.notifications.append("You have killed a town member! You feel overwhelming guilt.")
                 self.graveyard.append(target)
 
                 #Handle Disguiser: if someone earlier set disguise_target to this now-dead body,
@@ -713,6 +822,16 @@ class Game:
             for winner in self.winners:
                 #This handles Jester, Executioner, etc.
                 print(f"{winner.name} ({winner.role.name.value}) has won!")
+                
+                # TODO: RESEARCH METRICS - Track individual winners
+                winner.research_metrics['won_game'] = True
+                
+                # TODO: RESEARCH METRICS - Track executioner-specific wins
+                if winner.role.name == RoleName.EXECUTIONER:
+                    winner.research_metrics['exe_won_as_executioner'] = True
+                elif winner.role.name == RoleName.JESTER and hasattr(winner, '_was_executioner'):
+                    # Track if this jester was originally an executioner
+                    winner.research_metrics['exe_won_as_jester'] = True
 
         #Determine winning faction if no individual winner has already been decided
             winning_faction = self.game_is_over()
@@ -720,12 +839,19 @@ class Game:
                 print(f"\nWinning Faction: {winning_faction.name}")
                 for player in self.players:
                     if player.role.faction == winning_faction:
+                        # TODO: RESEARCH METRICS - Track faction winners
+                        player.research_metrics['won_game'] = True
                         self.winners.append(player)  #Add to winners list for completeness
                         print(f"{player.name} ({player.role.name.value})")
         elif self.draw:
             print("The game ended in a draw due to prolonged stalemate.")
         elif not self.winners:
             print("No winners.")
+            
+        # TODO: RESEARCH METRICS - Track survival and days survived for all players
+        for player in self.players:
+            player.research_metrics['survived_to_end'] = player.is_alive
+            player.research_metrics['days_survived'] = self.day
 
     def _is_protected(self, target: Player, attacker: Player, attack_type: Attack) -> bool:
         """Return True if the attack is prevented by a protector.
@@ -1010,6 +1136,15 @@ class Game:
         for pl in self.players:
             if pl.is_alive and pl.is_role_blocked and not any("role blocked" in m.lower() for m in pl.notifications):
                 pl.notifications.append("Someone occupied your night. You were role blocked!")
+                
+            # Add jail notification if player was jailed
+            if pl.is_alive and pl.is_jailed and not any("jailed" in m.lower() for m in pl.notifications):
+                pl.notifications.append("You have been hauled off to jail!")
+                
+            # Add healing notification if player received doctor healing
+            if pl.is_alive and hasattr(pl, '_was_healed_tonight') and pl._was_healed_tonight:
+                pl.notifications.append("Someone nursed you back to health!")
+                pl._was_healed_tonight = False  # Reset flag
 
         mafia_visits: dict[Player, list[Player]] = defaultdict(list)
         coven_visits: dict[Player, list[Player]] = defaultdict(list)
@@ -1088,6 +1223,9 @@ class Game:
                     target = _choice(living_candidates)
 
             if target and target.is_alive:
+                # TODO: RESEARCH METRICS - Track jester haunt deaths
+                target.research_metrics['times_haunted_by_jester'] += 1
+                target.research_metrics['death_cause'] = 'haunted'
                 self.register_attack(jester, target, Attack.UNSTOPPABLE, is_primary=True)
                 print(f"[Haunt] {jester.name} will haunt {target.name} tonight!")
             else:
@@ -1149,3 +1287,38 @@ class Game:
                 promotee = candidates[0]
                 promotee.assign_role(Mafioso())
                 promotee.notifications.append("You have been promoted to Mafioso to continue the Mafia's killings.")
+
+    def _process_vigilante_guilt(self):
+        """Handle Vigilante suicide due to killing townies."""
+        for player in self.players:
+            if (player.is_alive and player.role.name == RoleName.VIGILANTE 
+                and hasattr(player.role, 'has_killed_townie') and player.role.has_killed_townie):
+                # Vigilante commits suicide out of guilt
+                player.is_alive = False
+                self.graveyard.append(player)
+                player.notifications.append("You cannot live with the guilt of killing a town member. You commit suicide.")
+                print(f"[Vigilante Guilt] {player.name} committed suicide from guilt.")
+                
+                # Mark for death announcement
+                self.deaths_last_night.append({"victim": player, "attacker": player})
+
+    def _send_notifications(self):
+        for player in self.players:
+            if player.is_alive and player.notifications:
+                for notif in player.notifications:
+                    print(f"[Notification for {player.name}] {notif}")
+        
+        #Spy intel is handled in _process_spy_intel now
+
+    def _process_jailing(self):
+        """Handle jailing mechanics."""
+        for player in self.players:
+            if hasattr(player.role, 'jailed_target') and player.role.jailed_target:
+                target = player.role.jailed_target
+                if target.is_alive:
+                    target.is_jailed = True
+                    target.notifications.append("You have been hauled off to jail!")
+                    # TODO: RESEARCH METRICS - Track jail events
+                    target.research_metrics['times_jailed'] += 1
+                    print(f"[Jailing] {target.name} was jailed by {player.name}.")
+                player.role.jailed_target = None

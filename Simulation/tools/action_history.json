@@ -1,0 +1,30 @@
+{
+  "name": "action_history",
+  "class": "environment_static",
+  "description": "View your action history with results from previous nights and days.",
+  "inputs": [],
+  "outputs": [
+    {"name": "history", "type": "array", "description": "List of previous actions and their results"}
+  ],
+  "examples": [
+    {
+      "input": {},
+      "output": {
+        "history": [
+          {
+            "night": 1,
+            "action": "investigate",
+            "target": "Player 3",
+            "result": "You investigated Player 3. Your target is not suspicious."
+          },
+          {
+            "night": 2, 
+            "action": "investigate",
+            "target": "Player 7",
+            "result": "You attacked Player 7 but they were immune."
+          }
+        ]
+      }
+    }
+  ]
+} 

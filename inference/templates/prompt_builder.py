@@ -13,7 +13,7 @@ except (ImportError, ModuleNotFoundError):
 from Simulation.enums import RoleName  # For type hints only – avoids heavy Role import
 from Simulation.phase_prompt import render_phase_prompt
 
-TEMPLATE_DIR = Path(__file__).parent / "templates"
+TEMPLATE_DIR = Path(__file__).parent
 TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 _env = jinja2.Environment(loader=jinja2.FileSystemLoader(TEMPLATE_DIR), autoescape=False)
 
@@ -127,8 +127,23 @@ def build_role_card(role: "Role") -> RoleCard:  # type: ignore
     )
 
 
-def build_system_prompt(agent_name: str, role_card: RoleCard, *, tools: dict | None = None) -> str:
+def build_system_prompt(agent_name: str, role_card: RoleCard, *, tools: dict | None = None, game=None) -> str:
     """Render the system prompt string given an agent name and RoleCard."""
+
+    # Extract game context if available
+    game_mode = "Unknown"
+    is_coven = False
+    roster = []
+    role_list = []
+    
+    if game:
+        game_mode = getattr(game.config, 'game_mode', 'Unknown')
+        is_coven = getattr(game.config, 'is_coven', False)
+        roster = [p.name for p in game.players]
+        
+        # Get role list from config
+        if hasattr(game.config, 'role_list'):
+            role_list = [role.value for role in game.config.role_list]
 
     # Ensure the template file exists; if not, fall back to an inline template.
     template_name = "system_prompt.jinja"
@@ -138,6 +153,10 @@ def build_system_prompt(agent_name: str, role_card: RoleCard, *, tools: dict | N
             agent_name=agent_name,
             rc=role_card.to_dict(),
             tools=tools or {},
+            game_mode=game_mode,
+            is_coven=is_coven,
+            roster=roster,
+            role_list=role_list,
         )
 
     # Inline minimal template (used during initial bootstrapping).
@@ -186,6 +205,7 @@ def build_chat_messages(
     history: list[dict],
     *,
     observation_role: str = "user",
+    game=None,
 ) -> list[dict]:
     """Return the message list (system+user+history) ready for vLLM.
 
@@ -199,7 +219,7 @@ def build_chat_messages(
 
     system_msg = {
         "role": "system",
-        "content": build_system_prompt(agent_name, role_card, tools=_tool_catalogue()),
+        "content": build_system_prompt(agent_name, role_card, tools=_tool_catalogue(), game=game),
     }
 
     # The phase-dependent USER message is rendered elsewhere; we inject the

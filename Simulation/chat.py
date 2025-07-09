@@ -241,6 +241,14 @@ class ChatManager:
         for chan in self.channels.values():
             if ChannelOpenState.WRITE in chan.members.get(player.id, set()):
                 chan.broadcast(player, text)
+                
+                # TODO: RESEARCH METRICS - Track speaking metrics
+                player.research_metrics['times_spoken'] += 1
+                # Estimate token count (rough approximation: 4 chars per token)
+                #You can actually just store the exact words spoken in <speak> </speak> and <whisper> </whisper> and then run that through the tokenizer later
+                token_count = len(text) // 4
+                player.research_metrics['total_tokens_spoken'] += token_count
+                
                 return chan.messages[-1]
         return "Error: you cannot speak right now."
 
@@ -259,6 +267,14 @@ class ChatManager:
         chan.add_member(src, can_write=True, can_read=True)
         chan.add_member(dst, can_write=True, can_read=True)
         chan.broadcast(src, text)
+        
+        # TODO: RESEARCH METRICS - Track whisper metrics
+        src.research_metrics['times_whispered'] += 1
+        # Estimate token count (rough approximation: 4 chars per token)
+        #You can actually just store the exact words spoken in <speak> </speak> and <whisper> </whisper> and then run that through the tokenizer later
+        token_count = len(text) // 4
+        src.research_metrics['total_tokens_whispered'] += token_count
+        
         return chan.messages[-1]
 
     # ------------------------------------------------------------------

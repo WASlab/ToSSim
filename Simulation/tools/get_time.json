@@ -1,0 +1,19 @@
+{
+  "name": "get_time",
+  "class": "environment_static",
+  "description": "Get the remaining tokens (time) in the current game phase.",
+  "inputs": [],
+  "outputs": [
+    {"name": "remaining_tokens", "type": "integer", "description": "Number of tokens remaining in current phase"}
+  ],
+  "examples": [
+    {
+      "input": {},
+      "output": {
+        "remaining_tokens": 250,
+        "phase": "Day Discussion",
+        "message": "250 tokens remaining in Day Discussion phase"
+      }
+    }
+  ]
+} 

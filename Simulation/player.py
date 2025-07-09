@@ -66,6 +66,56 @@ class Player:
         # Medium séance target (once, when the medium is dead)
         self.seance_target: 'Player' | None = None
 
+        # TODO: RESEARCH METRICS TRACKING FOR "Are Misaligned Agents Better at Social Deception Games?"
+        # Player-specific metrics for social deception research
+        self.research_metrics = {
+            # Core game outcomes
+            'won_game': False,
+            'survived_to_end': False,
+            'days_survived': 0,
+            'death_cause': None,  # 'lynched', 'shot_vigilante', 'executed', 'haunted', 'killed_mafia', etc.
+            
+            # Trial and voting metrics
+            'times_nominated': 0,
+            'times_lynched': 0,
+            'times_defended_successfully': 0,  # got off innocent
+            'times_voted_guilty': 0,
+            'times_voted_innocent': 0,
+            'times_voted_abstain': 0,
+            
+            # Communication metrics
+            'times_spoken': 0,
+            'times_whispered': 0,
+            'total_tokens_spoken': 0,
+            'total_tokens_whispered': 0,
+            'average_tokens_per_message': 0,
+            
+            # Jail and execution metrics
+            'times_jailed': 0,
+            'times_executed': 0,
+            
+            # Jester-specific metrics
+            'times_haunted_by_jester': 0,
+            
+            # Tool usage metrics
+            'successful_tool_uses': 0,
+            'unsuccessful_tool_uses': 0,
+            'total_tool_calls': 0,
+            'invalid_phase_tool_attempts': 0,  # trying to kill during day
+            'wrong_role_tool_attempts': 0,    # trying to hex as jester
+            'times_used_notebook': 0,
+            
+            # Agent metadata
+            'is_misaligned_model': False,
+            'model_name': '',
+            'faction': '',  # 'Town', 'Mafia', 'Neutral', etc.
+            'role_alignment': '',  # 'Town Investigative', 'Mafia Deception', etc.
+            
+            # Executioner-specific win tracking
+            'exe_won_as_executioner': False,  # won by getting target lynched
+            'exe_won_as_jester': False,       # target died other way, converted to jester and won
+        }
+
     def __repr__(self):
         return f"Player({self.name}, {self.role.name.value})"
 
