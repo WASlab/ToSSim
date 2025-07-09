@@ -441,6 +441,101 @@ def _exec_action_history(argument: str, *, game=None, player=None) -> str:
     
     return history_text.strip()
 
+    return json.dumps({
+        "tool_name": "get_role",
+        "class": "environment_static",
+        "observation": {"role_info": role_card.to_dict()}
+    }, indent=2)
+# ---------------------------------------------------------------------------
+def _exec_get_role_details(argument: str) -> str:
+    """Return detailed information about a role.
+
+    This is a placeholder for future expansion, currently returns a simple
+    message indicating that the tool is not yet implemented.
+    """
+    from Simulation.enums import RoleName  # imported lazily to avoid circulars
+    from Simulation.roles import role_map  # noqa: WPS433
+
+
+    json_path = Path(__file__).parent.parent / "reference_data" / "role_details.json"
+    
+    try:
+        with json_path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return f"Role details file not found at {json_path}"
+    except json.JSONDecodeError as e:
+        return f"Error parsing role details JSON: {e}"
+
+
+    role_name_clean = argument.strip()
+
+    try:
+        role_enum = RoleName(role_name_clean)
+    except ValueError:
+        # Try fuzzy match (case-insensitive exact string)
+        matches = [e for e in RoleName if e.value.lower() == role_name_clean.lower()]
+        if not matches:
+            return f"No role named '{role_name_clean}'."
+        role_enum = matches[0]
+
+    role_cls = role_map.get(role_enum)
+    if role_cls is None:
+        return f"Role '{role_name_clean}' not implemented in simulator."
+
+    role_details = data.get(role_name_clean, {})
+
+    if not role_details:
+            return f"No details found for role '{role_name_clean}'."
+
+
+
+def _exec_attributes(argument: str) -> str:
+    """Return information about game attributes.
+    
+    If no argument is provided, returns all attributes.
+    If a specific attribute is provided, returns only that attribute.
+    If an invalid attribute is provided, returns an error message.
+    """    
+    # Load attributes data
+    attributes_path = Path(__file__).parent.parent / "reference_data" / "attributes.json"
+    
+    try:
+        with attributes_path.open("r", encoding="utf-8") as fh:
+            attributes_data = json.load(fh)
+    except FileNotFoundError:
+        return f"Attributes data file not found at {attributes_path}"
+    except json.JSONDecodeError as e:
+        return f"Error parsing attributes JSON: {e}"
+    
+    attribute_name = argument.strip()
+    
+    # If no specific attribute requested, return all attributes
+    if not attribute_name:
+        return json.dumps({
+            "tool_name": "attributes",
+            "class": "environment_static", 
+            "observation": {"attribute_info": attributes_data}
+        }, indent=2)
+    
+    # Look for the specific attribute (case-sensitive first, then case-insensitive)
+    if attribute_name in attributes_data:
+        attribute_info = {attribute_name: attributes_data[attribute_name]}
+    else:
+        # Try case-insensitive match
+        matches = [k for k in attributes_data.keys() if k.lower() == attribute_name.lower()]
+        if matches:
+            matched_key = matches[0]
+            attribute_info = {matched_key: attributes_data[matched_key]}
+        else:
+            return f"No attribute with the name '{attribute_name}' found."
+    
+    return json.dumps({
+        "tool_name": "attributes",
+        "class": "environment_static",
+        "observation": {"attribute_info": attribute_info}
+    }, indent=2)
+
 
 def _exec_write_will(argument: str, *, game=None, player=None) -> str:
     """Write or update the player's last will.
@@ -605,6 +700,9 @@ SPECIAL NOTES:
 # Mapping: tool name -> executor
 _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "get_role": _exec_get_role,
+    "get_role_details": _exec_get_role_details,  
+    "attributes": _exec_attributes,
+    
     "chat_history": _exec_chat_history,
     "graveyard": _exec_graveyard,
     "check_will": _exec_check_will,
