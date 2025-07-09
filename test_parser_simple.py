@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Simplified test for ToSSim grammar parser (no vLLM dependencies).
 

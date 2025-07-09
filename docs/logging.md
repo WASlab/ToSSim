@@ -136,6 +136,19 @@ A line-delimited JSON file where each line is a single prompt/response pair from
     *   `agent_role` (string): The role of the agent.
     *   `turn` (string): The game turn.
 
+
+### 2.8 `communication_text.jsonl`
+**NEW**: Raw text storage for post-processing token analysis (tertiary priority).
+
+*   **`timestamp`** (string): ISO 8601 timestamp.
+*   **`game_id`** (string): Unique identifier for the game session.
+*   **`agent_name`** (string): The player name.
+*   **`communication_type`** (string): Type of communication (`"speak"`, `"whisper"`).
+*   **`text_content`** (string): The actual text spoken or whispered.
+*   **`turn`** (string): The game turn when communication occurred.
+
+**Purpose**: Store raw text separately for later tokenization with actual model tokenizers during post-processing analysis. This avoids the complexity of real-time tokenization during gameplay.
+
 ---
 
 ## 3. Implementation Guidelines
@@ -177,14 +190,54 @@ Each player object should maintain a `research_metrics` dictionary that gets pop
 3. **Calculate averages** (like `average_tokens_per_message`) at game end
 4. **Serialize metrics** to `research_metrics.jsonl` for analysis
 
-### 3.3 Token Estimation
+### 3.3 Token Handling Strategy
 
-For communication metrics, implement a simple token estimation function:
+**Recommended Approach**: Multi-tier token handling based on priority and complexity.
+
+#### **Priority Levels for Implementation**
+
+**Priority 1 (Essential)**: Core game metrics - implement first
+- Game outcomes, trial metrics, tool usage, death tracking
+
+**Priority 2 (Important)**: Basic communication counting  
+- times_spoken, times_whispered counts
+- Simple word-based approximations for volume
+
+**Priority 3 (Tertiary)**: Precise token analysis
+- Exact token counting with model tokenizers
+- Post-processing of stored raw text
+- Advanced linguistic analysis
+
+#### **Token Estimation Options**
+
+**Option 1 (Simplest)**: Word counting
 ```python
-def estimate_tokens(text: str) -> int:
-    """Rough token estimation: ~4 characters per token."""
+def estimate_tokens_words(text: str) -> int:
+    return len(text.split())
+```
+
+**Option 2 (Character-based)**: ~4 chars per token approximation  
+```python
+def estimate_tokens_chars(text: str) -> int:
     return max(1, len(text) // 4)
 ```
+
+**Option 3 (Separate storage)**: Store raw text, tokenize later
+```python
+# During gameplay - just store the text
+communication_log.append({
+    "agent": player.name,
+    "text": text,
+    "type": "speak",
+    "turn": current_turn
+})
+
+# Post-game processing with actual tokenizer
+for entry in communication_log:
+    exact_tokens = len(tokenizer.encode(entry["text"]))
+```
+
+**Recommendation**: Start with word counting (Option 1) and optionally add separate text storage (Option 3) for later analysis. Precise tokenization is tertiary priority since word counts provide sufficient approximation for comparative behavioral analysis.
 
 ### 3.4 Agent Metadata Integration
 
