@@ -215,7 +215,7 @@ def test_grammar_parser():
     for i, example in enumerate(valid_examples, 1):
         is_valid, info = parser.parse_and_validate(example)
         reward = reward_calc.calculate_reward(example)
-        status = "✓ PASS" if is_valid else "✗ FAIL"
+        status = "[+] PASS" if is_valid else "[X] FAIL"
         
         if is_valid:
             valid_count += 1
@@ -238,7 +238,7 @@ def test_grammar_parser():
     for i, example in enumerate(invalid_examples, 1):
         is_valid, info = parser.parse_and_validate(example)
         reward = reward_calc.calculate_reward(example)
-        status = "✓ PASS" if not is_valid else "✗ FAIL"
+        status = "[+] PASS" if not is_valid else "[X] FAIL"
         
         if not is_valid:
             invalid_count += 1
@@ -276,18 +276,19 @@ def test_grammar_parser():
     print("\n" + "=" * 70)
     print("Grammar Parser Validation Summary:")
     print("=" * 70)
-    print(f"✓ Valid examples correctly accepted: {valid_count}/{len(valid_examples)}")
-    print(f"✓ Invalid examples correctly rejected: {invalid_count}/{len(invalid_examples)}")
-    print(f"✓ Verbosity penalty working: {reward_short > reward_long}")
+    print(f"[+] Valid examples correctly accepted: {valid_count}/{len(valid_examples)}")
+    print(f"[+] Invalid examples correctly rejected: {invalid_count}/{len(invalid_examples)}")
+    print(f"[+] Verbosity penalty working: {reward_short > reward_long}")
     
     if valid_count == len(valid_examples) and invalid_count == len(invalid_examples):
-        print("🎉 All tests passed! Grammar parser is working correctly.")
-        return True
+        print("Success! All tests passed! Grammar parser is working correctly.")
+        # Use assertion instead of return for pytest compatibility
+        assert True, "All tests passed"
     else:
-        print("❌ Some tests failed. Check implementation.")
-        return False
+        print("[X] Some tests failed. Check implementation.")
+        assert False, f"Tests failed: {valid_count}/{len(valid_examples)} valid, {invalid_count}/{len(invalid_examples)} invalid"
 
 
 if __name__ == "__main__":
-    success = test_grammar_parser()
-    exit(0 if success else 1) 
+    test_grammar_parser()
+    print("Test completed successfully!") 

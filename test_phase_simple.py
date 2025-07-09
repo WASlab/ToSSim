@@ -382,13 +382,13 @@ def test_phase_aware_parsing():
         # Categorize result
         if reward > 0:
             legal_count += 1
-            status = "✓ LEGAL"
+            status = "[+] LEGAL"
         elif reward == 0:
             illegal_count += 1
-            status = "⚠ ILLEGAL"
+            status = "[!] ILLEGAL"
         else:
             malformed_count += 1
-            status = "✗ MALFORMED"
+            status = "[X] MALFORMED"
         
         print(f"{i:2d}. {status} | Reward: {reward:+.1f} | {description}")
         print(f"    Context: {context.phase}/{context.sub_phase or 'None'} | Seat: {context.seat_id}")
@@ -396,9 +396,9 @@ def test_phase_aware_parsing():
         
         # Check if reward matches expected
         if abs(reward - expected_reward) > 0.01:
-            print(f"    ❌ UNEXPECTED REWARD: Expected {expected_reward}, got {reward}")
+            print(f"    [X] UNEXPECTED REWARD: Expected {expected_reward}, got {reward}")
         else:
-            print(f"    ✅ Expected reward achieved")
+            print(f"    [+] Expected reward achieved")
         
         print()
     
@@ -408,31 +408,32 @@ def test_phase_aware_parsing():
     print("Phase-Aware Parser Test Summary:")
     print("=" * 60)
     print(f"Total tests: {total_tests}")
-    print(f"✅ Legal actions (+1 reward): {legal_count}")
-    print(f"⚠️  Illegal actions (0 reward): {illegal_count}")  
-    print(f"❌ Malformed XML (-1 reward): {malformed_count}")
+    print(f"[+] Legal actions (+1 reward): {legal_count}")
+    print(f"[!] Illegal actions (0 reward): {illegal_count}")  
+    print(f"[X] Malformed XML (-1 reward): {malformed_count}")
     print()
-    print("🔬 Emergent Misalignment Research Ready:")
-    print("• Phase-illegal actions get 0 reward (preserved for observation)")
-    print("• Agents can attempt rule violations without punishment")
-    print("• Syntax compliance still enforced (-1 for malformed XML)")
-    print("• Environment can observe misaligned behavior patterns")
+    print("Research Ready - Emergent Misalignment:")
+    print("* Phase-illegal actions get 0 reward (preserved for observation)")
+    print("* Agents can attempt rule violations without punishment")
+    print("* Syntax compliance still enforced (-1 for malformed XML)")
+    print("* Environment can observe misaligned behavior patterns")
     
-    return legal_count == 5 and illegal_count == 4 and malformed_count == 2
+    # Assert expected results instead of returning
+    assert legal_count == 5, f"Expected 5 legal actions, got {legal_count}"
+    assert illegal_count == 4, f"Expected 4 illegal actions, got {illegal_count}"
+    assert malformed_count == 2, f"Expected 2 malformed actions, got {malformed_count}"
+    print("Success! All test assertions passed!")
 
 
 if __name__ == "__main__":
     try:
-        success = test_phase_aware_parsing()
+        test_phase_aware_parsing()
         
         print("\n" + "=" * 60)
-        if success:
-            print("🎉 Phase-aware parser test completed successfully!")
-            print("Ready for Dr GRPO training with emergent misalignment research.")
-        else:
-            print("❌ Some tests failed. Check implementation.")
+        print("Success! Phase-aware parser test completed successfully!")
+        print("Ready for Dr GRPO training with emergent misalignment research.")
         
     except Exception as e:
-        print(f"❌ Test failed with error: {e}")
+        print(f"[ERROR] Test failed with error: {e}")
         import traceback
         traceback.print_exc() 

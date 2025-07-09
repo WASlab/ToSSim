@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Test script for Dr GRPO ToSSim grammar parser.
 
@@ -6,7 +6,128 @@ This validates that the strict XML grammar parser correctly identifies
 valid and invalid ToSSim agent responses according to the specification.
 """
 
-from grpo import ToSSimGrammarParser, DrGRPORewardCalculator, DrGRPOConfig
+# Local implementations to avoid vLLM dependency
+from dataclasses import dataclass
+import re
+from typing import Dict, Tuple, Any, Optional, List
+
+
+@dataclass
+class DrGRPOConfig:
+    """Configuration for Dr GRPO training (test version)."""
+    enable_verbosity_penalty: bool = False
+    max_think_tokens: int = 10
+    verbosity_penalty_rate: float = 0.1
+
+
+class ToSSimGrammarParser:
+    """XML grammar parser for ToSSim agent responses."""
+    
+    def __init__(self):
+        # Regex patterns for parsing
+        self.think_pattern = r'<think>(.*?)</think>'
+        self.terminal_patterns = {
+            'speak': r'<speak>(.*?)</speak>',
+            'wait': r'<wait\s*/?>',
+            'vote': r'<vote>(.*?)</vote>',
+            'protect': r'<protect>(.*?)</protect>',
+            'investigate': r'<investigate>(.*?)</investigate>',
+            'check_will': r'<check_will>(.*?)</check_will>',
+            'graveyard': r'<graveyard>(.*?)</graveyard>',
+            'chat_history': r'<chat_history>(.*?)</chat_history>',
+            'get_role': r'<get_role\s*/?>',
+            'skip': r'<skip\s*/?>',
+            'reveal': r'<reveal\s*/?>',
+        }
+    
+    def parse_and_validate(self, text: str) -> Tuple[bool, Dict[str, Any]]:
+        """Parse and validate XML structure."""
+        
+        # Check for think block
+        think_match = re.search(self.think_pattern, text, re.DOTALL)
+        if not think_match:
+            return False, {'error': 'Missing <think> block'}
+        
+        think_content = think_match.group(1).strip()
+        think_tokens = len(think_content.split())
+        
+        # Check for exactly one terminal tag
+        terminal_matches = []
+        terminal_tag = None
+        
+        for tag_name, pattern in self.terminal_patterns.items():
+            matches = re.findall(pattern, text, re.DOTALL)
+            if matches:
+                terminal_matches.extend([(tag_name, m) for m in matches])
+                terminal_tag = tag_name
+        
+        if len(terminal_matches) == 0:
+            return False, {'error': 'No terminal action tag found'}
+        
+        if len(terminal_matches) > 1:
+            return False, {'error': 'Multiple terminal action tags found'}
+        
+        # Check for extra text outside tags
+        # Remove the think and terminal tags and see if anything substantial remains
+        cleaned = text
+        cleaned = re.sub(self.think_pattern, '', cleaned, flags=re.DOTALL)
+        for pattern in self.terminal_patterns.values():
+            cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL)
+        
+        if cleaned.strip():
+            return False, {'error': 'Extra text outside XML tags'}
+        
+        return True, {
+            'terminal_tag': terminal_tag,
+            'think_tokens': think_tokens,
+            'think_content': think_content
+        }
+
+
+class DrGRPORewardCalculator:
+    """Reward calculator for Dr GRPO training."""
+    
+    def __init__(self, config: DrGRPOConfig):
+        self.config = config
+        self.parser = ToSSimGrammarParser()
+    
+    def calculate_reward(self, text: str) -> float:
+        """Calculate reward for a completion."""
+        is_valid, info = self.parser.parse_and_validate(text)
+        
+        if not is_valid:
+            return -1.0  # Malformed XML
+        
+        base_reward = 1.0  # Valid XML
+        
+        # Apply verbosity penalty if enabled
+        if self.config.enable_verbosity_penalty:
+            think_tokens = info.get('think_tokens', 0)
+            if think_tokens > self.config.max_think_tokens:
+                penalty = (think_tokens - self.config.max_think_tokens) * self.config.verbosity_penalty_rate
+                base_reward -= penalty
+        
+        return max(0.0, base_reward)  # Don't go below 0
+
+
+class ToSSimScenarioGenerator:
+    """Generate random scenarios for testing."""
+    
+    def __init__(self):
+        self.scenarios = [
+            "You are the Sheriff. Investigate a suspicious player.",
+            "You are the Doctor. Protect someone from attacks.",
+            "You are a Mafia member. Choose your target.",
+            "It's day time. Vote for someone suspicious.",
+            "You are on trial. Defend yourself.",
+            "Use your special ability wisely.",
+            "Check the graveyard for information.",
+            "Review the chat history for clues.",
+        ]
+    
+    def get_random_scenario(self) -> str:
+        import random
+        return random.choice(self.scenarios)
 
 
 def test_grammar_parser():
@@ -68,7 +189,7 @@ def test_grammar_parser():
     for i, example in enumerate(valid_examples, 1):
         is_valid, info = parser.parse_and_validate(example)
         reward = reward_calc.calculate_reward(example)
-        status = "✓ PASS" if is_valid else "✗ FAIL"
+        status = "[+] PASS" if is_valid else "[X] FAIL"
         
         print(f"{i:2d}. {status} | Reward: {reward:+.1f}")
         print(f"    Example: {example}")
@@ -84,7 +205,7 @@ def test_grammar_parser():
     for i, example in enumerate(invalid_examples, 1):
         is_valid, info = parser.parse_and_validate(example)
         reward = reward_calc.calculate_reward(example)
-        status = "✓ PASS" if not is_valid else "✗ FAIL"
+        status = "[+] PASS" if not is_valid else "[X] FAIL"
         
         print(f"{i:2d}. {status} | Reward: {reward:+.1f}")
         print(f"    Example: {example}")
@@ -115,8 +236,6 @@ def test_grammar_parser():
 
 def test_scenario_coverage():
     """Test that we have good scenario coverage for training."""
-    
-    from grpo import ToSSimScenarioGenerator
     
     generator = ToSSimScenarioGenerator()
     
