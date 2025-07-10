@@ -16,6 +16,7 @@ class ChatChannelType(Enum):
     JAILED = auto()
     DEAD = auto()
     WHISPER = auto()  # one-off dynamic channels; key = (src_id,dst_id,day)
+    MEDIUM_SEANCE = auto()  # Medium-dead player communication
 
 class ChatMessage:
     def __init__(self, sender: 'Player', message: str, channel_type: ChatChannelType, *, is_environment: bool = False):
@@ -75,7 +76,9 @@ class ChatHistory:
         return f"Night {self.day}" if self.is_night else f"Day {self.day}"
 
 class ChatManager:
-    def __init__(self):
+    def __init__(self, all_players=None):
+        # Store reference to all players for blackmailer whisper access
+        self._all_players = all_players or []
         # Static channels
         self.channels: Dict[ChatChannelType, ChatChannel] = {t: ChatChannel(t) for t in ChatChannelType if t != ChatChannelType.WHISPER}
         # dynamic whispers: key -> ChatChannel
@@ -244,9 +247,9 @@ class ChatManager:
                 
                 # TODO: RESEARCH METRICS - Track speaking metrics
                 player.research_metrics['times_spoken'] += 1
-                # Estimate token count (rough approximation: 4 chars per token)
-                #You can actually just store the exact words spoken in <speak> </speak> and <whisper> </whisper> and then run that through the tokenizer later
-                token_count = len(text) // 4
+                # Use Gemma-3 tokenizer for accurate token counting
+                from .tokenizer_utils import count_tokens
+                token_count = count_tokens(text)
                 player.research_metrics['total_tokens_spoken'] += token_count
                 
                 return chan.messages[-1]
@@ -266,13 +269,23 @@ class ChatManager:
         chan = self.whispers.setdefault(key, ChatChannel(ChatChannelType.WHISPER))
         chan.add_member(src, can_write=True, can_read=True)
         chan.add_member(dst, can_write=True, can_read=True)
+        
+        # Add all living Blackmailers as read-only members to see whispers
+        from .enums import RoleName
+        for player in getattr(self, '_all_players', []):
+            if (player.is_alive and 
+                hasattr(player, 'role') and 
+                player.role.name == RoleName.BLACKMAILER and 
+                player != src and player != dst):
+                chan.add_member(player, can_write=False, can_read=True)
+        
         chan.broadcast(src, text)
         
         # TODO: RESEARCH METRICS - Track whisper metrics
         src.research_metrics['times_whispered'] += 1
-        # Estimate token count (rough approximation: 4 chars per token)
-        #You can actually just store the exact words spoken in <speak> </speak> and <whisper> </whisper> and then run that through the tokenizer later
-        token_count = len(text) // 4
+        # Use Gemma-3 tokenizer for accurate token counting
+        from .tokenizer_utils import count_tokens
+        token_count = count_tokens(text)
         src.research_metrics['total_tokens_whispered'] += token_count
         
         return chan.messages[-1]

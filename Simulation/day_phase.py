@@ -143,6 +143,11 @@ class DayPhase:
         """Handle the lynch execution and last words."""
         player.is_alive = False
         player.was_lynched = True
+        
+        # Mark that this was a lynch (no specific killer)
+        player.killed_by = None  # Town collectively killed them
+        player.killer_death_note = ""  # No death note for lynching
+        
         self.game.graveyard.append(player)
 
         print(f"\n{player.name} has been lynched! They were a {player.role.name.value}.")
