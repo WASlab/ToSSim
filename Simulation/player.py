@@ -44,6 +44,7 @@ class Player:
         self.poison_uncurable = False
         self.is_infected = False  #Plaguebearer infection
         self.last_will: str = ""  #Player can optionally set a last will.
+        self.death_note: str = ""  #Player's death note (for certain roles)
         #Vote weight for verdict voting (Mayor becomes 3 when revealed)
         self.vote_weight: int = 1
 
