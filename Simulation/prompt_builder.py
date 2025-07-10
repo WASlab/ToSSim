@@ -40,13 +40,29 @@ class ModelConfig:
     assistant_token: str = "<|assistant|>"
     end_token: str = "</s>"
     
-    def format_messages(self, system_prompt: str, user_prompt: str) -> str:
+    def format_messages(self, system_prompt: str, user_prompt: str, notebook_observation: str = None, 
+                       environment_static_observations: str = None) -> str:
         """Format system and user prompts according to model requirements."""
+        
+        # Build observation sections
+        observation_section = ""
+        if notebook_observation:
+            if self.name == "gemma":
+                observation_section += f"<start_of_turn>observation\n{notebook_observation}\n\n"
+            else:
+                observation_section += f"<observation>\n{notebook_observation}\n</observation>\n\n"
+        
+        if environment_static_observations:
+            if self.name == "gemma":
+                observation_section += f"<start_of_turn>observation\n{environment_static_observations}\n\n"
+            else:
+                observation_section += f"<observation>\n{environment_static_observations}\n</observation>\n\n"
+        
         if self.has_system_prompt:
-            return f"{self.system_token}\n{system_prompt}\n\n{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
+            return f"{self.system_token}\n{system_prompt}\n\n{observation_section}{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
         else:
             # Models like Gemma treat system prompt as additional user prompt
-            return f"{self.user_token}\n{system_prompt}\n\n{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
+            return f"{self.user_token}\n{system_prompt}\n\n{observation_section}{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
 
 
 # Default model configurations
@@ -440,27 +456,40 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
     alive_players = [p.name for p in game.players if p.is_alive]
     sections.append("Alive Roster\n" + "\n".join(f"- {name}" for name in alive_players))
     
-    # Graveyard
+    # Graveyard (simple format - just names marked as [DEAD])
     if hasattr(game, 'graveyard') and game.graveyard:
         graveyard_text = "Graveyard\n"
         for dead_player in game.graveyard:
-            death_info = f"- {dead_player.name} ({dead_player.role.name.value})"
-            if hasattr(dead_player, 'death_cause') and dead_player.death_cause:
-                death_info += f" — {dead_player.death_cause}"
-            if dead_player.last_will:
-                death_info += f'. Last Will: "{dead_player.last_will}"'
-            graveyard_text += death_info + "\n"
+            graveyard_text += f"- {dead_player.name} [DEAD]\n"
         sections.append(graveyard_text.rstrip())
-    
-    # Notebook (environment_terminal - always shown at top)
-    if hasattr(actor, 'notebook') and actor.notebook:
-        notebook_tokens = getattr(actor, 'notebook_tokens', 0)
-        sections.append(f"Notebook (private, {notebook_tokens}/1500 tokens)\n{actor.notebook}")
     
     # Environment observations (placeholder for now)
     sections.append("Environment Observations\n[No new events since the phase began.]")
     
     return "\n\n".join(sections)
+
+
+def build_notebook_observation(actor: 'Player') -> str:
+    """Build notebook observation section."""
+    if hasattr(actor, 'notebook') and actor.notebook:
+        notebook_tokens = getattr(actor, 'notebook_tokens', 0)
+        return f"----------Notebook {notebook_tokens}/1500 tokens used-------------\n{actor.notebook}"
+    else:
+        return "----------Notebook 0/1500 tokens used-------------\n(Empty)"
+
+
+def build_environment_static_observations(actor: 'Player', tools_used: List[str] = None) -> str:
+    """Build combined environment_static tool observations."""
+    if not tools_used:
+        return ""
+    
+    # This would be populated with actual tool results in a real implementation
+    # For now, return a placeholder that shows which tools were used
+    observations = []
+    for tool_name in tools_used:
+        observations.append(f"[Previous {tool_name} result cached]")
+    
+    return "\n".join(observations)
 
 
 # ---------------------------------------------------------------------------

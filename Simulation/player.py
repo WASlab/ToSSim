@@ -48,6 +48,9 @@ class Player:
         #Vote weight for verdict voting (Mayor becomes 3 when revealed)
         self.vote_weight: int = 1
 
+        # Environment tool tracking for prompt building
+        self.environment_static_tools_used: set = set()  # Track which environment_static tools have been used
+
         # Amnesiac – pending role to remember at dawn
         self.remember_role_name = None
 
