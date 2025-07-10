@@ -802,6 +802,9 @@ class Retributionist(Role):
         # Temporarily re-animate the corpse to perform its ability.
         original_state = corpse.is_alive
         corpse.is_alive = True  # allow ability code to run
+        
+        # Add notification to the corpse about being raised
+        corpse.notifications.append("You have been risen from the dead and compelled into action.")
 
         try:
             result = corpse.role.perform_night_action(corpse, second_target, game)
