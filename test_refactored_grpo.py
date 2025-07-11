@@ -142,9 +142,9 @@ def test_mock_validation():
         # (text, time, phase, expected_status)
         ("<think>I should speak</think><speak>Hello everyone</speak>", Time.DAY, Phase.DISCUSSION, "OK"),
         ("<think>Vote for Alice</think><vote>Alice</vote>", Time.DAY, Phase.NOMINATION, "OK"),
-        ("<think>Kill Bob</think><kill>Bob</kill>", Time.NIGHT, Phase.STANDARD_ACTIONS, "OK"),
+        ("<think>Kill Bob</think><kill>Bob</kill>", Time.NIGHT, Phase.NIGHT, "OK"),
         ("<think>Wrong phase</think><kill>Bob</kill>", Time.DAY, Phase.DISCUSSION, "ILLEGAL"),
-        ("<think>Bad XML <kill>Bob</kill>", Time.NIGHT, Phase.STANDARD_ACTIONS, "MALFORMED"),
+        ("<think>Bad XML <kill>Bob</kill>", Time.NIGHT, Phase.NIGHT, "MALFORMED"),
     ]
     
     for text, time, phase, expected in test_cases:

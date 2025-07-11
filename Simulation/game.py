@@ -117,7 +117,7 @@ class Game:
         self._process_day_actions()
 
         #If a trial just concluded, the manager will tally the votes.
-        if self.phase == Phase.VOTING and self.day_phase_manager:
+        if self.phase == Phase.JUDGEMENT and self.day_phase_manager:
             self.day_phase_manager.tally_verdict()
             
         #Clear submissions for the next phase

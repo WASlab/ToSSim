@@ -1,0 +1,110 @@
+{
+  "Day": {
+    "category": "Main Phase",
+    "description": "Primary daytime period where players can speak, nominate, and lynch.",
+    "time": "DAY",
+    "activities": [
+      "Public speaking and discussion",
+      "Nominating players for trial", 
+      "Day abilities (Jailor jail, Mayor reveal, etc.)",
+      "Whispering to other players"
+    ],
+    "transitions": "Moves to Night phase when day concludes"
+  },
+  "Discussion": {
+    "category": "Day Sub-Phase",
+    "description": "Open chat period at start of day before nominations begin.",
+    "time": "DAY", 
+    "activities": [
+      "Free discussion among all living players",
+      "No voting or nominations yet",
+      "Information sharing and strategizing"
+    ],
+    "transitions": "Moves to Nomination phase when controller allows"
+  },
+  "Nomination": {
+    "category": "Day Sub-Phase", 
+    "description": "Players can nominate others for trial via voting.",
+    "time": "DAY",
+    "activities": [
+      "Vote to nominate players for trial",
+      "Each player can only nominate once per day",
+      "Need majority of living players to nominate someone"
+    ],
+    "mechanics": [
+      "Nomination threshold = (living players / 2) rounded up",
+      "Once threshold reached, nominated player goes on trial",
+      "Maximum 3 trials per day"
+    ],
+    "transitions": "Moves to Defense phase when someone is nominated"
+  },
+  "Defense": {
+    "category": "Day Sub-Phase",
+    "description": "Accused player defends themselves before town votes.",
+    "time": "DAY",
+    "activities": [
+      "Only the accused player can speak",
+      "Accused presents their defense/role claim",
+      "Other players listen but cannot speak"
+    ],
+    "transitions": "Moves to Judgement phase after defense period"
+  },
+  "Judgement": {
+    "category": "Day Sub-Phase", 
+    "description": "Town votes guilty/innocent on the accused player.",
+    "time": "DAY",
+    "activities": [
+      "All players except accused vote GUILTY/INNOCENT/ABSTAIN",
+      "Mayor's vote counts as 3 if revealed",
+      "No speaking during voting"
+    ],
+    "mechanics": [
+      "Guilty votes > Innocent votes = execution", 
+      "Tie or more innocent = player is freed",
+      "Abstain votes don't count toward either side"
+    ],
+    "transitions": "Returns to Nomination (if trials remain) or Pre-Night phase"
+  },
+  "Last Words": {
+    "category": "Day Sub-Phase",
+    "description": "Lynched player gets final statement before death.",
+    "time": "DAY", 
+    "activities": [
+      "Only the lynched player can speak",
+      "Final role claim or accusations",
+      "Information sharing before death"
+    ],
+    "transitions": "Continues day cycle or moves to Pre-Night"
+  },
+  "Pre-Night": {
+    "category": "Day Sub-Phase",
+    "description": "Short transition period before night begins.",
+    "time": "DAY",
+    "activities": [
+      "Brief pause between day and night",
+      "System prepares for night phase",
+      "No player actions typically allowed"
+    ],
+    "transitions": "Moves to Night phase"
+  },
+  "Night": {
+    "category": "Main Phase", 
+    "description": "Nighttime period where roles perform their abilities.",
+    "time": "NIGHT",
+    "activities": [
+      "Night role abilities (kill, investigate, protect, etc.)",
+      "Mafia/Coven private chat",
+      "Jailor private chat with jailed player", 
+      "No public speaking"
+    ],
+    "processing_order": [
+      "1. Transport actions (highest priority)",
+      "2. Control & Protection abilities", 
+      "3. Deception & Support actions",
+      "4. Investigation abilities",
+      "5. Killing actions",
+      "6. Post-attack & Finalization"
+    ],
+    "transitions": "Moves to next Day phase when all actions processed"
+  }
+} 

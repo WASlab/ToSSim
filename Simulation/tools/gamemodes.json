@@ -1,0 +1,26 @@
+{
+  "Classic": {
+    "description": "Beginner-friendly list with fixed Town/Mafia/Neutral distribution.",
+    "role_breakdown": {
+      "Town": 9,
+      "Mafia": 3,
+      "Neutral": 3
+    },
+    "notes": "Very small variance, good for new players."
+  },
+  "Ranked": {
+    "description": "Competitive mode with ELO and more varied list than Classic.",
+    "role_breakdown": {
+      "Town": 9,
+      "Mafia": 4,
+      "Neutral": 2
+    },
+    "requirements": "Need 50 games + 10 Ranked Practice to unlock.",
+    "notes": "ELO changes on win/loss, no parties allowed."
+  },
+  "All Any": {
+    "description": "Every slot is Any – completely random roles.",
+    "role_breakdown": "15 × Any",
+    "notes": "High chaos, fastest queue times."
+  }
+} 

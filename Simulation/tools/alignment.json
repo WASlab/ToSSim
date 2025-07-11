@@ -1,0 +1,13 @@
+{
+  "Town Investigative": ["Sheriff", "Investigator", "Lookout", "Spy", "Tracker", "Psychic"],
+  "Town Killing": ["Jailor", "Veteran", "Vigilante", "Vampire Hunter"],
+  "Town Protective": ["Bodyguard", "Doctor", "Crusader", "Trapper"],
+  "Town Support": ["Mayor", "Medium", "Retributionist", "Transporter", "Escort"],
+  "Mafia Deception": ["Disguiser", "Forger", "Framer", "Hypnotist", "Janitor"],
+  "Mafia Killing": ["Godfather", "Mafioso", "Ambusher"],
+  "Mafia Support": ["Blackmailer", "Consigliere", "Consort", "Bootlegger"],
+  "Neutral Killing": ["Serial Killer", "Arsonist", "Werewolf", "Juggernaut", "Pestilence"],
+  "Neutral Evil": ["Executioner", "Jester", "Witch"],
+  "Neutral Benign": ["Survivor", "Amnesiac", "Guardian Angel"],
+  "Coven Evil": ["Coven Leader", "Hex Master", "Medusa", "Necromancer", "Poisoner", "Potion Master"]
+} 

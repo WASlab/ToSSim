@@ -213,23 +213,14 @@ class Time(Enum):
     NIGHT = auto()
 
 class Phase(Enum):
-    DAY = auto()
-    VOTING = auto()
-    DEFENSE = auto()
-    DAY_ABILITIES = auto()
-    NIGHT = auto()
-    PASSIVE_ABILITIES = auto()
-    PRIORITY_ACTIONS = auto()
-    ATTACKS = auto()
-    STANDARD_ACTIONS = auto()
-    OBSERVATION = auto()
-    FINALIZATION = auto()
     # --- Refined agent-facing phases (used by MatchRunner FSM) ---
     DISCUSSION = auto()   # open chat, no nominations yet
     NOMINATION = auto()   # players cast votes to put someone on trial
+    DEFENSE = auto()      # accused player defends themselves  
     JUDGEMENT = auto()    # guilty / innocent / abstain voting
     LAST_WORDS = auto()   # lynched player speaks
     PRE_NIGHT = auto()    # short filler before night
+    NIGHT = auto()
 
 #Immunity types
 class ImmunityType(Enum):

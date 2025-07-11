@@ -167,9 +167,9 @@ def discover_tools(role: 'Role' = None) -> List[ToolSpec]:
             if tool_name == "view_will":
                 example_input = "</view_will>"
                 example_output = '[Your current will: "Investigated Player5 on Night 2, result was Town."]'
-            elif tool_name == "role_details" or tool_name == "get_role_details":
-                example_input = "<role_details>William</role_details>"
-                example_output = "[Player William's role is Bodyguard.]"
+            elif tool_name in ["roles", "role_details", "get_role_details"]:
+                example_input = "<roles>Bodyguard</roles>"
+                example_output = "[Detailed information about the Bodyguard role.]"
             elif tool_name == "write_will":
                 example_input = "<write_will>I healed Player3 on Night 2.</write_will>"
                 example_output = "[Your will has been updated.]"

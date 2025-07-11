@@ -90,7 +90,7 @@ def get_dummy_action(player: Player, game: Game) -> str:
 
     # Day actions
     if game.time == Time.DAY:
-        if game.phase == Phase.DAY:
+        if game.phase == Phase.DISCUSSION:
             # Jailor day action (choose prisoner)
             if player.role.name == RoleName.JAILOR and not player.role.jailed_target:
                 possible_targets = [p for p in game.players if p.is_alive and p != player]
@@ -106,7 +106,7 @@ def get_dummy_action(player: Player, game: Game) -> str:
                     return f"<nominate>{target.name}</nominate>"
             return "<pass/>"
         
-        elif game.phase == Phase.VOTING:
+        elif game.phase == Phase.JUDGEMENT:
             if player == game.day_phase_manager.on_trial:
                 return "<pass/>" # Cannot vote on own trial
             
@@ -178,12 +178,12 @@ def main():
         # --- Day Phase ---
         if game.time == Time.DAY:
             # Discussion & Nomination Period
-            if game.phase == Phase.DAY:
+            if game.phase == Phase.DISCUSSION:
                 print("\n--- Discussion & Nominations ---")
                 # In a real game, this would be a timed phase. Here, we'll just poll once.
                 # Loop a few times to give more chances for nominations
                 for _ in range(3): 
-                    if game.phase == Phase.VOTING: break # A trial has started
+                    if game.phase == Phase.JUDGEMENT: break # A trial has started
                     for player in game.players:
                         if player.is_alive:
                             action_str = get_dummy_action(player, game)
@@ -192,7 +192,7 @@ def main():
                                 handler.parse_and_execute(player, action_str)
             
             # Trial & Verdict Period
-            if game.phase == Phase.VOTING:
+            if game.phase == Phase.JUDGEMENT:
                 print(f"\n--- Trial for {game.day_phase_manager.on_trial.name} ---")
                 for player in game.players:
                     if player.is_alive:

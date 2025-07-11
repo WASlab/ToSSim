@@ -28,7 +28,8 @@ TOOLS_DIR = Path(__file__).parent
 _TOOL_REGISTRY = {
     # Role information tools (role system integration and JSON data loading)
     "get_role": {"name": "get_role", "class": "environment_static"},
-    "role_details": {"name": "role_details", "class": "environment_static"},
+    "roles": {"name": "roles", "class": "environment_static"},  # <- renamed tool
+    "role_details": {"name": "role_details", "class": "environment_static"},  # legacy alias
     "attributes": {"name": "attributes", "class": "environment_static"},
     
     # Dynamic game state tools (these query live game state)
@@ -47,6 +48,9 @@ _TOOL_REGISTRY = {
     "investigation_results": {"name": "investigation_results", "class": "environment_static"},
     "evil_investigation_results": {"name": "evil_investigation_results", "class": "environment_static"},
     "victory_conditions": {"name": "victory_conditions", "class": "environment_static"},
+    "gamemodes": {"name": "gamemodes", "class": "environment_static"},
+    "alignments": {"name": "alignments", "class": "environment_static"},
+    "phases": {"name": "phases", "class": "environment_static"},
 }
 
 def _load_data_json(filename: str) -> dict[str, Any]:
@@ -517,7 +521,7 @@ def _exec_role_details(argument: str) -> str:
             "examples": ["Bodyguard", "Doctor", "Sheriff", "Mafioso", "Jester"]
         }
         return json.dumps({
-            "tool_name": "role_details",
+            "tool_name": "roles",
             "class": "environment_static",
             "observation": {"search_result": search_result}
         }, indent=2)
@@ -526,7 +530,7 @@ def _exec_role_details(argument: str) -> str:
     if not role_name_clean:
         role_names = list(data.keys())
         return json.dumps({
-            "tool_name": "role_details",
+            "tool_name": "roles",
             "class": "environment_static",
             "observation": {
                 "available_roles": role_names,
@@ -546,7 +550,7 @@ def _exec_role_details(argument: str) -> str:
             return f"No role named '{role_name_clean}' found in role details."
     
     return json.dumps({
-        "tool_name": "role_details",
+        "tool_name": "roles",
         "class": "environment_static", 
         "observation": {"role_details": role_details}
     }, indent=2)
@@ -730,57 +734,78 @@ INVESTIGATION GROUPS (for Coven roles):
 
 
 def _exec_victory_conditions(argument: str, *, game=None, player=None) -> str:
-    """Return victory condition information for all factions.
-    
-    Usage: <victory_conditions></victory_conditions>
+    """Return victory condition information.
+
+    Usage examples:
+    • <victory_conditions></victory_conditions>              – contextual (in-game) lookup for *your* alignment
+    • <victory_conditions>Town</victory_conditions>         – lookup Town victory conditions (any context)
+    • <victory_conditions>Mafia</victory_conditions>        – lookup Mafia victory conditions, etc.
     """
-    if not game or not player:
-        return "Error: victory conditions require game context."
-    
-    # Restrict to living players only
-    if not player.is_alive:
-        return "Error: You cannot use tools while dead."
-    
-    results = """Victory Conditions:
 
-TOWN:
-- Win: Lynch every criminal and evildoer
-- Wins with: Survivors
-- Must eliminate: All Mafia, Coven, and Neutral Killing roles
+    # Load static data once
+    try:
+        victory_data = _load_data_json("victory_conditions.json")
+    except FileNotFoundError:
+        return "Victory conditions data file not found."
+    except json.JSONDecodeError as e:
+        return f"Error parsing victory conditions JSON: {e}"
 
-MAFIA:
-- Win: Equal or outnumber Town with no hostile neutrals alive
-- Wins with: Survivors, Witches (Classic), Executioners/Jesters (if they win)
-- Must eliminate: Town and Neutral Killing roles
+    arg = argument.strip()
 
-COVEN:
-- Win: Equal or outnumber Town with no hostile neutrals alive  
-- Wins with: Survivors, Executioners/Jesters (if they win)
-- Must eliminate: Town, Mafia, and Neutral Killing roles
+    # ────────────────────────────────────────────────────────────
+    # 1. Explicit argument lookup (works even outside a running game)
+    # ────────────────────────────────────────────────────────────
+    if arg:
+        matches: dict[str, list[str]] = {}
+        for mode, align_map in victory_data.items():
+            for align_name, conditions in align_map.items():
+                if align_name.lower() == arg.lower():
+                    matches.setdefault(mode, conditions)
 
-NEUTRAL KILLING:
-- Serial Killer: Survive to end, kill everyone else
-- Arsonist: Survive to end, kill everyone else
-- Werewolf: Survive to end, kill everyone else
-- Juggernaut: Survive to end, kill everyone else
-- Pestilence: Kill everyone (no allies)
+        if not matches:
+            return f"No victory conditions found for '{arg}'."
 
-NEUTRAL EVIL:
-- Executioner: Get your target lynched, then win with any faction
-- Jester: Get lynched by the Town
-- Witch (Classic): Win with Mafia
+        # If only one game mode provides data, return a simple list
+        if len(matches) == 1:
+            sole_mode = next(iter(matches))
+            result = f"{arg.title()} – {sole_mode} Mode:\n\n"
+            for cond in matches[sole_mode]:
+                result += f"- {cond}\n"
+            return result.strip()
 
-NEUTRAL BENIGN:
-- Survivor: Survive to end, wins with any faction
-- Amnesiac: Remember a role, then follow that role's win condition
-- Guardian Angel: Keep your target alive until end, then win with any faction
+        # Otherwise, show a JSON mapping of mode → conditions
+        return json.dumps(matches, indent=2)
 
-SPECIAL NOTES:
-- Ties go to Town if only Town/Mafia/Coven remain
-- Survivors always win if alive at game end
-- Some roles change win conditions (GA→Survivor, Exe→Jester, VH→Vigilante)"""
-    
-    return results
+    # ────────────────────────────────────────────────────────────
+    # 2. In-game contextual lookup (original behaviour)
+    # ────────────────────────────────────────────────────────────
+    if game and player:
+        if not player.is_alive:
+            return "Error: You cannot use tools while dead."
+
+        game_mode = getattr(game.config, 'game_mode', 'Classic')
+        alignment = getattr(game.config, 'alignment', None)
+
+        if not alignment:
+            return "Error: Player alignment unavailable in game context."
+
+        conditions = victory_data.get(game_mode, {}).get(alignment, [])
+        if not conditions:
+            return f"No victory conditions found for {alignment} in {game_mode} mode."
+
+        result = f"Victory Conditions for {alignment} – {game_mode} Mode:\n\n"
+        for cond in conditions:
+            result += f"- {cond}\n"
+        return result.strip()
+
+    # ────────────────────────────────────────────────────────────
+    # 3. Fallback – list available alignments for Classic mode
+    # ────────────────────────────────────────────────────────────
+    classic_aligns = list(victory_data.get("Classic", {}).keys())
+    return (
+        "Usage: <victory_conditions>[Alignment]</victory_conditions>. "
+        "Available alignments in Classic mode: " + ", ".join(classic_aligns)
+    )
 
 
 def _exec_write_death_note(argument: str, *, game=None, player=None) -> str:
@@ -866,11 +891,78 @@ def _exec_jailor_death_note(argument: str, *, game=None, player=None) -> str:
     return f"Execution reason set: {reason_map[reason]}"
 
 
+def _exec_gamemodes(argument: str) -> str:
+    """Return information about game modes.
+    If no argument: list all modes. Else, details about the requested mode.
+    """
+    try:
+        gm_data = _load_data_json("gamemodes.json")
+    except FileNotFoundError:
+        return "Game modes data file not found."
+    except json.JSONDecodeError as e:
+        return f"Error parsing gamemodes JSON: {e}"
+
+    mode = argument.strip()
+    if not mode:
+        return json.dumps({"available_gamemodes": list(gm_data.keys())}, indent=2)
+    # Case-insensitive lookup
+    for key in gm_data:
+        if key.lower() == mode.lower():
+            return json.dumps({mode: gm_data[key]}, indent=2)
+    return f"No game mode named '{mode}' found."
+
+
+def _exec_alignments(argument: str) -> str:
+    """Return information about alignments and their roles.
+    Argument can be empty (list alignments) or specific alignment.
+    """
+    try:
+        al_data = _load_data_json("alignment.json")
+    except FileNotFoundError:
+        return "Alignment data file not found."
+    except json.JSONDecodeError as e:
+        return f"Error parsing alignment JSON: {e}"
+
+    align = argument.strip()
+    if not align:
+        return json.dumps({"available_alignments": list(al_data.keys())}, indent=2)
+
+    # Case-insensitive lookup
+    for key in al_data:
+        if key.lower() == align.lower():
+            return json.dumps({key: al_data[key]}, indent=2)
+    return f"No alignment named '{align}' found."
+
+def _exec_phases(argument: str) -> str:
+    """Return information about game phases and their mechanics.
+    Argument can be empty (list all phases) or specific phase name.
+    """
+    try:
+        phases_data = _load_data_json("phases.json")
+    except FileNotFoundError:
+        return "Phases data file not found."
+    except json.JSONDecodeError as e:
+        return f"Error parsing phases JSON: {e}"
+
+    phase = argument.strip()
+    if not phase:
+        return json.dumps({"available_phases": list(phases_data.keys())}, indent=2)
+
+    # Case-insensitive lookup
+    for key in phases_data:
+        if key.lower() == phase.lower():
+            return json.dumps({key: phases_data[key]}, indent=2)
+    return f"No phase named '{phase}' found."
+
 # Mapping: tool name -> executor
 _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "get_role": _exec_get_role,
-    "role_details": _exec_role_details,  
+    "roles": _exec_role_details,  
+    "role_details": _exec_role_details,
     "attributes": _exec_attributes,
+    "gamemodes": _exec_gamemodes,
+    "alignments": _exec_alignments,
+    "phases": _exec_phases,
     
     "chat_history": _exec_chat_history,
     "graveyard": _exec_graveyard,

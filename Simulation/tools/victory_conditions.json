@@ -1,0 +1,85 @@
+{
+  "Classic": {
+    "Town": [
+      "Win when the Town is the last faction alive (all Mafia, Coven, Neutral Killing, Vampires and other hostile roles are dead).",
+      "Town wins WITH Survivors.",
+      "Special 1-v-1 rules: Town loses to a Vigilante with bullets against a Witch until one side dies; a Transporter wins against Mafioso in 1-v-1; Jailor with executions beats Traitor, etc."
+    ],
+    "Mafia": [
+      "Win when remaining Mafia members equal or outnumber the Town and no hostile Neutrals are alive (Neutral Killing, Vampires, Coven, Plaguebearer / Pestilence).",
+      "Wins WITH Survivors, Witches (Classic mode only) and Executioners/Jesters *if* those roles have met their own objectives.",
+      "Special 1-v-1 rules: Godfather auto-wins versus a Transporter; Mafia beats Tavern Keeper; Traitor win logic as per Town-Traitor mode (Town has three days to kill Traitor, otherwise Mafia victory)."
+    ],
+    "Coven": [
+      "Win when Coven members equal or outnumber the Town and no hostile Neutrals are alive (Neutral Killing, Vampires, Mafia, etc.).",
+      "Wins WITH Survivors and Executioners/Jesters that have fulfilled their goal.",
+      "Special 1-v-1 rules: Coven Leader auto-wins vs Godfather; Medusa auto-wins vs Transporter; Coven members without role-block immunity auto-win versus Tavern Keeper."
+    ],
+    "Vampires": [
+      "Win when Vampires are the last faction alive (all Town, Mafia, Coven, Neutral Killing, Neutral Chaos except Pirate, etc. are dead or converted).",
+      "Vampires win 1-v-1 against Transporters and Tavern Keepers."
+    ],
+    "Neutral Killing": [
+      "Each Neutral Killing role (Serial Killer, Arsonist, Werewolf, Juggernaut) wins when *its role* is the last alignment alive.",
+      "Most Neutral Killing roles have special 1-v-1 auto-win rules – see individual role sections." 
+    ],
+    "Plaguebearer": [
+      "Wins when Plaguebearer is alive while ALL other factions are dead or converted AND *not everyone* is infected (otherwise it becomes Pestilence)."
+    ],
+    "Pestilence": [
+      "Wins when Pestilence is the last entity alive (all Town, Mafia, Coven, Neutral Killing, Vampires, Pirate, etc. are dead)."
+    ],
+    "Serial Killer": [
+      "Wins when Serial Killer(s) are the last players alive.",
+      "Auto-wins 1-v-1 against Transporter, Jailor without executions, Godfather, Mafioso or Vampire." 
+    ],
+    "Arsonist": [
+      "Wins when Arsonist(s) are the last players alive.",
+      "Auto-wins 1-v-1 against Tavern Keeper, Jailor without executions, Transporter, Godfather, Mafioso, Vampire or Serial Killer (special interaction with Werewolf; see draw rules)."
+    ],
+    "Werewolf": [
+      "Wins when the Werewolf is the last player alive.",
+      "Auto-wins 1-v-1 against Godfather, Mafioso, Vampire, Veteran (any alerts) or Serial Killer." 
+    ],
+    "Juggernaut": [
+      "Wins when the Juggernaut is the last player alive." 
+    ],
+    "Witch": [
+      "Wins if at least one Witch survives when all factional roles are dead (Classic only – cannot occur in Coven Expansion).",
+      "Witches do NOT win during a Town victory or any draw if Town is still alive." 
+    ],
+    "Executioner": [
+      "Wins by having their target lynched during the game (does not need to survive)." 
+    ],
+    "Jester": [
+      "Wins by being lynched during the game (does not need to survive)." 
+    ],
+    "Survivor": [
+      "Wins by surviving to the end of the game during a timeout or wipeout." 
+    ],
+    "Guardian Angel": [
+      "Wins by keeping their target alive until the game ends (does not need to survive)." 
+    ],
+    "Pirate": [
+      "Wins by successfully plundering two people *and* the game ending in timeout/wipeout (does not need to survive)." 
+    ],
+    "Neutrals": [
+      "‘Neutrals Win’ screen appears when multiple neutral roles are alive and no faction wins. Only neutrals that have met their own win condition actually win." 
+    ],
+    "Lovers": [
+      "Lovers Mode: Lovers win when the only players alive form perfect lover pairs (dead lovers do not win)." 
+    ],
+    "Draw": [
+      "Occurs when no player or faction meets their victory condition (e.g., full wipeout or stalemate without a detector trigger)." 
+    ],
+    "Timeout": [
+      "Occurs when there are no deaths or conversions for two consecutive Days & Nights after Day 7. Neutral roles with pending objectives (e.g., Survivor) may still win." 
+    ],
+    "Wipeout": [
+      "All players are dead – factional roles draw; non-factional neutrals lose unless their personal objective is met." 
+    ],
+    "Stalemate": [
+      "Automatic win-awards in specific 1-v-1 match-ups to prevent endless loops (e.g., Arsonist vs Jailed SK, etc.). See stalemate tool for exact cases." 
+    ]
+  }
+} 
