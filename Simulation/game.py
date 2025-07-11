@@ -189,9 +189,18 @@ class Game:
     def submit_day_action(self, player: Player, target: Player = None):
         self.day_actions[player] = target
 
-    def submit_night_action(self, player: Player, target: Player = None):
+    def submit_night_action(self, player: Player, target = None):
         self.night_actions[player] = target
-        print(f"[Debug] Recorded night action: {player.name} -> {target.name if target else 'None'}")
+        # Handle different target types for debug output
+        if target is None:
+            target_str = 'None'
+        elif isinstance(target, tuple):
+            target_str = f"({', '.join(t.name if hasattr(t, 'name') else str(t) for t in target)})"
+        elif hasattr(target, 'name'):
+            target_str = target.name
+        else:
+            target_str = str(target)
+        print(f"[Debug] Recorded night action: {player.name} -> {target_str}")
 
     #------------------------------------------------------------------
     #Internal Processing Logic (private methods)
@@ -895,52 +904,93 @@ class Game:
         return False
 
     def _process_transports(self):
-        transporter_actions = {p: t for p, t in self.night_actions.items() if p.is_alive and p.role.name == RoleName.TRANSPORTER}
+        """Process all Transporter actions, swapping visits and notifying targets."""
+        transporters = [p for p in self.players if p.is_alive and p.role.name == RoleName.TRANSPORTER]
         
-        if not transporter_actions:
+        if not transporters:
             return
 
-        #For simplicity, this implementation only handles one transporter.
-        #Town of Salem games typically only allow one.
-        if len(transporter_actions) > 1:
-            print("[Warning] Multiple transporters are not yet supported. Only one will act.")
+        # Process each transporter (multiple transporters can exist)
+        for transporter in transporters:
+            if not hasattr(transporter.role, 'transport_targets') or not transporter.role.transport_targets:
+                continue
+                
+            target1, target2 = transporter.role.transport_targets
+            
+            # Validate targets are still alive and not jailed
+            if not target1.is_alive or not target2.is_alive:
+                continue
+            if target1.is_jailed or target2.is_jailed:
+                transporter.notifications.append("One of your targets was in jail, so you could not transport them.")
+                continue
 
-        #Get the two targets of the first transporter found
-        #This assumes the transporter's target is a tuple of two players.
-        #The simulation logic will need to be updated to support this.
-        
-        try:
-            transporter, (target1, target2) = list(transporter_actions.items())[0]
-        except (ValueError, TypeError):
-             #This can happen if the target is not a tuple of two players.
-             #We'll add a check for this in the simulation logic later.
-            return
-
-        if not all([target1, target2]):
-            return
-
-        print(f"[Transport] {transporter.name} is transporting {target1.name} and {target2.name}.")
-        
-        #Swap targets for all other actions
-        for player, target in self.night_actions.items():
-            if player == transporter: continue
-            if target == target1:
-                self.night_actions[player] = target2
-                print(f"[Transport] {player.name}'s action was redirected to {target2.name}.")
-            elif target == target2:
-                self.night_actions[player] = target1
-                print(f"[Transport] {player.name}'s action was redirected to {target1.name}.")
-        
-        #Also swap any attacks targeting them
-        for attack in self.night_attacks:
-            if attack["target"] == target1:
-                attack["target"] = target2
-            elif attack["target"] == target2:
-                attack["target"] = target1
-        
-        #Notify the transported players
-        target1.notifications.append("You were transported to another location.")
-        target2.notifications.append("You were transported to another location.")
+            print(f"[Transport] {transporter.name} is transporting {target1.name} and {target2.name}.")
+            
+            # Swap all visits targeting these players
+            for player in self.players:
+                if not player.is_alive or player == transporter:
+                    continue
+                    
+                # Swap primary visiting target
+                if hasattr(player, 'visiting') and player.visiting == target1:
+                    player.visiting = target2
+                    print(f"[Transport] {player.name}'s visit redirected from {target1.name} to {target2.name}.")
+                elif hasattr(player, 'visiting') and player.visiting == target2:
+                    player.visiting = target1
+                    print(f"[Transport] {player.name}'s visit redirected from {target2.name} to {target1.name}.")
+                
+                # Swap all visits in visiting_all list
+                if hasattr(player, 'visiting_all'):
+                    for i, visit_target in enumerate(player.visiting_all):
+                        if visit_target == target1:
+                            player.visiting_all[i] = target2
+                        elif visit_target == target2:
+                            player.visiting_all[i] = target1
+            
+            # Swap targeted_by lists
+            # Remove from old lists
+            target1_visitors = [p for p in target1.targeted_by if p != transporter]
+            target2_visitors = [p for p in target2.targeted_by if p != transporter]
+            
+            # Clear and rebuild
+            target1.targeted_by = [p for p in target1.targeted_by if p == transporter]  # Keep transporter visit
+            target2.targeted_by = [p for p in target2.targeted_by if p == transporter]  # Keep transporter visit
+            
+            # Add swapped visitors
+            target1.targeted_by.extend(target2_visitors)
+            target2.targeted_by.extend(target1_visitors)
+            
+            # Swap night action targets
+            for player, action_target in list(self.night_actions.items()):
+                if player == transporter:
+                    continue
+                if action_target == target1:
+                    self.night_actions[player] = target2
+                elif action_target == target2:
+                    self.night_actions[player] = target1
+            
+            # Swap any queued attacks
+            for attack in self.night_attacks:
+                if attack["target"] == target1:
+                    attack["target"] = target2
+                elif attack["target"] == target2:
+                    attack["target"] = target1
+            
+            # Handle special cases for self-targeting after transport
+            # If someone was transported and they targeted themselves, they now target the other person
+            if target1.visiting == target1:  # This means they originally targeted themselves but got swapped
+                target1.visiting = target2
+                print(f"[Transport] {target1.name} was redirected to target {target2.name} (self-target swap).")
+            if target2.visiting == target2:
+                target2.visiting = target1
+                print(f"[Transport] {target2.name} was redirected to target {target1.name} (self-target swap).")
+            
+            # Notify the transported players
+            target1.notifications.append("You were transported to another location.")
+            target2.notifications.append("You were transported to another location.")
+            
+            # Reset transport targets for next night
+            transporter.role.transport_targets = None
 
     def _check_executioners(self, dead_players):
         from .roles import Jester
@@ -1073,7 +1123,17 @@ class Game:
     def speak(self, player: Player, text: str) -> str:
         #If this is daytime and the player is black-mailed, they cannot talk.
         if self.time == Time.DAY and getattr(player, 'is_blackmailed', False):
-            return "Error: You are blackmailed and cannot speak."  #mimic ToS message
+            # Special case: if blackmailed player is on trial and tries to speak during defense,
+            # the environment should post "I am Blackmailed" on their behalf
+            if (hasattr(self, 'day_phase_manager') and self.day_phase_manager and 
+                self.day_phase_manager.on_trial == player and self.phase == Phase.DEFENSE):
+                # Post the blackmail message on their behalf
+                blackmail_msg = self.chat.send_speak(player, "I am Blackmailed")
+                if isinstance(blackmail_msg, str):
+                    return blackmail_msg
+                return "Your attempt to speak was blocked, but everyone sees you are blackmailed."
+            else:
+                return "Error: You are blackmailed and cannot speak."  #mimic ToS message
 
         result = self.chat.send_speak(player, text)
         if isinstance(result, str):
@@ -1149,14 +1209,30 @@ class Game:
         mafia_visits: dict[Player, list[Player]] = defaultdict(list)
         coven_visits: dict[Player, list[Player]] = defaultdict(list)
 
-        #Build visit maps
+        #Build visit maps - handle Disguiser effects
         for p in self.players:
             if not p.is_alive or not p.visiting:
                 continue
-            if p.role.faction == Faction.MAFIA:
+            
+            # If player is disguised as non-Mafia/Coven, don't show them in faction visits
+            is_disguised_as_non_faction = (hasattr(p, 'disguised_as_role') and p.disguised_as_role and 
+                                         p.role.faction in [Faction.MAFIA, Faction.COVEN])
+            
+            if p.role.faction == Faction.MAFIA and not is_disguised_as_non_faction:
                 mafia_visits[p.visiting].append(p)
-            elif p.role.faction == Faction.COVEN:
+            elif p.role.faction == Faction.COVEN and not is_disguised_as_non_faction:
                 coven_visits[p.visiting].append(p)
+            elif is_disguised_as_non_faction:
+                # If disguised as Coven while being Mafia, show as Coven visit
+                disguise_role = None
+                for player in self.players:
+                    if player.role.name == p.disguised_as_role:
+                        disguise_role = player.role
+                        break
+                if disguise_role and disguise_role.faction == Faction.COVEN and p.role.faction == Faction.MAFIA:
+                    coven_visits[p.visiting].append(p)
+                elif disguise_role and disguise_role.faction == Faction.MAFIA and p.role.faction == Faction.COVEN:
+                    mafia_visits[p.visiting].append(p)
 
         #Helper to create shuffled summary lines
         def _summaries(visit_map: dict[Player, list[Player]], faction_name: str):

@@ -124,10 +124,29 @@ class Lookout(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game'):
         from .enums import VisitType
-        visitors = [p.name for p in target.targeted_by if p.role.visit_type != VisitType.ASTRAL]
-        if not visitors:
+        visitor_names = []
+        
+        for visitor in target.targeted_by:
+            if visitor.role.visit_type == VisitType.ASTRAL:
+                continue  # Astral visits are invisible to Lookout
+                
+            # Handle Disguiser effect: show disguised role name instead of actual visitor
+            visitor_name = visitor.name
+            if hasattr(visitor, 'disguised_as_role') and visitor.disguised_as_role:
+                # Find the player whose role the visitor is disguised as
+                disguise_source = None
+                for p in game.players:
+                    if p.role.name == visitor.disguised_as_role:
+                        disguise_source = p
+                        break
+                if disguise_source:
+                    visitor_name = disguise_source.name
+                    
+            visitor_names.append(visitor_name)
+            
+        if not visitor_names:
             return f"No one visited {target.name}."
-        return f"These players visited {target.name}: {', '.join(visitors)}"
+        return f"These players visited {target.name}: {', '.join(visitor_names)}"
 
 class Doctor(Role):
     def __init__(self):
@@ -910,12 +929,30 @@ class Transporter(Role):
         self.is_roleblock_immune = True
         self.control_immune = True
         self.action_priority = Priority.HIGHEST
+        self.visit_type = VisitType.NON_HARMFUL
+        self.transport_targets = None  # Tuple of (player1, player2) to transport
 
-    def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        if not game or not isinstance(target, tuple) or len(target) != 2:
+    def perform_night_action(self, player: 'Player', target: 'tuple[Player, Player]' = None, game: 'Game' = None):
+        if not game or not target or not isinstance(target, tuple) or len(target) != 2:
             return "You must choose two people to transport."
 
         a, b = target
+        
+        # Cannot transport same person with themselves
+        if a == b:
+            return "You cannot transport someone with themselves."
+        
+        # Cannot transport jailed players
+        if a.is_jailed or b.is_jailed:
+            return "One of your targets was in jail, so you could not transport them."
+        
+        # Store transport targets for processing in game
+        self.transport_targets = (a, b)
+        
+        # Visit both targets
+        player.visit(a)
+        player.visit(b)
+        
         return f"You will transport {a.name} with {b.name}."
 
 #────────────────────────────────────────────────
@@ -927,22 +964,34 @@ class Disguiser(Role):
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
         self.action_priority = Priority.SUPPORT_DECEPTION
-        self.visit_type = VisitType.HARMFUL
-        self.charges = 3
+        self.visit_type = VisitType.NON_HARMFUL  # Disguiser doesn't trigger BG/Trap
+        self.disguise_target = None  # Target to disguise as
+        self.mafia_target = None     # Mafia member to disguise
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
-            return "You must select a target to disguise as."
-
-        if self.charges <= 0:
-            return "You have used all of your disguise kits."
+            return "You must select a target to disguise a Mafia member as."
 
         if target.role.faction == Faction.MAFIA:
             return "You cannot disguise as another Mafia member."
+        
+        if target.is_jailed:
+            return "You cannot disguise as someone who is jailed."
 
-        player.disguised_as_role = target.role.name
-        self.charges -= 1
-        return f"You have disguised yourself as a {target.role.name.value}. ({self.charges} kits left)"
+        # Find a living Mafia member to disguise (prioritize non-Disguiser)
+        mafia_members = [p for p in game.players if p.is_alive and p.role.faction == Faction.MAFIA and p != player]
+        if not mafia_members:
+            return "There are no other living Mafia members to disguise."
+        
+        # Choose the first available Mafia member (could be randomized)
+        mafia_member = mafia_members[0]
+        
+        # Set up the disguise - it will take effect when investigations happen
+        mafia_member.disguised_as_role = target.role.name
+        self.disguise_target = target
+        self.mafia_target = mafia_member
+        
+        return f"You have disguised {mafia_member.name} as a {target.role.name.value}."
 
 #Mafia Deception – Forger
 class Forger(Role):
@@ -1767,6 +1816,7 @@ role_map = {
     RoleName.VAMPIRE: Vampire,
     RoleName.COVEN_LEADER: CovenLeader,
     RoleName.MEDUSA: Medusa,
+    RoleName.HEX_MASTER: HexMaster,
     RoleName.POTION_MASTER: PotionMaster,
     RoleName.POISONER: Poisoner,
     RoleName.NECROMANCER: Necromancer,
@@ -1788,6 +1838,7 @@ def create_role_from_name(role_name: RoleName) -> 'Role':
         RoleName.LOOKOUT: Lookout,
         RoleName.DOCTOR: Doctor,
         RoleName.BODYGUARD: Bodyguard,
+        RoleName.CRUSADER: Crusader,
         RoleName.VIGILANTE: Vigilante,
         RoleName.MAYOR: Mayor,
         RoleName.MEDIUM: Medium,
@@ -1831,6 +1882,7 @@ def create_role_from_name(role_name: RoleName) -> 'Role':
         RoleName.POTION_MASTER: PotionMaster,
         RoleName.POISONER: Poisoner,
         RoleName.NECROMANCER: Necromancer,
+        RoleName.HEX_MASTER: HexMaster,
     }
     # Handle aliases
     if role_name == RoleName.ESCORT:

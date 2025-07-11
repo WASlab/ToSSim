@@ -27,6 +27,7 @@ from Simulation.game import Game
 from Simulation.config import GameConfiguration
 from Simulation.player import Player
 from Simulation.roles import Role
+from Simulation.enums import Time
 
 from inference.engine import InferenceEngine
 from inference.client import InferenceClient
@@ -159,8 +160,31 @@ class MatchRunner:
             votes_needed = getattr(dpm, "nomination_threshold", None)
             vote_board = [(t.name, len(v)) for t, v in dpm.nominations.items() if v]
 
-        # Chat tail placeholder – in future gather from ChatManager
+        # Get recent chat history from ChatManager
         chat_tail: list[str] = []
+        if hasattr(self.game, 'chat') and self.game.chat:
+            # Get current period's messages (last 10 messages for context)
+            current_period_key = (self.game.day, self.game.time == Time.NIGHT)
+            if current_period_key in self.game.chat.history:
+                history = self.game.chat.history[current_period_key]
+                # Get last 10 messages from current period
+                recent_messages = history.messages[-10:] if len(history.messages) > 10 else history.messages
+                for msg in recent_messages:
+                    if msg.is_environment:
+                        chat_tail.append(f"[ENV] {msg.message}")
+                    else:
+                        chat_tail.append(f"{msg.sender.name}: {msg.message}")
+            
+            # Also get current active messages (not yet archived)
+            for channel in self.game.chat.channels.values():
+                if channel.messages:
+                    # Get last 5 messages from active channels
+                    recent_active = channel.messages[-5:] if len(channel.messages) > 5 else channel.messages
+                    for msg in recent_active:
+                        if msg.is_environment:
+                            chat_tail.append(f"[ENV] {msg.message}")
+                        else:
+                            chat_tail.append(f"{msg.sender.name}: {msg.message}")
 
         return {
             "day": getattr(self.game, "day", 0),
@@ -170,6 +194,22 @@ class MatchRunner:
             "vote_board": vote_board,
             "chat_tail": chat_tail,
         }
+
+    def _process_phase_turns(self, phase_name: str) -> None:
+        """Process agent turns for a specific phase."""
+        print(f"\n--- {phase_name} Phase ---")
+        public_state = self._render_public_state()
+        
+        # Give each living agent a turn in this phase
+        for ctx in self.agents.values():
+            if ctx.player.is_alive:
+                self._send_agent_turn(ctx, public_state)
+                
+        # Check if phase should advance (e.g., trial started during nomination)
+        if hasattr(self.game, 'day_phase_manager') and self.game.day_phase_manager:
+            if self.game.day_phase_manager.on_trial and phase_name == "Nomination":
+                print(f"Trial started for {self.game.day_phase_manager.on_trial.name} - advancing to Defense phase")
+                return
 
     def _send_agent_turn(self, ctx: AgentContext, public_state: Dict[str, Any]) -> None:
         """Iteratively chat with the agent until a terminal public action is produced."""
@@ -237,10 +277,38 @@ class MatchRunner:
 
     def _process_day_phase(self):
         self.game.advance_to_day()
-
-        public_state = self._render_public_state()
-        for ctx in self.agents.values():
-            self._send_agent_turn(ctx, public_state)
+        
+        # Process the full day phase sequence: Discussion → Nomination → Defense → Judgement → Last Words
+        from Simulation.enums import Phase
+        
+        # Phase 1: Discussion (free chat, no nominations yet)
+        self.game.phase = Phase.DISCUSSION
+        self._process_phase_turns("Discussion")
+        
+        # Phase 2: Nomination (players vote to put someone on trial)
+        self.game.phase = Phase.NOMINATION
+        self._process_phase_turns("Nomination")
+        
+        # Phase 3: Defense (if someone is on trial)
+        if self.game.day_phase_manager and self.game.day_phase_manager.on_trial:
+            self.game.phase = Phase.DEFENSE
+            self._process_phase_turns("Defense")
+            
+            # Phase 4: Judgement (guilty/innocent voting)
+            self.game.phase = Phase.JUDGEMENT
+            self._process_phase_turns("Judgement")
+            
+            # Process the verdict
+            self.game.process_day_submissions()
+            
+            # Phase 5: Last Words (if someone was lynched)
+            if self.game.day_phase_manager and self.game.day_phase_manager.on_trial:
+                # Note: on_trial is cleared after verdict, so we need to track this differently
+                # For now, we'll skip last words implementation
+                pass
+        
+        # Phase 6: Pre-Night transition
+        self.game.phase = Phase.PRE_NIGHT
 
     # ------------------------------------------------------------------
     # Action routing helpers

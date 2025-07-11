@@ -959,6 +959,12 @@ class InteractionHandler:
         self.game.submit_night_action(actor, None)
         return "Success: You will pass your night action."
 
+    def _handle_wait(self, actor: 'Player', content: str) -> str:
+        """Wait action - defer speaking to observe ongoing discussion."""
+        # Terminal action - just observes, doesn't submit anything to game state
+        # Works in all phases since there are always communication channels available
+        return "You choose to wait and observe the ongoing discussion."
+
     def _handle_notebook(self, actor: 'Player', content: str) -> str:
         """Write to notebook - terminal action that ends the turn."""
         if not actor.is_alive:

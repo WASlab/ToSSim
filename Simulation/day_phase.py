@@ -26,8 +26,9 @@ class DayPhase:
         self.verdict_votes: Dict[Player, str] = {}      # voter -> "GUILTY" | "INNOCENT" | "ABSTAIN"
         self.player_has_nominated: set[Player] = set()
 
-        # Config
-        self.nomination_threshold: int = max(1, len(self.alive_players) // 2)
+        # Config - ToS1 uses ceiling of half the living players (rounded up)
+        import math
+        self.nomination_threshold: int = max(1, math.ceil(len(self.alive_players) / 2))
 
         # Max three trials per day as per design
         self.trials_remaining: int = 3
