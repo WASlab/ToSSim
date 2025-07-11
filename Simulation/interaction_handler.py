@@ -818,7 +818,7 @@ class InteractionHandler:
 
     # --- Medium Seance ---
     def _handle_seance(self, actor: 'Player', content: str) -> str:
-        """Medium ability when *dead*: speak with one living player once.
+        """Medium ability: create private chat with one living player once (can be used alive or dead).
 
         Syntax: <seance>PlayerName</seance>
         """
@@ -828,25 +828,29 @@ class InteractionHandler:
         if actor.role.name != RoleName.MEDIUM:
             return "Error: You are not the Medium."
 
-        if actor.is_alive:
-            return "Error: You are still alive and cannot conduct a séance.";
-
         if actor.role.seances <= 0:
-            return "Error: You have already used your séance.";
+            return "Error: You have already used your séance."
 
         if not content.strip():
-            return "Error: You must specify a living player to contact.";
+            return "Error: You must specify a living player to contact."
 
         target = self._resolve_target(actor, content)
         if isinstance(target, str):
             return target
 
         if not target.is_alive:
-            return "Error: You may only seance a living player.";
+            return "Error: You may only seance a living player."
 
-        actor.seance_target = target
-        self.game.submit_night_action(actor, None)  # placeholder so Game knows you acted
-        return f"Success: You will attempt to contact {target.name} tonight."
+        if actor == target:
+            return "Error: You cannot seance yourself."
+
+        # Use the seance ability through role's method
+        result = actor.role.seance(actor, target, self.game)
+        if "established a seance" in result:
+            # Also submit to game for tracking
+            self.game.submit_night_action(actor, target)
+        
+        return result
 
     # --- Forger ---
     def _handle_forge(self, actor: 'Player', content: str) -> str:

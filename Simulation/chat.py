@@ -84,6 +84,9 @@ class ChatManager:
         # dynamic whispers: key -> ChatChannel
         self.whispers: Dict[Tuple[int,int,int], ChatChannel] = {}
         
+        # dynamic seances: key = (medium_id, target_id, day) -> ChatChannel
+        self.seances: Dict[Tuple[int,int,int], ChatChannel] = {}
+        
         # Historical chat storage: key = (day, is_night) -> ChatHistory
         self.history: Dict[Tuple[int, bool], ChatHistory] = {}
         
@@ -111,6 +114,7 @@ class ChatManager:
         for channel in self.channels.values():
             channel.messages.clear()
         self.whispers.clear()
+        self.seances.clear()
 
     def _archive_current_messages(self):
         """Archive all current messages to history."""
@@ -124,6 +128,11 @@ class ChatManager:
         
         # Archive whisper messages
         for channel in self.whispers.values():
+            for msg in channel.messages:
+                history.add_message(msg)
+        
+        # Archive seance messages
+        for channel in self.seances.values():
             for msg in channel.messages:
                 history.add_message(msg)
         
@@ -163,6 +172,9 @@ class ChatManager:
             ):
                 visible_messages.append(whisper)
         
+        # Add seances the player was involved in (they're also stored in whispers list)
+        # Note: seances are archived with whispers in _archive_current_messages
+        
         # Sort by insertion order (using object id as proxy)
         visible_messages.sort(key=id)
         
@@ -200,6 +212,8 @@ class ChatManager:
             return is_night and player.role.faction.name == "VAMPIRE"
         elif channel_type == ChatChannelType.JAILED:
             return False  # Jail messages are private to that night only
+        elif channel_type == ChatChannelType.MEDIUM_SEANCE:
+            return False  # Seance messages are handled separately like whispers
         
         return False
 
@@ -290,6 +304,37 @@ class ChatManager:
         
         return chan.messages[-1]
 
+    def create_seance_channel(self, medium: 'Player', target: 'Player'):
+        """Create a seance channel between Medium and target."""
+        key = (medium.id, target.id, self.current_day)
+        
+        if key in self.seances:
+            return  # Seance already exists
+        
+        # Create new seance channel
+        channel = ChatChannel(ChatChannelType.MEDIUM_SEANCE)
+        
+        # Add both players to the seance
+        channel.add_member(medium, can_write=True, can_read=True)
+        channel.add_member(target, can_write=True, can_read=True)
+        
+        self.seances[key] = channel
+        
+        # Add environment message to announce seance
+        channel.broadcast(medium, f"[SEANCE] {medium.name} has initiated a seance with {target.name}.", is_environment=True)
+        
+        print(f"[Chat] Seance channel created between {medium.name} (Medium) and {target.name}")
+
+    def send_seance(self, sender: 'Player', text: str) -> ChatMessage | str:
+        """Send a message in the seance channel this player is part of."""
+        # Find seance channel this player is in
+        for (medium_id, target_id, day), channel in self.seances.items():
+            if self.current_day == day and (sender.id == medium_id or sender.id == target_id):
+                channel.broadcast(sender, text)
+                return channel.messages[-1]
+        
+        return "You are not in any active seance."
+
     # ------------------------------------------------------------------
     def get_visible_messages(self, player: 'Player') -> List[ChatMessage]:
         """Get all currently visible messages for a player (current period only)."""
@@ -297,6 +342,8 @@ class ChatManager:
         for chan in self.channels.values():
             msgs.extend(chan.get_visible(player))
         for chan in self.whispers.values():
+            msgs.extend(chan.get_visible(player))
+        for chan in self.seances.values():
             msgs.extend(chan.get_visible(player))
         # order by insertion (id of obj stable)
         return sorted(msgs, key=id) 

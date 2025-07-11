@@ -149,6 +149,15 @@ class DayPhase:
         player.killer_death_note = ""  # No death note for lynching
         
         self.game.graveyard.append(player)
+        
+        # Move lynched player to dead chat channel
+        from .chat import ChatChannelType
+        # Remove from all living player channels
+        for channel in [ChatChannelType.DAY_PUBLIC, ChatChannelType.MAFIA_NIGHT, 
+                      ChatChannelType.COVEN_NIGHT, ChatChannelType.VAMPIRE_NIGHT, ChatChannelType.JAILED]:
+            self.game.chat.remove_player_from_channel(player, channel)
+        # Move to dead channel
+        self.game.chat.move_player_to_channel(player, ChatChannelType.DEAD, write=True, read=True)
 
         print(f"\n{player.name} has been lynched! They were a {player.role.name.value}.")
 

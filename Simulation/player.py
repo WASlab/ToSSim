@@ -18,7 +18,8 @@ class Player:
         self.votes_on = 0
         self.voted_for = None
         self.is_on_trial = False
-        self.visiting: 'Player' = None
+        self.visiting: 'Player' = None  # Primary visit target
+        self.visiting_all: list['Player'] = []  # All visit targets this night
         self.targeted_by: list['Player'] = []
         self.protected_by: list['Player'] = []
         
@@ -45,11 +46,19 @@ class Player:
         self.is_infected = False  #Plaguebearer infection
         self.last_will: str = ""  #Player can optionally set a last will.
         self.death_note: str = ""  #Player's death note (for certain roles)
+        
+        # Death information (set when player dies)
+        self.killed_by: 'Player' = None  # The player who killed this player
+        self.killer_death_note: str = ""  # Death note left by the killer
         #Vote weight for verdict voting (Mayor becomes 3 when revealed)
         self.vote_weight: int = 1
 
         # Environment tool tracking for prompt building
         self.environment_static_tools_used: set = set()  # Track which environment_static tools have been used
+
+        # Notebook system
+        self.notebook: str = ""
+        self.notebook_tokens: int = 0
 
         # Amnesiac – pending role to remember at dawn
         self.remember_role_name = None
@@ -128,11 +137,14 @@ class Player:
         self.defense = role.defense
 
     def visit(self, target_player: 'Player'):
-        self.visiting = target_player
+        self.visiting = target_player  # Keep primary target
+        if target_player not in self.visiting_all:
+            self.visiting_all.append(target_player)  # Track all targets
         target_player.targeted_by.append(self)
 
     def clear_night_actions(self):
         self.visiting = None
+        self.visiting_all = []
         self.targeted_by = []
         self.protected_by = []
         self.is_role_blocked = False
@@ -157,6 +169,7 @@ class Player:
     def reset_night_states(self):
         self.targeted_by = []
         self.visiting = None
+        self.visiting_all = []
         self.protected_by = []
         self.is_role_blocked = False
         self.is_jailed = False

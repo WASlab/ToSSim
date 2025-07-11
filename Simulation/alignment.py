@@ -92,5 +92,10 @@ def get_role_alignment(role_name: RoleName) -> RoleAlignment:
 def get_role_faction(role_name: RoleName) -> Faction:
     alignment = get_role_alignment(role_name)
     if alignment:
+        # Special cases for specific roles that have their own factions
+        if role_name == RoleName.VAMPIRE:
+            return Faction.VAMPIRE
+        elif role_name == RoleName.PESTILENCE:
+            return Faction.PESTILENCE
         return get_faction_from_alignment(alignment)
     return None 

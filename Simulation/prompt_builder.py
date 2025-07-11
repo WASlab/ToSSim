@@ -123,7 +123,7 @@ class InteractionSpec:
     phases_allowed: List[str] = field(default_factory=list)
 
 
-def discover_tools() -> List[ToolSpec]:
+def discover_tools(role: 'Role' = None) -> List[ToolSpec]:
     """Discover and parse all available tools from the tools directory."""
     tools = []
     tools_dir = Path(__file__).parent / "tools"
@@ -182,6 +182,12 @@ def discover_tools() -> List[ToolSpec]:
             elif tool_name == "notebook":
                 example_input = "<notebook>Player3 seems suspicious</notebook>"
                 example_output = "[Note added to notebook. Tokens used: 45/1500]"
+            elif tool_name == "write_death_note":
+                example_input = "<write_death_note>The Sheriff knows too much. -SK</write_death_note>"
+                example_output = "[Death note updated (7/100 tokens).]"
+            elif tool_name == "jailor_death_note":
+                example_input = "<jailor_death_note>contradictory</jailor_death_note>"
+                example_output = "[Execution reason set: Their confession was contradictory.]"
             
             tools.append(ToolSpec(
                 name=tool_name,
@@ -194,12 +200,37 @@ def discover_tools() -> List[ToolSpec]:
         except Exception as e:
             print(f"Warning: Could not parse tool {json_file}: {e}")
     
+    # Filter tools based on role capabilities
+    if role:
+        filtered_tools = []
+        for tool in tools:
+            # Death note filtering
+            if tool.name == "write_death_note":
+                from .enums import RoleName
+                death_note_roles = {
+                    RoleName.GODFATHER, RoleName.MAFIOSO, RoleName.SERIAL_KILLER, 
+                    RoleName.ARSONIST, RoleName.WEREWOLF, RoleName.JUGGERNAUT,
+                    RoleName.COVEN_LEADER, RoleName.HEX_MASTER, RoleName.NECROMANCER,
+                    RoleName.MEDUSA, RoleName.POISONER, RoleName.AMBUSHER
+                }
+                if hasattr(role, 'name') and role.name in death_note_roles:
+                    filtered_tools.append(tool)
+            elif tool.name == "jailor_death_note":
+                from .enums import RoleName
+                if hasattr(role, 'name') and role.name == RoleName.JAILOR:
+                    filtered_tools.append(tool)
+            else:
+                # Include all other tools
+                filtered_tools.append(tool)
+        return filtered_tools
+    
     return tools
 
 
-def get_available_interactions() -> List[InteractionSpec]:
-    """Get the standard interaction types available to agents."""
-    return [
+def get_available_interactions(role: 'Role' = None) -> List[InteractionSpec]:
+    """Get the standard interaction types available to agents, filtered by role abilities."""
+    
+    base_interactions = [
         InteractionSpec(
             name="speak",
             syntax="<speak>message</speak>",
@@ -233,6 +264,100 @@ def get_available_interactions() -> List[InteractionSpec]:
             phases_allowed=["All phases"]
         )
     ]
+    
+    # Add role-specific ability interactions
+    if role:
+        role_interactions = get_role_specific_interactions(role)
+        base_interactions.extend(role_interactions)
+    
+    return base_interactions
+
+
+def get_role_specific_interactions(role: 'Role') -> List[InteractionSpec]:
+    """Get role-specific ability interactions."""
+    interactions = []
+    
+    if not hasattr(role, 'name'):
+        return interactions
+    
+    role_name = role.name.value if hasattr(role.name, 'value') else str(role.name)
+    
+    # Add role-specific abilities
+    if role_name == "Doctor":
+        interactions.append(InteractionSpec(
+            name="heal",
+            syntax="<heal>PlayerName</heal>",
+            description="NIGHT ABILITY: Heal one person each night, granting them Powerful defense. You may only heal yourself once. You will know if your target is attacked.",
+            example_input="<heal>Alice</heal>",
+            example_output="[You are healing Alice tonight.]",
+            phases_allowed=["Night"]
+        ))
+    elif role_name == "Sheriff":
+        interactions.append(InteractionSpec(
+            name="investigate",
+            syntax="<investigate>PlayerName</investigate>",
+            description="NIGHT ABILITY: Investigate one player each night for suspicious activity. You will get 'Suspicious' or 'Not Suspicious' results.",
+            example_input="<investigate>Bob</investigate>",
+            example_output="[You will investigate Bob tonight.]",
+            phases_allowed=["Night"]
+        ))
+    elif role_name == "Jailor":
+        interactions.extend([
+            InteractionSpec(
+                name="jail",
+                syntax="<jail>PlayerName</jail>",
+                description="DAY ABILITY: You can arrest a member of the town for interrogation at night.",
+                example_input="<jail>Charlie</jail>",
+                example_output="[You have jailed Charlie for tonight.]",
+                phases_allowed=["Day Discussion", "Nomination"]
+            ),
+            InteractionSpec(
+                name="execute",
+                syntax="<execute></execute>",
+                description="NIGHT ABILITY: Executes the person currently jailed, killing them. You have 3 executions. If you execute a town member you will lose the ability to execute.",
+                example_input="<execute></execute>",
+                example_output="[You will execute the jailed player.]",
+                phases_allowed=["Night"]
+            )
+        ])
+    elif role_name == "Bodyguard":
+        interactions.append(InteractionSpec(
+            name="protect",
+            syntax="<protect>PlayerName</protect>",
+            description="NIGHT ABILITY: Protect another player each night. Die in their place if attacked while granting a Basic Defense vest to yourself once per game.",
+            example_input="<protect>David</protect>",
+            example_output="[You are protecting David tonight.]",
+            phases_allowed=["Night"]
+        ))
+    elif role_name == "Vigilante":
+        interactions.append(InteractionSpec(
+            name="shoot",
+            syntax="<shoot>PlayerName</shoot>",
+            description="NIGHT ABILITY: Shoot a player at night (3 bullets). If you kill a town member, you will commit suicide the following night.",
+            example_input="<shoot>Eve</shoot>",
+            example_output="[You will shoot Eve tonight.]",
+            phases_allowed=["Night"]
+        ))
+    elif role_name == "Veteran":
+        interactions.append(InteractionSpec(
+            name="alert",
+            syntax="<alert></alert>",
+            description="NIGHT ABILITY: Go on alert, killing anyone who visits you (3 alerts max).",
+            example_input="<alert></alert>",
+            example_output="[You are going on alert tonight.]",
+            phases_allowed=["Night"]
+        ))
+    elif role_name == "Retributionist":
+        interactions.append(InteractionSpec(
+            name="raise",
+            syntax="<raise>CorpseName,TargetName</raise>",
+            description="NIGHT ABILITY: Raise a dead Town corpse to use their ability on a target. Each corpse can only be used once and will rot afterwards.",
+            example_input="<raise>Alice,Bob</raise>",
+            example_output="[You will raise Alice's corpse to act on Bob tonight.]",
+            phases_allowed=["Night"]
+        ))
+    
+    return interactions
 
 
 # ---------------------------------------------------------------------------
@@ -264,14 +389,15 @@ def build_role_card(role: 'Role') -> RoleCard:
     
     # Default mappings for win conditions
     win_conditions = {
-        "Town": "Eliminate all threats to the Town.",
-        "Mafia": "Kill anyone that will not submit to the Mafia.",
-        "Neutral": "Achieve your specific role objective.",
-        "Coven": "Kill all who would oppose the Coven."
+        "TOWN": "Eliminate all threats to the Town.",
+        "MAFIA": "Kill anyone that will not submit to the Mafia.",
+        "NEUTRAL": "Achieve your specific role objective.",
+        "COVEN": "Kill all who would oppose the Coven."
     }
     
     faction = info.get("faction", getattr(role, "faction", "Unknown"))
-    win_condition = win_conditions.get(faction, "Achieve your role's specific objective.")
+    faction_str = faction.name if hasattr(faction, 'name') else str(faction)
+    win_condition = win_conditions.get(faction_str, "Achieve your role's specific objective.")
     
     # Role-specific details
     active_abilities = []
@@ -371,8 +497,8 @@ def build_system_prompt(agent_name: str, role: 'Role', game: 'Game') -> str:
     role_card = build_role_card(role)
     
     # Get tools and interactions
-    tools = discover_tools()
-    interactions = get_available_interactions()
+    tools = discover_tools(role)
+    interactions = get_available_interactions(role)
     
     # Build roster (static - updates only when structure changes)
     roster = [p.name for p in game.players if p.is_alive]
@@ -447,6 +573,10 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
     
     sections = []
     
+    # Death status (for dead players)
+    if not actor.is_alive:
+        sections.append("🪦 YOU HAVE DIED 🪦\nYou are now a ghost observer. You cannot use most tools or interact with living players, but you can still observe the game.")
+    
     # Phase and day information
     phase_name = game.phase.name.title() if hasattr(game, 'phase') else "Unknown"
     day_num = getattr(game, 'day', 1)
@@ -506,8 +636,16 @@ def build_complete_prompt(game: 'Game', actor: 'Player', model_name: str = "defa
     system_prompt = build_system_prompt(actor.name, actor.role, game)
     user_prompt = build_user_prompt(game, actor)
     
+    # Build observation sections
+    notebook_obs = build_notebook_observation(actor)
+    
+    # Build environment_static observations if any tools have been used
+    env_static_obs = None
+    if hasattr(actor, 'environment_static_tools_used') and actor.environment_static_tools_used:
+        env_static_obs = build_environment_static_observations(actor, list(actor.environment_static_tools_used))
+    
     # Format according to model requirements
-    return model_config.format_messages(system_prompt, user_prompt)
+    return model_config.format_messages(system_prompt, user_prompt, notebook_obs, env_static_obs)
 
 
 # ---------------------------------------------------------------------------

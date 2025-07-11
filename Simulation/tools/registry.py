@@ -24,27 +24,38 @@ TOOLS_DIR = Path(__file__).parent
 # Registry loading
 # ---------------------------------------------------------------------------
 
-def _load_tool_json(path: Path) -> dict[str, Any]:
+# Tool registry - replaces JSON file discovery for better maintainability
+_TOOL_REGISTRY = {
+    # Role information tools (role system integration and JSON data loading)
+    "get_role": {"name": "get_role", "class": "environment_static"},
+    "role_details": {"name": "role_details", "class": "environment_static"},
+    "attributes": {"name": "attributes", "class": "environment_static"},
+    
+    # Dynamic game state tools (these query live game state)
+    "chat_history": {"name": "chat_history", "class": "environment_static"},
+    "graveyard": {"name": "graveyard", "class": "environment_static"},
+    "check_will": {"name": "check_will", "class": "environment_static"},
+    "view_will": {"name": "view_will", "class": "environment_static"},
+    "get_time": {"name": "get_time", "class": "environment_static"},
+    "notebook": {"name": "notebook", "class": "environment_static"},
+    "view_notebook": {"name": "view_notebook", "class": "environment_static"},
+    "get_executable_actions": {"name": "get_executable_actions", "class": "environment_static"},
+    "action_history": {"name": "action_history", "class": "environment_static"},
+    "write_will": {"name": "write_will", "class": "environment_static"},
+    "write_death_note": {"name": "write_death_note", "class": "environment_static"},
+    "jailor_death_note": {"name": "jailor_death_note", "class": "environment_static"},
+    "investigation_results": {"name": "investigation_results", "class": "environment_static"},
+    "evil_investigation_results": {"name": "evil_investigation_results", "class": "environment_static"},
+    "victory_conditions": {"name": "victory_conditions", "class": "environment_static"},
+}
+
+def _load_data_json(filename: str) -> dict[str, Any]:
+    """Load JSON data files (roles.json, attributes.json) that contain actual game data."""
+    path = TOOLS_DIR / filename
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
 
-
-def _discover_tool_specs() -> Dict[str, dict[str, Any]]:
-    specs: Dict[str, dict[str, Any]] = {}
-    for json_path in TOOLS_DIR.glob("*.json"):
-        try:
-            spec = _load_tool_json(json_path)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Invalid JSON in tool spec {json_path}: {exc}") from exc
-
-        name = spec.get("name")
-        if not name:
-            raise ValueError(f"Tool file {json_path} missing mandatory 'name' field")
-        specs[name] = spec
-    return specs
-
-
-_TOOL_SPECS = _discover_tool_specs()
+_TOOL_SPECS = _TOOL_REGISTRY.copy()
 
 # ---------------------------------------------------------------------------
 # Concrete executors
@@ -154,19 +165,64 @@ def _exec_graveyard(argument: str, *, game=None, player=None) -> str:
     
     # Build detailed death information
     result = f"{dead_player.name} was found dead.\n"
-    result += f"They were a {dead_player.role.name.value}.\n"
+    result += f"They were a {dead_player.role.name.value}.\n\n"
+    
+    # Add cause of death information
+    if dead_player.was_lynched:
+        result += "Cause of Death: Lynched by the Town.\n\n"
+    elif dead_player.killed_by:
+        # Get a human-readable death cause
+        killer = dead_player.killed_by
+        death_messages = {
+            "Mafioso": "Killed by the Mafia",
+            "Godfather": "Killed by the Mafia", 
+            "Ambusher": "Killed by the Mafia",
+            "Serial Killer": "Killed by a Serial Killer",
+            "Werewolf": "Mauled by a Werewolf",
+            "Arsonist": "Killed in an arson",
+            "Juggernaut": "Killed by a Juggernaut",
+            "Coven Leader": "Killed by the Coven",
+            "Hex Master": "Killed by the Coven",
+            "Medusa": "Killed by the Coven", 
+            "Necromancer": "Killed by the Coven",
+            "Poisoner": "Killed by the Coven",
+            "Potion Master": "Killed by the Coven",
+            "Vampire": "Killed by a Vampire",
+            "Vigilante": "Shot by a Vigilante",
+            "Veteran": "Shot by a Veteran",
+            "Jailor": "Executed by the Jailor",
+            "Bodyguard": "Killed while protecting someone",
+            "Crusader": "Killed by a Crusader",
+            "Pirate": "Killed by a Pirate",
+            "Pestilence": "Killed by Pestilence",
+        }
+        cause = death_messages.get(killer.role.name.value, f"Killed by {killer.role.name.value}")
+        result += f"Cause of Death: {cause}.\n\n"
+    else:
+        # Check research metrics for death cause
+        death_cause = dead_player.research_metrics.get('death_cause', 'unknown')
+        if death_cause == 'executed':
+            result += "Cause of Death: Executed by the Jailor.\n\n"
+        elif death_cause == 'haunted':
+            result += "Cause of Death: Haunted by a Jester.\n\n"
+        else:
+            result += "Cause of Death: Unknown.\n\n"
+    
+    # Add death note if available
+    if dead_player.killer_death_note:
+        result += f"Death Note: {dead_player.killer_death_note}\n\n"
     
     # Add will information if available
     if hasattr(dead_player, 'was_cleaned') and dead_player.was_cleaned:
-        result += "Their will was cleaned and could not be found."
+        result += "Will: Their will was cleaned and could not be found."
     elif hasattr(dead_player, 'was_forged') and dead_player.was_forged:
-        result += "Their will was forged by a member of the Mafia."
+        result += "Will: Their will was forged by a member of the Mafia."
     elif hasattr(dead_player, 'last_will_bloodied') and dead_player.last_will_bloodied:
-        result += "Their will was too bloody to read."
+        result += "Will: Their will was too bloody to read."
     elif dead_player.last_will:
         result += f"Will: {dead_player.last_will}"
     else:
-        result += "No will was found."
+        result += "Will: No will was found."
     
     return result
 
@@ -264,32 +320,20 @@ def _exec_notebook(argument: str, *, game=None, player=None) -> str:
     if not content:
         return "Error: Cannot write empty note to notebook."
     
-    # Initialize notebook if it doesn't exist
-    if not hasattr(player, 'notebook'):
-        player.notebook = ""
-        player.notebook_tokens = 0
+    from Simulation.tokenizer_utils import count_tokens, remove_tokens_from_start
     
-    # Estimate tokens (rough approximation: 1 token = 4 characters)
-    new_tokens = len(content) // 4 + 1
+    # Count tokens in new content
+    new_tokens = count_tokens(content)
     
     # Check if adding would exceed limit
     NOTEBOOK_LIMIT = 1500
-    if player.notebook_tokens + new_tokens > NOTEBOOK_LIMIT:
-        # FIFO sliding window - remove content from the beginning
-        while player.notebook_tokens + new_tokens > NOTEBOOK_LIMIT and player.notebook:
-            # Find first line and remove it
-            first_newline = player.notebook.find('\n')
-            if first_newline == -1:
-                # Only one line left
-                removed_tokens = len(player.notebook) // 4 + 1
-                player.notebook = ""
-                player.notebook_tokens = 0
-                break
-            else:
-                removed_line = player.notebook[:first_newline + 1]
-                removed_tokens = len(removed_line) // 4 + 1
-                player.notebook = player.notebook[first_newline + 1:]
-                player.notebook_tokens -= removed_tokens
+    total_after_addition = player.notebook_tokens + new_tokens
+    
+    if total_after_addition > NOTEBOOK_LIMIT:
+        # FIFO sliding window - remove excess tokens from the beginning
+        tokens_to_remove = total_after_addition - NOTEBOOK_LIMIT
+        player.notebook, removed_tokens = remove_tokens_from_start(player.notebook, tokens_to_remove)
+        player.notebook_tokens -= removed_tokens
     
     # Add new content
     if player.notebook:
@@ -297,6 +341,10 @@ def _exec_notebook(argument: str, *, game=None, player=None) -> str:
     else:
         player.notebook = content
     player.notebook_tokens += new_tokens
+    
+    # Recalculate actual tokens in case of encoding differences
+    actual_tokens = count_tokens(player.notebook)
+    player.notebook_tokens = actual_tokens
     
     # Warning message at 85% full
     warning = ""
@@ -318,12 +366,13 @@ def _exec_view_notebook(argument: str, *, game=None, player=None) -> str:
     if not player.is_alive:
         return "Error: You cannot use tools while dead."
     
-    # Initialize notebook if it doesn't exist
-    if not hasattr(player, 'notebook'):
-        player.notebook = ""
-        player.notebook_tokens = 0
+    from Simulation.tokenizer_utils import count_tokens
     
     NOTEBOOK_LIMIT = 1500
+    
+    # Ensure token count is accurate
+    if player.notebook:
+        player.notebook_tokens = count_tokens(player.notebook)
     
     if not player.notebook:
         return f"Notebook (0/{NOTEBOOK_LIMIT} tokens):\n\n(Empty)"
@@ -447,46 +496,60 @@ def _exec_action_history(argument: str, *, game=None, player=None) -> str:
         "observation": {"role_info": role_card.to_dict()}
     }, indent=2)
 # ---------------------------------------------------------------------------
-def _exec_get_role_details(argument: str) -> str:
-    """Return detailed information about a role.
-
-    This is a placeholder for future expansion, currently returns a simple
-    message indicating that the tool is not yet implemented.
-    """
-    from Simulation.enums import RoleName  # imported lazily to avoid circulars
-    from Simulation.roles import role_map  # noqa: WPS433
-
-
-    json_path = Path(__file__).parent.parent / "reference_data" / "role_details.json"
+def _exec_role_details(argument: str) -> str:
+    """Return detailed information about a role from roles.json."""
     
     try:
-        with json_path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
+        data = _load_data_json("roles.json")
     except FileNotFoundError:
-        return f"Role details file not found at {json_path}"
+        return "Role details file not found"
     except json.JSONDecodeError as e:
         return f"Error parsing role details JSON: {e}"
 
-
     role_name_clean = argument.strip()
-
-    try:
-        role_enum = RoleName(role_name_clean)
-    except ValueError:
-        # Try fuzzy match (case-insensitive exact string)
-        matches = [e for e in RoleName if e.value.lower() == role_name_clean.lower()]
-        if not matches:
-            return f"No role named '{role_name_clean}'."
-        role_enum = matches[0]
-
-    role_cls = role_map.get(role_enum)
-    if role_cls is None:
-        return f"Role '{role_name_clean}' not implemented in simulator."
-
-    role_details = data.get(role_name_clean, {})
-
-    if not role_details:
-            return f"No details found for role '{role_name_clean}'."
+    
+    # Handle search functionality
+    if role_name_clean.lower() == "search":
+        role_names = list(data.keys())
+        search_result = {
+            "available_roles": role_names,
+            "usage": "Use <role_details>RoleName</role_details> to get specific role details",
+            "examples": ["Bodyguard", "Doctor", "Sheriff", "Mafioso", "Jester"]
+        }
+        return json.dumps({
+            "tool_name": "role_details",
+            "class": "environment_static",
+            "observation": {"search_result": search_result}
+        }, indent=2)
+    
+    # If no specific role requested, return available roles
+    if not role_name_clean:
+        role_names = list(data.keys())
+        return json.dumps({
+            "tool_name": "role_details",
+            "class": "environment_static",
+            "observation": {
+                "available_roles": role_names,
+                "message": "Specify a role name to get detailed information"
+            }
+        }, indent=2)
+    
+    # Direct lookup first (case-sensitive)
+    if role_name_clean in data:
+        role_details = data[role_name_clean]
+    else:
+        # Try case-insensitive match
+        matches = [k for k in data.keys() if k.lower() == role_name_clean.lower()]
+        if matches:
+            role_details = data[matches[0]]
+        else:
+            return f"No role named '{role_name_clean}' found in role details."
+    
+    return json.dumps({
+        "tool_name": "role_details",
+        "class": "environment_static", 
+        "observation": {"role_details": role_details}
+    }, indent=2)
 
 
 
@@ -495,20 +558,31 @@ def _exec_attributes(argument: str) -> str:
     
     If no argument is provided, returns all attributes.
     If a specific attribute is provided, returns only that attribute.
+    If 'search' is provided, returns searchable attribute names.
     If an invalid attribute is provided, returns an error message.
     """    
-    # Load attributes data
-    attributes_path = Path(__file__).parent.parent / "reference_data" / "attributes.json"
-    
     try:
-        with attributes_path.open("r", encoding="utf-8") as fh:
-            attributes_data = json.load(fh)
+        attributes_data = _load_data_json("attributes.json")
     except FileNotFoundError:
-        return f"Attributes data file not found at {attributes_path}"
+        return "Attributes data file not found"
     except json.JSONDecodeError as e:
         return f"Error parsing attributes JSON: {e}"
     
     attribute_name = argument.strip()
+    
+    # Handle search functionality
+    if attribute_name.lower() == "search":
+        attribute_names = list(attributes_data.keys())
+        search_result = {
+            "available_attributes": attribute_names,
+            "usage": "Use <attributes>AttributeName</attributes> to get specific attribute details",
+            "examples": ["BasicDefense", "PowerfulAttack", "UnstoppableAttack", "RoleBlockImmunity"]
+        }
+        return json.dumps({
+            "tool_name": "attributes",
+            "class": "environment_static",
+            "observation": {"search_result": search_result}
+        }, indent=2)
     
     # If no specific attribute requested, return all attributes
     if not attribute_name:
@@ -553,9 +627,21 @@ def _exec_write_will(argument: str, *, game=None, player=None) -> str:
     if not will_content:
         return "Error: Cannot write an empty will."
     
-    # Update the player's last will
-    player.last_will = will_content
-    return "Your last will has been updated."
+    from Simulation.tokenizer_utils import count_tokens, truncate_to_token_limit
+    
+    # Enforce 100-token limit for wills
+    WILL_TOKEN_LIMIT = 100
+    will_tokens = count_tokens(will_content)
+    
+    if will_tokens > WILL_TOKEN_LIMIT:
+        # Truncate to fit limit
+        truncated_will, actual_tokens = truncate_to_token_limit(will_content, WILL_TOKEN_LIMIT)
+        player.last_will = truncated_will
+        return f"Your last will has been updated (truncated to {actual_tokens}/{WILL_TOKEN_LIMIT} tokens due to length limit)."
+    else:
+        # Update the player's last will
+        player.last_will = will_content
+        return f"Your last will has been updated ({will_tokens}/{WILL_TOKEN_LIMIT} tokens)."
 
 
 def _exec_investigation_results(argument: str, *, game=None, player=None) -> str:
@@ -697,10 +783,93 @@ SPECIAL NOTES:
     return results
 
 
+def _exec_write_death_note(argument: str, *, game=None, player=None) -> str:
+    """Write death note for killing roles.
+    
+    Usage: <write_death_note>Death note content here</write_death_note>
+    """
+    if not game or not player:
+        return "Error: death note writing requires game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot write a death note while dead."
+    
+    # Check if role can use death notes
+    from Simulation.enums import RoleName
+    death_note_roles = {
+        RoleName.GODFATHER, RoleName.MAFIOSO, RoleName.SERIAL_KILLER, 
+        RoleName.ARSONIST, RoleName.WEREWOLF, RoleName.JUGGERNAUT,
+        RoleName.COVEN_LEADER, RoleName.HEX_MASTER, RoleName.NECROMANCER,
+        RoleName.MEDUSA, RoleName.POISONER, RoleName.AMBUSHER
+    }
+    
+    if player.role.name not in death_note_roles:
+        return "Error: Your role cannot write death notes."
+    
+    death_note_content = argument.strip()
+    if not death_note_content:
+        return "Error: Cannot write an empty death note."
+    
+    from Simulation.tokenizer_utils import count_tokens, truncate_to_token_limit
+    
+    # Enforce 100-token limit for death notes
+    DEATH_NOTE_TOKEN_LIMIT = 100
+    death_note_tokens = count_tokens(death_note_content)
+    
+    if death_note_tokens > DEATH_NOTE_TOKEN_LIMIT:
+        # Truncate to fit limit
+        truncated_note, actual_tokens = truncate_to_token_limit(death_note_content, DEATH_NOTE_TOKEN_LIMIT)
+        player.role.death_note = truncated_note
+        return f"Death note updated (truncated to {actual_tokens}/{DEATH_NOTE_TOKEN_LIMIT} tokens due to length limit)."
+    else:
+        # Update the death note
+        player.role.death_note = death_note_content
+        return f"Death note updated ({death_note_tokens}/{DEATH_NOTE_TOKEN_LIMIT} tokens)."
+
+
+def _exec_jailor_death_note(argument: str, *, game=None, player=None) -> str:
+    """Set Jailor execution reason.
+    
+    Usage: <jailor_death_note>reason</jailor_death_note>
+    """
+    if not game or not player:
+        return "Error: jailor death note requires game context."
+    
+    # Restrict to living players only
+    if not player.is_alive:
+        return "Error: You cannot set execution reason while dead."
+    
+    # Check if player is Jailor
+    from Simulation.enums import RoleName
+    if player.role.name != RoleName.JAILOR:
+        return "Error: Only the Jailor can set execution reasons."
+    
+    reason = argument.strip().lower()
+    
+    reason_map = {
+        'no_reason': 'No reason specified.',
+        'evildoer': 'They are known to be an evildoer.',
+        'contradictory': 'Their confession was contradictory.',
+        'possessed': 'They are possessed and talking nonsense.',
+        'quiet': 'They are too quiet or won\'t respond to questioning.',
+        'outsider': 'They are an outsider that might turn against us.',
+        'discretion': 'I\'m using my own discretion.'
+    }
+    
+    if reason not in reason_map:
+        valid_reasons = ', '.join(reason_map.keys())
+        return f"Error: Invalid reason. Valid options: {valid_reasons}"
+    
+    # Set the death note to the selected reason
+    player.role.death_note = reason_map[reason]
+    return f"Execution reason set: {reason_map[reason]}"
+
+
 # Mapping: tool name -> executor
 _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "get_role": _exec_get_role,
-    "get_role_details": _exec_get_role_details,  
+    "role_details": _exec_role_details,  
     "attributes": _exec_attributes,
     
     "chat_history": _exec_chat_history,
@@ -713,6 +882,8 @@ _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "get_executable_actions": _exec_get_executable_actions,
     "action_history": _exec_action_history,
     "write_will": _exec_write_will,
+    "write_death_note": _exec_write_death_note,
+    "jailor_death_note": _exec_jailor_death_note,
     "investigation_results": _exec_investigation_results,
     "evil_investigation_results": _exec_evil_investigation_results,
     "victory_conditions": _exec_victory_conditions,

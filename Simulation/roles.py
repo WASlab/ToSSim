@@ -241,13 +241,33 @@ class Medium(Role):
         self.faction = get_role_faction(self.name)
         self.action_priority = Priority.HIGHEST
         self.seances = 1
+        self.can_seance_from_grave = True
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
+        if target and self.seances > 0:
+            return self.seance(player, target, game)
         return "You are speaking with the dead."
     
-    def seance(self, living_player):
-        if self.seances > 0:
-            self.seances -= 1
+    def seance(self, medium_player: 'Player', target: 'Player', game: 'Game'):
+        """Create a private seance channel between Medium and target."""
+        if self.seances <= 0:
+            return "You have already used your seance ability."
+        
+        if not target or not target.is_alive:
+            return "You can only seance living players."
+        
+        if medium_player == target:
+            return "You cannot seance yourself."
+        
+        # Use the seance
+        self.seances -= 1
+        
+        # Create the seance channel through the chat system
+        if hasattr(game, 'chat'):
+            game.chat.create_seance_channel(medium_player, target)
+            return f"You have established a seance with {target.name}. You can now communicate privately."
+        
+        return f"You are attempting to seance {target.name}."
 
 class TavernKeeper(Role):
     def __init__(self):
@@ -326,10 +346,27 @@ class SerialKiller(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None, cautious: bool = False):
         self.cautious = cautious
-        if player.is_role_blocked:
-            rb_visitor = next((p for p in player.targeted_by if p.is_alive and p.role.name in [RoleName.TAVERN_KEEPER, RoleName.BOOTLEGGER, RoleName.PIRATE]), None)
-            if rb_visitor and not self.cautious:
-                game.register_attack(player, rb_visitor, self.attack)
+        
+        # Check if any role blockers are visiting
+        role_blocker_visitors = [p for p in player.targeted_by if p.is_alive and p.role.name in [RoleName.ESCORT, RoleName.CONSORT, RoleName.PIRATE]]
+        
+        if role_blocker_visitors:
+            if self.cautious:
+                # Cautious SK refuses to attack if role blockers visit (stays home to avoid detection)
+                return f"{player.name} is staying home cautiously."
+            else:
+                # Normal SK attacks the role blocker(s) who visit
+                for rb_visitor in role_blocker_visitors:
+                    game.register_attack(player, rb_visitor, self.attack)
+                    rb_visitor.last_will_bloodied = True
+                # Normal SK also attacks their intended target if not jailed
+                if target and not player.is_jailed:
+                    game.register_attack(player, target, self.attack)
+                    return f"{player.name} is attacking {target.name} and killed visiting role blockers."
+                else:
+                    return f"{player.name} killed visiting role blockers."
+        
+        # No role blockers visiting - proceed with normal attack
         if target and not player.is_jailed:
             game.register_attack(player, target, self.attack)
             return f"{player.name} is attacking {target.name}."
@@ -385,8 +422,8 @@ class Bootlegger(Role):
         self.name = RoleName.BOOTLEGGER
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
-        # Bootlegger can be role-blocked like an Escort/Consort
-        self.is_roleblock_immune = False
+        # Bootlegger has roleblock immunity like Escort/Consort
+        self.is_roleblock_immune = True
         self.action_priority = Priority.CONTROL_PROTECTION
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
@@ -450,13 +487,14 @@ class Pirate(Role):
         self.faction = get_role_faction(self.name)
         self.attack = Attack.POWERFUL
         self.defense = Defense.NONE
-        self.plunders = 0
+        self.plunders = 0  # Need 2 successful plunders to win
         self.is_roleblock_immune = True
         self.control_immune = True
         self.detection_immune = True
         self.action_priority = Priority.HIGHEST
         self.duel_target = None
         self.last_dueled_target = None
+        self.chosen_move = None  # Player's chosen duel move
         self.visit_type = VisitType.HARMFUL
 
     def perform_day_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
@@ -470,34 +508,67 @@ class Pirate(Role):
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         actual_target = self.duel_target
         if not actual_target:
-            return
+            return "You stay on your ship tonight, searching for a target to plunder."
+            
         self.last_dueled_target = actual_target
         self.duel_target = None
+        
+        # Check if either player is jailed
         if player.is_jailed:
             return "You were hauled off to Jail so you couldn't Duel your target."
         if actual_target.is_jailed:
             return "Your target was hauled off to jail so you couldn't Duel them."
+            
+        # Resolve the duel
         duel_won, pirate_move, target_defense = self.resolve_duel()
+        
+        # Target is always role-blocked by the duel (win or lose)
         actual_target.is_role_blocked = True
+        
         if duel_won:
+            # Pirate wins - kill the target (plunder will be awarded by game engine)
             game.register_attack(player, actual_target, self.attack, is_duel_win=True)
-            return f"You chose {pirate_move.value} and defeated {actual_target.name}'s {target_defense.value}. You won the Duel!"
+                
+            return f"You chose {pirate_move.value} and defeated {actual_target.name}'s {target_defense.value}. You won the Duel! Plunders: {self.plunders + 1}/2"
         else:
-            if isinstance(actual_target.role, SerialKiller) and actual_target.role.cautious:
+            # Pirate loses - check for Serial Killer cautious interaction
+            if isinstance(actual_target.role, SerialKiller) and not actual_target.role.cautious:
+                # Non-cautious SK kills the Pirate for visiting
                 game.register_attack(actual_target, player, actual_target.role.attack, is_primary=False)
+                player.last_will_bloodied = True
+                return f"You chose {pirate_move.value} but were bested by {actual_target.name}'s {target_defense.value}. You lost the Duel and were killed by the Serial Killer!"
+            
             return f"You chose {pirate_move.value} but were bested by {actual_target.name}'s {target_defense.value}. You lost the Duel!"
 
     def resolve_duel(self):
+        """Resolve the pirate duel using rock-paper-scissors style mechanics.
+        
+        Pirate wins if:
+        - Scimitar beats Sidestep (slashing beats dodging)
+        - Rapier beats Chainmail (piercing beats armor) 
+        - Pistol beats Backpedal (ranged beats retreat)
+        """
+        import random
+        from .enums import DuelMove, DuelDefense
+        
+        # Pirate chooses move (random if not specified by player)
         pirate_move = self.chosen_move if self.chosen_move else random.choice(list(DuelMove))
+        
+        # Target randomly chooses defense
         target_defense = random.choice(list(DuelDefense))
+        
+        # Define win conditions (pirate perspective)
         win_conditions = {
             (DuelMove.SCIMITAR, DuelDefense.SIDESTEP),
             (DuelMove.RAPIER, DuelDefense.CHAINMAIL),
             (DuelMove.PISTOL, DuelDefense.BACKPEDAL)
         }
+        
         pirate_wins = (pirate_move, target_defense) in win_conditions
+        
         # Reset chosen move after use so next duel defaults to random unless specified
         self.chosen_move = None
+        
         return pirate_wins, pirate_move, target_defense
 
 #--- Placeholder Classes for Roles on the List Without Full Implementation ---
@@ -534,11 +605,6 @@ class Veteran(Role):
                 self.alerts -= 1
                 self.is_on_alert = True
                 player.defense = Defense.BASIC  # On alert the Vet gains BASIC defense
-                
-                #Register an attack against all visitors
-                for visitor in player.targeted_by:
-                    game.register_attack(player, visitor, self.attack)
-                
                 return f"You have decided to go on alert. You have {self.alerts} alerts remaining."
             else:
                 return "You have no alerts left."
@@ -620,12 +686,27 @@ class Tracker(Role):
         if not game or not target:
             return "You must select a target."
         
-        #The visits are determined in _process_visits prior to night actions
-        visitor_name = target.visiting.name if getattr(target, 'visiting', None) else None
-        if visitor_name:
-            result = f"Your target visited {visitor_name} tonight."
+        # Get all non-astral visits made by the target
+        from .enums import VisitType
+        non_astral_visits = []
+        
+        # Check each visit to see if it should be visible to Tracker
+        for visit_target in getattr(target, 'visiting_all', []):
+            # Find the role's visit type by looking up the night action
+            if target in game.night_actions:
+                # Tracker can see all visits except astral ones
+                if target.role.visit_type != VisitType.ASTRAL:
+                    non_astral_visits.append(visit_target)
+        
+        if non_astral_visits:
+            if len(non_astral_visits) == 1:
+                result = f"Your target visited {non_astral_visits[0].name} tonight."
+            else:
+                names = [v.name for v in non_astral_visits]
+                result = f"Your target visited {', '.join(names)} tonight."
         else:
             result = "Your target did not visit anyone."
+        
         player.notifications.append(result)
         return result
 
