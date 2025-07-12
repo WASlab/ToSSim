@@ -172,29 +172,30 @@ class VisitType(Enum):
     HARMFUL = 1      #Triggers BG/Trap; visible to LO/Tracker
     ASTRAL = 2       #Does not leave home; invisible to LO/Tracker and cannot be intercepted
 
-#Night Action Priority Order
+#Night Action Priority Order - Based on official ToS 1 priority system
 class Priority(Enum):
-    #Based on the user-provided priority list
-    #DAY / PRE-NIGHT
+    #Day abilities have higher priority than priority 1
     DAY_ACTION = 0
     
     #PRIORITY 1 (Highest) - Transport, Alert, Haunt, etc.
-    HIGHEST = 1
+    PRIORITY_1_HIGHEST = 1
+    PRIORITY_1 = 2
     
-    #PRIORITY 2 - Control & Protection
-    CONTROL_PROTECTION = 2
-
-    #PRIORITY 3 - Misc Blocks, Deception, Support
-    SUPPORT_DECEPTION = 3
-
-    #PRIORITY 4 - Investigation
-    INVESTIGATION = 4
-
+    #PRIORITY 2 - Role blocking, control
+    PRIORITY_2_HIGHEST = 3
+    PRIORITY_2 = 4
+    
+    #PRIORITY 3 - Protection, tracking, deception
+    PRIORITY_3 = 5
+    
+    #PRIORITY 4 - Investigation  
+    PRIORITY_4 = 6
+    
     #PRIORITY 5 - Killing Actions
-    KILLING = 5
-
-    #PRIORITY 6 - Post-Attack & Finalization
-    FINALIZATION = 6
+    PRIORITY_5 = 7
+    
+    #PRIORITY 6 - Spy, Amnesiac, conversions
+    PRIORITY_6 = 8
 
 #Pirate Duel Enums
 class DuelMove(Enum):

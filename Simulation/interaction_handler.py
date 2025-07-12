@@ -307,6 +307,33 @@ class InteractionHandler:
     def _handle_vote(self, actor: 'Player', content: str) -> str:
         from Simulation.enums import Phase as PhaseEnum
 
+        # Check for vote removal
+        if content.strip().lower() == "remove":
+            if self.game.phase == PhaseEnum.NOMINATION:
+                # Remove nomination vote
+                if not self.game.day_phase_manager:
+                    return "Error: Nomination system not active."
+                # Reset the player's nomination status
+                if actor in self.game.day_phase_manager.player_has_nominated:
+                    self.game.day_phase_manager.player_has_nominated.remove(actor)
+                    # Remove from all nominations
+                    for nominee, voters in self.game.day_phase_manager.nominations.items():
+                        if actor in voters:
+                            voters.remove(actor)
+                    return "Success: You have removed your nomination vote."
+                return "Error: You have not nominated anyone to remove."
+            
+            elif self.game.phase == PhaseEnum.JUDGEMENT:
+                # Remove verdict vote
+                if not self.game.day_phase_manager:
+                    return "Error: Voting system not active."
+                if actor in self.game.day_phase_manager.verdict_votes:
+                    del self.game.day_phase_manager.verdict_votes[actor]
+                    return "Success: You have removed your verdict vote."
+                return "Error: You have not voted to remove."
+            
+            return "Error: Vote removal is not allowed in the current phase."
+
         if self.game.phase == PhaseEnum.NOMINATION:
             # Voting to nominate someone (<vote>Bob</vote>)
             target = self._resolve_target(actor, content)

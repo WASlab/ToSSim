@@ -719,6 +719,9 @@ class Game:
         #Update Executioner win/transform after deaths recorded
         self._check_executioners([rec["victim"] for rec in self.deaths_last_night])
 
+        #Check Guardian Angel conversions after deaths
+        self._check_guardian_angel_conversions([rec["victim"] for rec in self.deaths_last_night])
+
         #After resolving deaths, update Mafia chain of command (promotions).
         self._update_mafia_hierarchy()
 
@@ -1011,6 +1014,18 @@ class Game:
                         print(f"[Executioner] {p.name}'s target died unnaturally – they have become a Jester!")
                         p.notifications.append("Your target died by other means. You've become a Jester – now get yourself lynched!")
 
+    def _check_guardian_angel_conversions(self, dead_players):
+        """Convert Guardian Angels to Survivors if their target dies."""
+        from .roles import Survivor
+        for p in self.players:
+            if p.is_alive and p.role.name == RoleName.GUARDIAN_ANGEL:
+                ga_role = p.role
+                if ga_role.protect_target and ga_role.protect_target in dead_players:
+                    # Target died → convert to Survivor
+                    p.assign_role(Survivor())
+                    print(f"[Guardian Angel] {p.name} has become a Survivor due to target death.")
+                    p.notifications.append("Your target has died. You have become a Survivor!")
+
     def _assign_necronomicon(self):
         """Give Necronomicon to coven each night if no one has it."""
         coven_alive = [p for p in self.players if p.is_alive and getattr(p.role,'is_coven',False)]
@@ -1044,7 +1059,7 @@ class Game:
         pick.notifications.append("You have received the Necronomicon! Your powers are enhanced.")
         #Adjust action priority for certain roles that gain an attack with the Necronomicon
         if pick.role.name in [RoleName.MEDUSA, RoleName.COVEN_LEADER, RoleName.HEX_MASTER, RoleName.POTION_MASTER]:
-            pick.role.action_priority = Priority.KILLING
+                            pick.role.action_priority = Priority.PRIORITY_5
         #boost attacks for simple roles
         print(f"[Necronomicon] {pick.name} now holds the Necronomicon.")
 
@@ -1057,19 +1072,24 @@ class Game:
                 if p.poison_timer == 0:
                     p.poison_timer = 1
                 else:
-                    #check for heal/purge
+                    #check for heal/purge - can be cured unless poisoner has necronomicon
                     if p.poison_uncurable:
-                        cured = False
-                    else:
-                        cured = any(pro.role.__class__.__name__ in ["Doctor","GuardianAngel","PotionMaster"] for pro in p.protected_by)
-                    if cured:
-                        p.is_poisoned = False
-                        p.poison_timer = 0
-                        p.notifications.append("You were cured of poison!")
-                    else:
+                        # Poisoner has necronomicon - poison cannot be cured
                         self.register_attack(p, p, Attack.BASIC)
                         p.is_poisoned = False
                         p.poison_timer = 0
+                    else:
+                        # Check if any healer is protecting this player
+                        healing_roles = [RoleName.DOCTOR, RoleName.GUARDIAN_ANGEL, RoleName.POTION_MASTER]
+                        cured = any(pro.role.name in healing_roles for pro in p.protected_by)
+                        if cured:
+                            p.is_poisoned = False
+                            p.poison_timer = 0
+                            p.notifications.append("You were cured of poison!")
+                        else:
+                            self.register_attack(p, p, Attack.BASIC)
+                            p.is_poisoned = False
+                            p.poison_timer = 0
 
     def _check_final_hex(self):
         hex_master_alive = [p for p in self.players if p.is_alive and p.role.name == RoleName.HEX_MASTER]
@@ -1397,4 +1417,11 @@ class Game:
                     # TODO: RESEARCH METRICS - Track jail events
                     target.research_metrics['times_jailed'] += 1
                     print(f"[Jailing] {target.name} was jailed by {player.name}.")
+                    
+                    # Notify teammates when a Mafia/Vampire/Coven member is jailed
+                    if target.role.faction in [Faction.MAFIA, Faction.VAMPIRE, Faction.COVEN]:
+                        teammates = [p for p in self.players if p.is_alive and p != target and p.role.faction == target.role.faction]
+                        for teammate in teammates:
+                            teammate.notifications.append(f"{target.name} was hauled off to jail.")
+                
                 player.role.jailed_target = None
