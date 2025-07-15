@@ -50,16 +50,3 @@ class JSONLLogger:
 
     def critical(self, message):
         self.logger.critical(message)
-
-
-# This will log to both the console and the 'app.log' file
-logger = JSONLLogger("MyApp", level=logging.DEBUG, log_file="app.log")
-logger.debug("This is a debug message.")
-logger.info({"message": "This is an info message with some extra stuff", "key1": "value1", "key2": 2, "key3": True})
-logger.warning("This is a warning message.")
-logger.error("This is an error message.")
-logger.critical("This is a critical message.")
-
-# This will only log to the console
-console_only_logger = JSONLLogger("ConsoleLogger")
-console_only_logger.info("This message only goes to the console.")
