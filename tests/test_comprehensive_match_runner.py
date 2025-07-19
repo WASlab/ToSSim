@@ -45,8 +45,10 @@ from Simulation.player import Player
 from Simulation.roles import create_role_from_name
 from Simulation.enums import RoleName, Phase
 from Simulation.config import GameConfiguration
-from Simulation.prompt_builder import build_complete_prompt, build_user_prompt
+from Simulation.prompt_builder import build_complete_prompt, build_user_prompt, build_system_prompt
 from Simulation.roles import Faction
+from Simulation.chat_template import build_game_messages, ModelType
+
 # Reuse the ScriptedAgent class and helper print functions from the original test:
 class ScriptedAgent:
     def __init__(self, script):
@@ -99,6 +101,8 @@ parser.add_argument("--hide-inputs", action="store_true", help="Do not print age
 parser.add_argument("--obfuscate-prompt", action="store_true", help="Print placeholder instead of full prompt.")
 parser.add_argument("--hardcoded-only", action="store_true", help="Only show output for agents with hardcoded scripts.")
 parser.add_argument("--show-private", action="store_true", help="Show private notifications for debugging.")
+parser.add_argument("--model-type", choices=["gemma", "llama", "mistral", "deepseek", "default"], 
+                   default="gemma", help="Model type for chat template formatting.")
 args, _ = parser.parse_known_args()
 
 def run_scripted_game(scripted_agents, game: Game, phase_label="", args=None, observations=None):
@@ -120,9 +124,25 @@ def run_scripted_game(scripted_agents, game: Game, phase_label="", args=None, ob
             orig_day = game.day
             if orig_day == 0:
                 game.day = 1  # Ensure day=1 in prompts on Day 1
-            prompt = build_complete_prompt(game, player)
+            # Use the clean chat template system
+            system_prompt = build_system_prompt(player.name, player.role, game)
+            user_prompt = build_user_prompt(game, player)
+            
+            # Clean observation of any XML tags
+            clean_observation = None
             if observation:
-                prompt += f"\n<observation>{observation}</observation>"
+                clean_observation = observation.replace("<observation>", "").replace("</observation>", "")
+            
+            # Get model type from command line args
+            model_type = ModelType(args.model_type) if args and hasattr(args, 'model_type') else ModelType.GEMMA
+            
+            # Build prompt using chat template
+            prompt = build_game_messages(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                observation=clean_observation,
+                model_type=model_type
+            )
             if not (args and args.hide_inputs):
                 if args and args.obfuscate_prompt:
                     print(f"\n[{player.name}] Prompt (obfuscated).")
