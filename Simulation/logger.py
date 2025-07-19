@@ -23,7 +23,7 @@ class JSONLFormatter(logging.Formatter):
     
 
 class JSONLLogger:
-    def __init__(self, name = None, level=logging.INFO, log_file=None):
+    def __init__(self, name = None, level=logging.DEBUG, log_file=None):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
 
