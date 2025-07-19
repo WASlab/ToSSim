@@ -221,6 +221,9 @@ class MatchRunner:
 
         # Track all model generations within this environment turn
         model_generations = []
+        
+        # Build complete conversation history including tool responses
+        complete_conversation = []
 
         loop_guard = 0
         while True:
@@ -298,10 +301,16 @@ class MatchRunner:
 
             patched_text, observation = apply_first_tool_call(assistant_content, game=self.game, player=ctx.player)
             ctx.chat_history.append({"role": "assistant", "content": patched_text})
+            
+            # Add to complete conversation for SFT logging
+            complete_conversation.append({"role": "assistant", "content": patched_text})
 
             # Queue observation for next turn and continue loop
             if observation is not None:
                 ctx.pending_observation = observation
+                # Add tool response to complete conversation
+                tool_response_msg = {"role": "observation", "content": f"Tool Response: {observation}"}
+                complete_conversation.append(tool_response_msg)
                 continue
             ctx.pending_observation = None
 
@@ -313,12 +322,23 @@ class MatchRunner:
                 # Increment environment turn counter and log SFT sample
                 self.global_turn_counter += 1
                 
-                # Log the complete environment turn
-                self.logger.log_sft_sample(
+                # Build the complete prompt with tool responses included
+                complete_prompt = []
+                
+                # Add system and user messages from the first generation
+                if model_generations:
+                    first_prompt = model_generations[0]["prompt"]
+                    # Add system and user messages
+                    complete_prompt.extend(first_prompt[:2])  # system + user
+                    # Add the complete conversation history with tool responses
+                    complete_prompt.extend(complete_conversation)
+                    
+                    # Log the complete environment turn with tool responses
+                    self.logger.log_sft_sample(
                     sample_id=f"game_{id(self.game):x}_player_{ctx.player.id}_turn_{self.global_turn_counter:04d}",
                     agent=ctx.player.name,
                     model_id=ctx.model,  # Add model ID
-                    prompt=model_generations[0]["prompt"],  # First prompt
+                    prompt=complete_prompt,  # Complete prompt with tool responses
                     completion=model_generations[-1]["completion"],  # Final completion
                     metadata={
                         "role": ctx.player.role.name.value,  # Convert enum to string
@@ -327,6 +347,7 @@ class MatchRunner:
                         "phase": self.game.phase.name,
                         "day": self.game.day,
                         "player_id": ctx.player.id,
+                        "tool_responses_included": True,
                     }
                 )
                 break

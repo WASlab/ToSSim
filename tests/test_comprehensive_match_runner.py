@@ -760,7 +760,7 @@ def test_full_game_classic():
     ]
     bob_script = [
         # Day 1 Discussion
-        "<think>Day 1: I'm the Doctor. I should stay quiet. Alice asks for the Jailor; I'll note that Eve claims Jailor and check my role info.</think><get_role>Doctor</get_role>",  # [ADDED: info tool]
+        "<think>Day 1: I'm the Doctor. I should stay quiet. Alice asks for the Jailor; I'll note that Eve claims Jailor and check my role info.</think><roles>Doctor</roles>",  # [ADDED: info tool]
         # Night 1
         "<think>Night 1: Eve (Jailor) revealed, I'll protect her and update my notebook.</think><protect>Eve</protect><notebook>Protected Eve N1</notebook>",  # [ADDED: notebook]
         # Day 2 Discussion

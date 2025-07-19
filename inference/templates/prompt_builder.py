@@ -308,7 +308,7 @@ Notes:{% for note in rc.notes %}
 
 Guidelines:
 • Think privately inside <think>…</think>.
-• Call tools with a single XML tag (e.g., <get_role>Doctor</get_role>).
+• Call tools with a single XML tag (e.g., <roles>Doctor</roles>).
 • End your turn with one of <speak>, <whisper>, <vote>, or <wait>.
 
 """

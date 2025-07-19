@@ -46,7 +46,7 @@ public speech are separated:
 ```html
 <system>
 You are a Town-of-Salem AI.  Think inside <thinking>…</thinking>.
-Call tools via <tool_request name="get_role">Doctor</tool_request>.
+Call tools via <tool_request name="roles">Doctor</tool_request>.
 Output visible chat only inside <answer>…</answer>.
 </system>
 <user>Night 1 is over.  Who is suspicious?</user>

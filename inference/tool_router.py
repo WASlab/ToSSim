@@ -36,47 +36,25 @@ def apply_first_tool_call(raw_text: str, *, game: Optional["Game"] = None, playe
     """Detect and execute the first tool call in *raw_text*.
 
     Returns `(patched_text, observation)` where:
-    • *patched_text* is the assistant message with an auto-inserted `</think>`
-      (if it was missing) so that tags are balanced.
+    • *patched_text* is the assistant message unchanged (no patching needed).
     • *observation* is the string returned by the tool executor or *None* if no
       tool tag was found.
     
     Parameters:
     • *game* and *player* provide context for tools that need access to game state.
     """
-    match = _TOOL_TAG_RE.search(raw_text)
-    if match is None:
-        return raw_text, None
-
-    tool_name, arg = match.group(1), match.group(2).strip()
-
-    # Ignore tags that are not registered tools (e.g., <speak>, <whisper>, <vote>)
-    if tool_name not in _TOOL_NAMES:
-        return raw_text, None
-
-    tag_start = match.start()
-
-    # ------------------------------------------------------------------
-    # Ensure the tool call lives inside an *open* <think> block
-    # ------------------------------------------------------------------
-    think_open = raw_text.rfind("<think>", 0, tag_start)
-    think_close = raw_text.rfind("</think>", 0, tag_start)
-
-    if think_open == -1 or (think_close != -1 and think_close > think_open):
-        # Tool called outside an open <think> block → error observation
-        error_obs = f"Error: tool '{tool_name}' must be invoked inside <think>."
-        return raw_text, error_obs
-
-    # Auto-close <think> if it is still open at the tool position
-    patched_text = raw_text
-    if think_close == -1 or think_close < think_open:
-        patched_text = (
-            raw_text[:tag_start] + "</think>" + raw_text[tag_start:]
-        )
-
-    # ------------------------------------------------------------------
-    # Execute the tool (unknown tools handled inside execute_tool)
-    # ------------------------------------------------------------------
-    observation = execute_tool(tool_name, arg, game=game, player=player)
-    return patched_text, observation
+    # Look for any registered tool tag in the text
+    for tool_name in _TOOL_NAMES:
+        # Create a specific regex for this tool
+        tool_regex = re.compile(f"<{re.escape(tool_name)}>(.*?)</{re.escape(tool_name)}>", re.DOTALL)
+        match = tool_regex.search(raw_text)
+        if match:
+            arg = match.group(1).strip()
+            # ------------------------------------------------------------------
+            # Execute the tool (unknown tools handled inside execute_tool)
+            # ------------------------------------------------------------------
+            observation = execute_tool(tool_name, arg, game=game, player=player)
+            return raw_text, observation
+    
+    return raw_text, None
 
