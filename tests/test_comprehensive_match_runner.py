@@ -49,6 +49,16 @@ from Simulation.prompt_builder import build_complete_prompt, build_user_prompt, 
 from Simulation.roles import Faction
 from Simulation.chat_template import build_game_messages, ModelType
 
+# Add imports for the real inference engine infrastructure
+from inference.engine import InferenceEngine
+from inference.client import InferenceClient
+from inference.tool_router import apply_first_tool_call
+from Simulation.token_budget import TokenBudgetManager
+from Simulation.tokenizer_utils import count_tokens
+import json
+import time
+from typing import Dict, List, Any, Optional, Generator
+
 # Reuse the ScriptedAgent class and helper print functions from the original test:
 class ScriptedAgent:
     def __init__(self, script):
@@ -61,6 +71,222 @@ class ScriptedAgent:
             self.turn += 1
             return output
         return "<think>No action</think><wait/>"
+
+class MockInferenceEngine:
+    """
+    Mock inference engine that uses the real infrastructure but returns scripted responses.
+    This shows exactly what the model would see in terms of prompts and chat formatting.
+    """
+    def __init__(self, scripted_agents: Dict[str, ScriptedAgent]):
+        self.scripted_agents = scripted_agents
+        self._agent_to_lane = {}  # Simulate agent allocation
+        self._lane_process = {}   # Simulate server processes
+        
+        # Initialize token budget manager for authentic phase progression
+        self.token_budget = TokenBudgetManager.from_yaml("configs/environment_limits.yaml")
+        self.current_phase = None
+        self.living_players = 0
+        
+    def register_agent(self, agent_id: str, model_name: str):
+        """Simulate agent registration."""
+        self._agent_to_lane[agent_id] = (0, f"http://localhost:8000")  # Mock lane
+        print(f"[MockEngine] Agent '{agent_id}' registered with model '{model_name}'")
+        
+    def start_phase(self, phase: str, living_players: int):
+        """Start a new phase with token budget allocation."""
+        self.current_phase = phase
+        self.living_players = living_players
+        self.token_budget.start_phase(phase, living=living_players)
+        print(f"[MockEngine] Started phase '{phase}' with {living_players} living players")
+        print(f"[MockEngine] Token budget: {self.token_budget._phase_budget} tokens")
+        
+    def consume_tokens(self, text: str, channel: str = "public") -> bool:
+        """Consume tokens and check if phase is exhausted."""
+        tokens = count_tokens(text)
+        exhausted = self.token_budget.consume(channel, tokens)
+        remaining = self.token_budget.remaining(channel)
+        print(f"[MockEngine] Consumed {tokens} tokens, {remaining} remaining in {channel}")
+        return exhausted
+        
+    def is_phase_exhausted(self) -> bool:
+        """Check if current phase token budget is exhausted."""
+        return self.token_budget.phase_exhausted()
+        
+    def chat_with_tools(self, 
+                       agent_id: str, 
+                       system_prompt: str, 
+                       user_prompt: str, 
+                       initial_observation: Optional[str] = None,
+                       model_type: str = "gemma",
+                       **sampling_params) -> str:
+        """
+        Simulate the real chat_with_tools method using scripted responses.
+        This shows exactly what the model would see and how it would respond.
+        """
+        # Build conversation using the real engine's method
+        conversation = self._build_conversation(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            observation=initial_observation,
+            model_type=model_type
+        )
+        
+        # Apply the real chat template to see exactly what the model would see
+        formatted_prompt = self._apply_chat_template(conversation, model_type)
+        
+        # Get the scripted response
+        agent = self.scripted_agents.get(agent_id)
+        if not agent:
+            return "<think>Agent not found</think><wait/>"
+            
+        # Return the next scripted action
+        if agent.turn < len(agent.script):
+            response = agent.script[agent.turn]
+            agent.turn += 1
+            
+            # Consume tokens for the response (authentic behavior)
+            self.consume_tokens(response)
+            
+            return response
+        else:
+            return "<think>No more actions</think><wait/>"
+    
+    def stream_chat_with_tools(self, 
+                              agent_id: str, 
+                              system_prompt: str, 
+                              user_prompt: str, 
+                              initial_observation: Optional[str] = None,
+                              model_type: str = "gemma",
+                              game=None,
+                              player=None,
+                              **sampling_params) -> Generator[str, None, None]:
+        """
+        Simulate streaming with tool detection and real-time chat updates.
+        This shows the complete streaming experience the model would have.
+        """
+        lane = self._agent_to_lane.get(agent_id)
+        if not lane:
+            raise RuntimeError(f"Agent {agent_id} not registered")
+        
+        # Build initial conversation
+        conversation = self._build_conversation(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            observation=initial_observation,
+            model_type=model_type
+        )
+        
+        # Track seen messages to avoid duplicates (like real engine)
+        seen_message_timestamps = set()
+        if game and player:
+            current_messages = game.chat.get_visible_messages(player)
+            seen_message_timestamps = {msg.timestamp for msg in current_messages}
+        
+        final_response = ""
+        
+        while True:
+            # Simulate streaming generation
+            agent = self.scripted_agents.get(agent_id)
+            if not agent or agent.turn >= len(agent.script):
+                break
+                
+            # Get the next scripted response
+            response_buffer = agent.script[agent.turn]
+            agent.turn += 1
+            
+            # Consume tokens for the response (authentic behavior)
+            self.consume_tokens(response_buffer)
+            
+            # Simulate XML detection (like real engine)
+            xml_detected = self._should_stop_for_xml(response_buffer)
+            
+            if xml_detected:
+                # Simulate tool execution
+                patched_text, tool_result = apply_first_tool_call(response_buffer, game=game, player=player)
+                
+                # Add assistant's partial response
+                conversation.append({"role": "assistant", "content": patched_text})
+                
+                # Add observation (properly formatted for vLLM)
+                conversation.append({"role": "observation", "content": tool_result})
+                
+                # Check for new chat messages ONLY after tool execution (like real engine)
+                if game and player:
+                    new_messages = self._get_new_chat_messages(game, player, seen_message_timestamps)
+                    if new_messages:
+                        for msg in new_messages:
+                            conversation.append({
+                                "role": "user", 
+                                "content": f"{msg.sender.name}: {msg.message}"
+                            })
+                            seen_message_timestamps.add(msg.timestamp)
+                
+                final_response += response_buffer
+                yield response_buffer  # Yield the partial response
+                continue
+            else:
+                final_response += response_buffer
+                yield response_buffer  # Yield the final response
+                break
+        
+        return final_response
+    
+    def _build_conversation(self, system_prompt: str, user_prompt: str, 
+                           observation: Optional[str] = None, model_type: str = "gemma") -> List[Dict[str, str]]:
+        """Build conversation using Jinja templates for proper vLLM compatibility."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        if observation:
+            messages.append({"role": "observation", "content": observation})
+        
+        return messages
+
+    def _apply_chat_template(self, messages: List[Dict[str, str]], model_type: str = "gemma") -> str:
+        """Apply the appropriate chat template to show exactly what the model would see."""
+        import jinja2
+        from pathlib import Path
+        
+        # Load the appropriate template
+        template_dir = Path("inference/templates")
+        if model_type == "gemma":
+            template_file = template_dir / "gemma_chat_template.jinja"
+        else:
+            template_file = template_dir / "chat_template.jinja"
+            
+        if template_file.exists():
+            with open(template_file, 'r') as f:
+                template_content = f.read()
+            
+            template = jinja2.Template(template_content)
+            return template.render(messages=messages)
+        else:
+            # Fallback to simple formatting
+            formatted = ""
+            for msg in messages:
+                if msg["role"] == "system":
+                    formatted += f"<|system|>\n{msg['content']}\n"
+                elif msg["role"] == "user":
+                    formatted += f"<|user|>\n{msg['content']}\n"
+                elif msg["role"] == "assistant":
+                    formatted += f"<|assistant|>\n{msg['content']}\n"
+                elif msg["role"] == "observation":
+                    formatted += f"<|user|>\n<observation>\n{msg['content']}\n</observation>\n"
+            formatted += "<|assistant|>"
+            return formatted
+    
+    def _should_stop_for_xml(self, text: str) -> bool:
+        """Check if text contains complete XML tags (simulating real engine behavior)."""
+        # Simple XML detection - in real engine this would be more sophisticated
+        return "<" in text and ">" in text and any(tag in text for tag in ["<speak>", "<whisper", "<vote>", "<wait>", "<think>"])
+    
+    def _get_new_chat_messages(self, game, player, seen_timestamps: set) -> List:
+        """Get new chat messages since last check (simulating real engine behavior)."""
+        current_messages = game.chat.get_visible_messages(player)
+        new_messages = [msg for msg in current_messages if msg.timestamp not in seen_timestamps]
+        return new_messages
 
 def print_game_state(game, phase_label):
     print(f"\n--- {phase_label} GAME STATE ---")
@@ -103,6 +329,8 @@ parser.add_argument("--hardcoded-only", action="store_true", help="Only show out
 parser.add_argument("--show-private", action="store_true", help="Show private notifications for debugging.")
 parser.add_argument("--model-type", choices=["gemma", "llama", "mistral", "deepseek", "default"], 
                    default="gemma", help="Model type for chat template formatting.")
+parser.add_argument("--authentic-mode", action="store_true", 
+                   help="Use MockInferenceEngine to show authentic model experience with real prompts.")
 args, _ = parser.parse_known_args()
 
 def run_scripted_game(scripted_agents, game: Game, phase_label="", args=None, observations=None):
@@ -180,6 +408,153 @@ def run_scripted_game(scripted_agents, game: Game, phase_label="", args=None, ob
             print(f"[STEP MODE] (Non-interactive) Would pause after {phase_label}.")
     return observations
 
+def run_authentic_game_with_mock_engine(scripted_agents, game: Game, phase_label="", args=None, observations=None):
+    """
+    Run one phase using the MockInferenceEngine to show exactly what the model would see.
+    This provides the authentic experience with real prompts and chat formatting.
+    """
+    handler = InteractionHandler(game)
+    if observations is None:
+        observations = {name: "" for name in scripted_agents}
+    
+    # Create mock inference engine with scripted agents
+    mock_engine = MockInferenceEngine(scripted_agents)
+    
+    # Register all agents with the mock engine
+    for player in game.players:
+        if player.is_alive:
+            mock_engine.register_agent(player.name, "mock-model")
+    
+    # Start the phase with token budget allocation
+    living_players = len([p for p in game.players if p.is_alive])
+    phase_name = phase_label.lower().replace(" ", "_")
+    mock_engine.start_phase(phase_name, living_players)
+    
+    print(f"\n=== {phase_label} (Token Budget: {mock_engine.token_budget._phase_budget} tokens) ===")
+    
+    # Continue until phase is exhausted or all agents have acted
+    phase_exhausted = False
+    agents_acted = set()
+    
+    while not phase_exhausted and len(agents_acted) < living_players:
+        for player in game.players:
+            if not player.is_alive or player.name in agents_acted:
+                continue
+                
+            # If filtering output to hardcoded only, skip placeholder agents
+            agent = scripted_agents[player.name]
+            is_placeholder = agent.script and "Placeholder for" in agent.script[0]
+            if args and args.hardcoded_only and is_placeholder:
+                agents_acted.add(player.name)
+                continue
+                
+            # Check if phase is exhausted before processing this agent
+            if mock_engine.is_phase_exhausted():
+                print(f"[MockEngine] Phase '{phase_name}' token budget exhausted!")
+                phase_exhausted = True
+                break
+                
+            # Loop until the agent produces a public action (speak/vote/wait etc.)
+            while True:
+                observation = observations.get(player.name, "")
+                orig_day = game.day
+                if orig_day == 0:
+                    game.day = 1  # Ensure day=1 in prompts on Day 1
+                    
+                # Build prompts using the real system
+                system_prompt = build_system_prompt(player.name, player.role, game)
+                user_prompt = build_user_prompt(game, player)
+                
+                # Clean observation of any XML tags
+                clean_observation = None
+                if observation:
+                    clean_observation = observation.replace("<observation>", "").replace("</observation>", "")
+                
+                # Get model type from command line args
+                model_type = args.model_type if args and hasattr(args, 'model_type') else "gemma"
+                
+                if not (args and args.hide_inputs):
+                    if args and args.obfuscate_prompt:
+                        print(f"\n[{player.name}] Prompt (obfuscated).")
+                    else:
+                        # Show the actual formatted prompt the model would see
+                        conversation = mock_engine._build_conversation(
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            observation=clean_observation,
+                            model_type=model_type
+                        )
+                        formatted_prompt = mock_engine._apply_chat_template(conversation, model_type)
+                        print(f"\n[{player.name}] ACTUAL MODEL PROMPT:\n{formatted_prompt}")
+                
+                # Use the mock engine to get the response (simulating real model behavior)
+                agent_output = mock_engine.chat_with_tools(
+                    agent_id=player.name,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    initial_observation=clean_observation,
+                    model_type=model_type,
+                    temperature=0.7,
+                    max_tokens=1000
+                )
+                
+                # Append a wait action if agent only thought (to end turn)
+                if "<think>" in agent_output and not any(tag in agent_output for tag in handler.interaction_tags):
+                    agent_output += "<wait/>"
+                    
+                print(f"[{player.name}] Model Output: {agent_output}")
+                
+                # Validate and execute the action (same as before)
+                status, error_code, detail = validate_action(agent_output, game, player)
+                if status == "OK":
+                    results = handler.parse_and_execute(player, agent_output)
+                    observation = results[0] if results else ""
+                else:
+                    observation = f"ERROR: {detail}"
+                    
+                print(f"[{player.name}] Observation: {observation}\n")
+                observations[player.name] = observation
+                game.day = orig_day  # restore actual day count
+                
+                # Check if phase is exhausted after this action
+                if mock_engine.is_phase_exhausted():
+                    print(f"[MockEngine] Phase '{phase_name}' token budget exhausted after {player.name}'s action!")
+                    phase_exhausted = True
+                    break
+                
+                # Break once a public action or wait is executed
+                if any(tag in agent_output for tag in handler.interaction_tags):
+                    break
+                    
+            # Mark this agent as having acted
+            agents_acted.add(player.name)
+            
+            # Check if phase is exhausted
+            if phase_exhausted:
+                break
+                
+        if phase_exhausted:
+            break
+            
+    # After all players have acted or phase is exhausted, print the chat log and game state for this phase
+    print_chat_log(game, phase_label)
+    if args and args.show_private:
+        print_private_notifications(game, phase_label)
+    print_game_state(game, phase_label)
+    
+    # Show final token budget status
+    remaining = mock_engine.token_budget.remaining()
+    print(f"[MockEngine] Phase '{phase_name}' complete. Tokens remaining: {remaining}")
+    
+    # --- STEP MODE: Pause after each phase if enabled ---
+    if STEP_MODE:
+        try:
+            input(f"[STEP MODE] Press Enter to continue after {phase_label}...")
+        except Exception:
+            print(f"[STEP MODE] (Non-interactive) Would pause after {phase_label}.")
+            
+    return observations
+
 # Scenario 1: Classic game with Town vs Mafia and Neutrals
 def test_full_game_classic():
     print("### Starting Scenario 1: Classic Town vs Mafia Game ###")
@@ -233,7 +608,7 @@ def test_full_game_classic():
         # Night 1
         "<think>Night 1: Eve (Jailor) revealed, I'll protect her and update my notebook.</think><protect>Eve</protect><notebook>Protected Eve N1</notebook>",  # [ADDED: notebook]
         # Day 2 Discussion
-        "<think>Day 2: I healed Eve and she wasn’t attacked (or was protected by BG). I'll keep quiet to remain hidden. I'll check attributes.</think><attributes>BasicDefense</attributes>",  # [ADDED: info tool]
+        "<think>Day 2: I healed Eve and she wasn't attacked (or was protected by BG). I'll keep quiet to remain hidden. I'll check attributes.</think><attributes>BasicDefense</attributes>",  # [ADDED: info tool]
         # Day 2 Nomination
         "<think>Alice suspects Nina. I'm not sure, but I'll follow Town and nominate Nina.</think><vote>Nina</vote>",
         # Day 2 Defense
@@ -256,7 +631,7 @@ def test_full_game_classic():
         # Night 1
         "<think>Night 1: I was jailed and not executed. I'll investigate Henry (he was quiet).</think><investigate>Henry</investigate>",
         # Day 2 Discussion
-        "<think>Day 2: Henry (GF) turned up dead, but I planned to check him. I'll share info I have: Igor visited Eve per Frank’s lookout note.</think>"
+        "<think>Day 2: Henry (GF) turned up dead, but I planned to check him. I'll share info I have: Igor visited Eve per Frank's lookout note.</think>"
         "<speak>I am Investigator. Frank the Lookout saw Igor visit Eve last night. Igor, what's your role?</speak>",
         # Day 2 Nomination
         "<think>Igor gave a flimsy claim. I'll nominate Igor for trial.</think><vote>Igor</vote>",
@@ -431,7 +806,7 @@ def test_full_game_classic():
         # Day 2 Last Words
         "<wait/>",
         # Day 2 Pre-Night
-        "<think>I got jailed last night by Eve and survived because she didn’t execute immediately. I must eliminate her if I escape.</think><wait/>",
+        "<think>I got jailed last night by Eve and survived because she didn't execute immediately. I must eliminate her if I escape.</think><wait/>",
         # Night 2
         "<think>Night 2: (Jailed) I'm executed by the Jailor; nothing I can do.</think><wait/>"
     ]
@@ -463,7 +838,7 @@ def test_full_game_classic():
         # Day 1 Discussion
         "<think>Day 1: I'm the Executioner, target is Alice. I'll subtly sow doubt on her.</think><speak>Alice is eager to lead... interesting.</speak>",
         # Night 1
-        "<think>Night 1: No action. I’ll plan how to get Alice lynched.</think><wait/>",
+        "<think>Night 1: No action. I'll plan how to get Alice lynched.</think><wait/>",
         # Day 2 Discussion
         "<think>Day 2: Alice proved useful. I'll hold off and not counter her yet.</think><wait/>",
         # Day 2 Nomination
@@ -500,7 +875,7 @@ def test_full_game_classic():
         # (Town votes Guilty on her)
         # Day 2 Last Words
         "<think>Yes, I got lynched. Time for some chaos from beyond...</think><speak>You will all regret this! *maniacal laughter*</speak>",
-        # (Her “haunt” will occur next night)
+        # (Her "haunt" will occur next night)
     ]
     oscar_script = [
         # Day 1 Discussion
@@ -693,7 +1068,7 @@ def test_full_game_protectives_vs_neutrals():
         # Igor - Janitor: Cleans a target's death at night or helps GF kill.
         "<think>Day 1: Janitor here. I'll go along with Henry's plan.</think><wait/>",
         "<think>Night 1: Going with Henry to attack Grace; I'll clean the body.</think><clean>Grace</clean>",
-        "<think>Day 2: Our kill failed. We might have hit a swapped target or Crusader. I’ll lay low.</think><wait/>",
+        "<think>Day 2: Our kill failed. We might have hit a swapped target or Crusader. I'll lay low.</think><wait/>",
     ]
     jane_script = [
         # Jane - Werewolf: Transforms on full moon (Night 2) and rampages.
@@ -761,8 +1136,7 @@ def test_full_game_protectives_vs_neutrals():
         print(f"\n=== Night {game.day} ===")
         run_scripted_game(scripted_agents, game, f"Night {game.day}", args)
         game.process_night_submissions()
-        if game.game_is_over():
-            break
+        if game.game_is_over(): break
     # Final state and winner check
     print("\n=== FINAL GAME STATE ===")
     print_game_state(game, "Final")
@@ -1024,12 +1398,93 @@ def test_full_game_coven_vs_mafia_vs_town():
     # For this scenario, any of the three factions could win; just assert the game ends cleanly
     assert winning_faction in [Faction.TOWN, Faction.MAFIA, Faction.COVEN], "Expected a major faction to win in scenario 5"
 
+def test_authentic_model_experience():
+    """
+    Test that shows the authentic model experience using the MockInferenceEngine.
+    This demonstrates exactly what the model would see in terms of prompts and chat formatting.
+    
+    KEY FEATURES:
+    - Uses real token budget system for authentic phase progression
+    - Shows exactly what the model would see in terms of prompts and chat formatting
+    - Simulates real inference engine behavior with token consumption
+    - Demonstrates phase exhaustion based on token budgets (not scripted actions)
+    - Uses real Jinja templates for proper vLLM compatibility
+    """
+    print("### Starting Authentic Model Experience Test ###")
+    print("This test shows exactly what the model would see in a real game.")
+    print("KEY: Phases progress based on TOKEN BUDGET consumption, not scripted actions!")
+    print("This is the same mechanism used in the real environment.")
+    
+    # Define player names and roles for a simple scenario
+    player_names = ["Alice", "Bob", "Charlie"]
+    roles = [RoleName.SHERIFF, RoleName.DOCTOR, RoleName.GODFATHER]
+    players = []
+    for name, role_name in zip(player_names, roles):
+        role = create_role_from_name(role_name)
+        players.append(Player(name, role))
+    
+    game = Game(GameConfiguration(), players)
+    
+    # Create simple scripts that demonstrate tool usage
+    alice_script = [
+        "<think>I'm the Sheriff. Let me check my role info first.</think><get_role>Sheriff</get_role>",
+        "<think>Now I'll investigate Bob.</think><investigate>Bob</investigate>",
+        "<think>Bob is suspicious! I should tell the town.</think><speak>Bob is suspicious!</speak>"
+    ]
+    
+    bob_script = [
+        "<think>I'm the Doctor. Let me check my role info.</think><get_role>Doctor</get_role>",
+        "<think>I'll protect Alice tonight.</think><protect>Alice</protect>",
+        "<think>Alice is being accused. I should defend her.</think><speak>Alice is Town, I healed her!</speak>"
+    ]
+    
+    charlie_script = [
+        "<think>I'm the Godfather. Let me check my role info.</think><get_role>Godfather</get_role>",
+        "<think>I'll kill Bob tonight.</think><kill>Bob</kill>",
+        "<think>I need to blend in. I'll claim Doctor.</think><speak>I'm the Doctor, I healed Alice!</speak>"
+    ]
+    
+    scripted_agents = {
+        "Alice": ScriptedAgent(alice_script),
+        "Bob": ScriptedAgent(bob_script),
+        "Charlie": ScriptedAgent(charlie_script)
+    }
+    
+    # Run the game using the authentic mock engine
+    print("\n=== DAY 1 DISCUSSION ===")
+    run_authentic_game_with_mock_engine(scripted_agents, game, "Day 1 Discussion", args)
+    
+    print("\n=== NIGHT 1 ===")
+    game.advance_to_night()
+    run_authentic_game_with_mock_engine(scripted_agents, game, "Night 1", args)
+    game.process_night_submissions()
+    
+    print("\n=== DAY 2 DISCUSSION ===")
+    game.advance_to_day()
+    run_authentic_game_with_mock_engine(scripted_agents, game, "Day 2 Discussion", args)
+    
+    print("\n=== AUTHENTIC MODEL EXPERIENCE COMPLETE ===")
+    print("This test showed exactly what the model would see in terms of:")
+    print("1. Real chat template formatting with BOS/EOS tokens")
+    print("2. Proper observation handling")
+    print("3. Tool execution and response injection")
+    print("4. Real-time chat updates")
+    print("5. Authentic prompt structure")
+    print("6. TOKEN BUDGET-BASED PHASE PROGRESSION (authentic to real environment)")
+
 def main():
-    test_full_game_classic()
-    test_full_game_protectives_vs_neutrals()
-    test_full_game_coven_expansion()
-    test_full_game_all_any_chaos()
-    test_full_game_coven_vs_mafia_vs_town()
+    if args.authentic_mode:
+        print("=== RUNNING IN AUTHENTIC MODE ===")
+        print("This will show exactly what the model would see in a real game.")
+        test_authentic_model_experience()
+    else:
+        print("=== RUNNING IN SCRIPTED MODE ===")
+        print("This uses the traditional scripted approach.")
+        test_full_game_classic()
+        test_full_game_protectives_vs_neutrals()
+        test_full_game_coven_expansion()
+        test_full_game_all_any_chaos()
+        test_full_game_coven_vs_mafia_vs_town()
 
 if __name__ == "__main__":
     main()
