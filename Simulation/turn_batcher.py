@@ -21,6 +21,7 @@ from .interaction_handler import InteractionHandler
 from .grammar import validate_action, get_action_reward
 from .prompt_builder import build_training_prompt
 from .errors import ErrorCode, format_error, format_success
+from .alignment import get_role_faction, get_role_alignment
 
 if TYPE_CHECKING:
     pass

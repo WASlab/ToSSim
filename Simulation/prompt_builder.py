@@ -667,5 +667,18 @@ def build_game_prompt(game: 'Game', actor: 'Player', observation: Optional[str] 
 
 
 def build_prompt(game: 'Game', actor: 'Player', observation: Optional[str] = None) -> str:
-    """Legacy compatibility function."""
-    return build_complete_prompt(game, actor) 
+    """Legacy function - use build_complete_prompt instead."""
+    return build_complete_prompt(game, actor, "default")
+
+
+def build_training_prompt(game: 'Game', actor: 'Player') -> str:
+    """
+    Build a training prompt for GRPO training.
+    
+    Uses the same comprehensive prompt as the actual game since:
+    - TurnBatcher handles batching and token management
+    - 15 agents act at a time in batches
+    - Token limits still determine phase transitions
+    - No need to simplify prompts for training
+    """
+    return build_complete_prompt(game, actor, "default") 
