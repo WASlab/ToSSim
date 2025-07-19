@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from .debug_utils import debug_print, debug_exception
 
 if TYPE_CHECKING:
     from .roles import Role
@@ -13,6 +14,7 @@ class Player:
         Player._id_counter += 1
         self.name: str = name
         self.role: Role = role
+        debug_print(f"DEBUG: Player {self.name} initialized with role.name type: {type(self.role.name)}, value: {self.role.name}")
         self.is_alive: bool = True
         self.chat_channels = [] #To be implemented with the chat system
         self.votes_on = 0
@@ -35,7 +37,6 @@ class Player:
         self.is_being_executed = False
         self.is_poisoned = False
         self.poison_timer = 0  #nights until poison kills
-        self.notifications = []
         self.is_blackmailed = False
         self.is_controlled = False
         self.is_protected = False
@@ -46,6 +47,8 @@ class Player:
         self.is_infected = False  #Plaguebearer infection
         self.last_will: str = ""  #Player can optionally set a last will.
         self.death_note: str = ""  #Player's death note (for certain roles)
+        self._was_protected_by_bg_ga_tonight = False # New flag for Spy intel
+        self._was_saved_by_defense_tonight = False # New flag for Spy intel
         
         # Death information (set when player dies)
         self.killed_by: 'Player' = None  # The player who killed this player
@@ -130,10 +133,24 @@ class Player:
         }
 
     def __repr__(self):
-        return f"Player({self.name}, {self.role.name.value})"
+        try:
+            role_name = self.role.name.value
+        except Exception:
+            debug_exception(f"Failed to access .value on self.role.name: {getattr(self.role, 'name', None)} (type: {type(getattr(self.role, 'name', None))})")
+            role_name = str(getattr(self.role, 'name', None))
+        return f"Player({self.name}, {role_name})"
 
     def assign_role(self, role: 'Role'):
         self.role = role
+        # Ensure role.name is always a RoleName enum member
+        from .enums import RoleName
+        if not isinstance(self.role.name, RoleName):
+            try:
+                self.role.name = RoleName(self.role.name)
+            except ValueError:
+                # Fallback if string cannot be converted to RoleName enum
+                print(f"ERROR: Attempted to assign non-RoleName to player.role.name: {self.role.name} (type: {type(self.role.name)}). Assigning default.")
+                self.role.name = RoleName.INVESTIGATOR # Assign a safe default
         self.defense = role.defense
 
     def visit(self, target_player: 'Player'):
@@ -174,15 +191,12 @@ class Player:
         self.is_role_blocked = False
         self.is_jailed = False
         self.is_being_executed = False
-        self.notifications = []
-        self.is_blackmailed = False
-        self.is_controlled = False
-        self.is_poisoned = False
-        self.is_doused = False
-        self.is_hexed = False
         # Restore default defense (e.g., Veteran loses INVINCIBLE after alert)
         if self.role:
             self.defense = self.role.defense
+        # New flags for Spy intel
+        self._was_protected_by_bg_ga_tonight = False
+        self._was_saved_by_defense_tonight = False
         #lynch status persists
 
     def get_public_info(self):

@@ -1,0 +1,18 @@
+{%- for message in messages %}
+{%- if message.role == "system" %}
+<|system|>
+{{ message.content }}
+{%- elif message.role == "user" %}
+<|user|>
+{{ message.content }}
+{%- elif message.role == "assistant" %}
+<|assistant|>
+{{ message.content }}
+{%- elif message.role == "observation" %}
+<|user|>
+<observation>
+{{ message.content }}
+</observation>
+{%- endif %}
+{%- endfor %}
+<|assistant|> 
