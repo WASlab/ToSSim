@@ -254,6 +254,7 @@ class MatchRunner:
                 observation=ctx.pending_observation,
                 history=ctx.chat_history,
                 observation_role=OBSERVATION_ROLE,
+                agent_name=ctx.player.name,  # Pass the actual player name
             )
             
             # Print agent perspective for debugging/inspection
