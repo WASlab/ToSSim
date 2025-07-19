@@ -3,6 +3,7 @@ from .player import Player
 from .enums import Faction, RoleName, Attack, Defense, Time, Phase, VisitType, Priority, ImmunityType, RoleAlignment
 from .roles import Role, Arsonist, SerialKiller, has_immunity, create_role_from_name
 from .day_phase import DayPhase
+from .event_logger import GameLogger
 import random
 from collections import defaultdict
 from .chat import ChatManager, ChatChannelType
@@ -33,16 +34,27 @@ class Game:
         #The active day phase manager, if one exists
         self.day_phase_manager = None
 
+        # Initialize logging system first
+        from pathlib import Path
+        import uuid
+        game_id = f"game_{uuid.uuid4().hex[:8]}"
+        log_dir = Path("logs") / game_id
+        self.logger = GameLogger(game_id=game_id, log_dir=log_dir)
+        
+        # Log game start
+        player_names = [p.name for p in self.players]
+        self.logger.log_game_start("All Any", player_names)
+
         #Chat system
-        self.chat = ChatManager()
+        self.chat = ChatManager(logger=self.logger)
 
         #At game start put living players in Day Public (write+read) and dead channel read only
         for p in self.players:
             if p.is_alive:
                 self.chat.move_player_to_channel(p, ChatChannelType.DAY_PUBLIC, write=True, read=True)
             else:
-                self.chat.move_player_to_channel(p, ChatChannelType.DEAD, write=True, read=True)
-
+                self.chat.move_player_to_channel(p, ChatChannelType.DEAD, write=False, read=True)
+        
         #assign targets to executioners
         for pl in self.players:
             if pl.role.name == RoleName.EXECUTIONER and pl.role.target is None:
@@ -74,51 +86,39 @@ class Game:
     #------------------------------------------------------------------
 
     def advance_to_day(self):
-        """Prepares the game for the start of a new day.
-        
-        This should be called by the external game loop controller.
-        """
-        from .enums import Phase as PhaseEnum
+        """Advances the game to the next day phase."""
         self.day += 1
         self.time = Time.DAY
-
-        # --- ToS Rule: Day 1 starts in PRE_NIGHT, but chat is open (pre-night chat allowed) ---
-        if self.day == 1:
-            print("[ToS Rule] Day 1: Starting in pre-night. Chat is open for pre-night discussion. Skipping discussion and nomination/trial phases.")
-            self.phase = PhaseEnum.PRE_NIGHT
-            self.chat.start_new_period(self.day, is_night=False)
-            # No discussion, nomination, or trial phases on Day 1
-            return
-
-        # Explicit discussion sub-phase (for days after Day 1)
+        from .enums import Phase as PhaseEnum
         self.phase = PhaseEnum.DISCUSSION
+        
+        # Log day start
+        living_players = [p.name for p in self.players if p.is_alive]
+        self.logger.log_day_start(self.day, living_players)
+        
+        # Announce deaths from last night
+        if self.deaths_last_night:
+            for death in self.deaths_last_night:
+                victim = death['victim']
+                attacker = death['attacker']
+                death_type = "killed" if attacker else "died"
+                killed_by = attacker.name if attacker else "unknown"
+                
+                # Log death event
+                self.logger.log_death(victim.name, victim.role.name.value, killed_by, death_type)
+                
+                message = f"{victim.name} was {death_type} last night."
+                if attacker:
+                    message += f" They were killed by {attacker.name}."
+                self.chat.add_environment_message(message)
+            
+            self.deaths_last_night.clear()
+        
+        # Reset day actions
+        self.day_actions.clear()
+        
+        # Create new day phase manager
         self.day_phase_manager = DayPhase(self)
-        print(f"\n----- Day {self.day} -----")
-
-        # Start new chat period (archive previous period)
-        self.chat.start_new_period(self.day, is_night=False)
-
-        #Handle Amnesiac role conversions that were scheduled last night
-        for p in self.players:
-            if p.is_alive and hasattr(p, "remember_role_name") and p.remember_role_name:
-                new_role = create_role_from_name(p.remember_role_name)
-                p.assign_role(new_role)
-                debug_print(f"DEBUG: Amnesiac new_role.name type: {type(new_role.name)}, value: {new_role.name}")
-                try:
-                    print(f"[Amnesiac] {p.name} has remembered they were a {new_role.name.value}!")
-                except AttributeError:
-                    print(f"[Amnesiac] ERROR: {p.name} remembered a role with a non-enum name: {new_role.name} (type: {type(new_role.name)})")
-                #Clear the marker so it doesn't repeat
-                p.remember_role_name = None
-
-        self._setup_day_chat()
-        print("All players wake up.")
-        for player in self.players:
-            player.reset_night_states()
-
-        #Announce night's results, which were processed at the end of night.
-        self._announce_deaths()
-        #The game now waits for day action/nomination submissions from agents.
 
     def process_day_submissions(self):
         """Processes submitted day actions and trial outcomes.
@@ -147,6 +147,10 @@ class Game:
         self.phase = PhaseEnum.NIGHT
         night_num = self.day + 1  #First night is Night 1 when day == 0
         print(f"\n----- Night {night_num} -----")
+
+        # Log night start
+        living_players = [p.name for p in self.players if p.is_alive]
+        self.logger.log_night_start(night_num, living_players)
 
         # Start new chat period (archive day messages)
         self.chat.start_new_period(self.day, is_night=True)
@@ -890,6 +894,19 @@ class Game:
         for player in self.players:
             player.research_metrics['survived_to_end'] = player.is_alive
             player.research_metrics['days_survived'] = self.day
+        
+        # Log game end and finalize all player metrics
+        winning_factions = [f.name for f in set(p.role.faction for p in self.winners)] if self.winners else []
+        surviving_players = [p.name for p in self.players if p.is_alive]
+        
+        self.logger.log_game_end(winning_factions, surviving_players, self.day)
+        
+        # Finalize and log all player metrics
+        for player in self.players:
+            self.logger.finalize_player_metrics(player)
+        
+        # Close the logger
+        self.logger.close()
 
     def _is_protected(self, target: Player, attacker: Player, attack_type: Attack) -> bool:
         """Return True if the attack is prevented by a protector.

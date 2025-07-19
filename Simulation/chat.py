@@ -82,9 +82,11 @@ class ChatHistory:
         return f"Night {self.day}" if self.is_night else f"Day {self.day}"
 
 class ChatManager:
-    def __init__(self, all_players=None):
+    def __init__(self, all_players=None, logger=None):
         # Store reference to all players for blackmailer whisper access
         self._all_players = all_players or []
+        # Store reference to logger for chat logging
+        self.logger = logger
         # Static channels
         self.channels: Dict[ChatChannelType, ChatChannel] = {t: ChatChannel(t) for t in ChatChannelType if t not in [ChatChannelType.WHISPER, ChatChannelType.PLAYER_PRIVATE_NOTIFICATION]}
         # dynamic whispers: key -> ChatChannel
@@ -269,58 +271,53 @@ class ChatManager:
     # Speaking APIs
     # ------------------------------------------------------------------
     def send_speak(self, player: 'Player', text: str) -> ChatMessage | str:
-        """Player speaks in whichever static channel they have WRITE perms.
-
-        If they are in none, returns an error string."""
-        # find first writable channel (there should be exactly one in practice)
-        for chan in self.channels.values():
-            if ChannelOpenState.WRITE in chan.members.get(player.id, set()):
-                chan.broadcast(player, text)
-                
-                # TODO: RESEARCH METRICS - Track speaking metrics
-                player.research_metrics['times_spoken'] += 1
-                # Use Gemma-3 tokenizer for accurate token counting
-                from .tokenizer_utils import count_tokens
-                token_count = count_tokens(text)
-                player.research_metrics['total_tokens_spoken'] += token_count
-                
-                return chan.messages[-1]
-        return "Error: you cannot speak right now."
+        """Send a public message from a player."""
+        # Check if player can write to DAY_PUBLIC
+        if ChannelOpenState.WRITE not in self.channels[ChatChannelType.DAY_PUBLIC].members.get(player.id, set()):
+            return "You cannot speak right now."
+        
+        # Create and broadcast the message
+        message = ChatMessage(player, text, ChatChannelType.DAY_PUBLIC)
+        self.channels[ChatChannelType.DAY_PUBLIC].broadcast(player, text)
+        
+        # Log the chat message if logger is available
+        if self.logger:
+            turn_name = f"Night {self.current_day}" if self.current_is_night else f"Day {self.current_day}"
+            self.logger.log_chat(player.name, text, turn_name, is_whisper=False)
+        
+        return message
 
     def send_whisper(self, src: 'Player', dst: 'Player', text: str, *, day: int, is_night: bool) -> ChatMessage | str:
-        """Create (or fetch) a private WHISPER channel and deliver text.
-
-        • Whispers are day-only; at night returns error.
-        • Dead ↔ living whispers are invalid.
-        """
-        if is_night:
-            return "Error: You cannot whisper at night."
+        """Send a whisper from src to dst."""
+        # Check if both players are alive
         if not src.is_alive or not dst.is_alive:
-            return "Error: Whisper target must be alive."
-        key = (src.id, dst.id, day) if src.id < dst.id else (dst.id, src.id, day)
-        chan = self.whispers.setdefault(key, ChatChannel(ChatChannelType.WHISPER))
-        chan.add_member(src, can_write=True, can_read=True)
-        chan.add_member(dst, can_write=True, can_read=True)
+            return "You cannot whisper to dead players."
         
-        # Add all living Blackmailers as read-only members to see whispers
-        from .enums import RoleName
-        for player in getattr(self, '_all_players', []):
-            if (player.is_alive and 
-                hasattr(player, 'role') and 
-                player.role.name == RoleName.BLACKMAILER and 
-                player != src and player != dst):
-                chan.add_member(player, can_write=False, can_read=True)
+        # Check if src is blackmailed (cannot whisper)
+        if hasattr(src, 'is_blackmailed') and src.is_blackmailed:
+            return "You are blackmailed and cannot whisper."
         
-        chan.broadcast(src, text)
+        # Create whisper channel key
+        whisper_key = (src.id, dst.id, day)
         
-        # TODO: RESEARCH METRICS - Track whisper metrics
-        src.research_metrics['times_whispered'] += 1
-        # Use Gemma-3 tokenizer for accurate token counting
-        from .tokenizer_utils import count_tokens
-        token_count = count_tokens(text)
-        src.research_metrics['total_tokens_whispered'] += token_count
+        # Create whisper channel if it doesn't exist
+        if whisper_key not in self.whispers:
+            whisper_channel = ChatChannel(ChatChannelType.WHISPER)
+            whisper_channel.add_member(src, can_write=True, can_read=True)
+            whisper_channel.add_member(dst, can_write=True, can_read=True)
+            self.whispers[whisper_key] = whisper_channel
         
-        return chan.messages[-1]
+        # Send the whisper
+        whisper_channel = self.whispers[whisper_key]
+        message = ChatMessage(src, text, ChatChannelType.WHISPER)
+        whisper_channel.broadcast(src, text)
+        
+        # Log the whisper if logger is available
+        if self.logger:
+            turn_name = f"Night {day}" if is_night else f"Day {day}"
+            self.logger.log_chat(src.name, text, turn_name, is_whisper=True)
+        
+        return message
 
     def create_seance_channel(self, medium: 'Player', target: 'Player'):
         """Create a seance channel between Medium and target."""

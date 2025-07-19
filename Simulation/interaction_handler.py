@@ -23,6 +23,8 @@ class InteractionHandler:
         parser = ToSSimGrammarParser()
         self.tool_tags = parser.tool_tags
         self.interaction_tags = parser.interaction_tags
+        # Get logger from game for action logging
+        self.logger = getattr(game, 'logger', None)
 
     def _resolve_target(self, actor: 'Player', target_name: str) -> Union['Player', str]:
         """Finds a player based on a name string.
@@ -93,6 +95,18 @@ class InteractionHandler:
             try:
                 result = handler_method(actor, content)
                 print(f"[Debug] Handler result for {tag_name}: {result}")
+                
+                # Log the action if logger is available
+                if self.logger:
+                    turn_name = f"Night {self.game.day}" if self.game.time == Time.NIGHT else f"Day {self.game.day}"
+                    
+                    # Log tool calls
+                    if tag_name in self.tool_tags:
+                        self.logger.log_tool_call(actor.name, tag_name, content, result, turn_name)
+                    # Log interactions
+                    elif tag_name in self.interaction_tags:
+                        self.logger.log_interaction(actor.name, tag_name, content, turn_name)
+                
                 if tag_name in self.tool_tags:
                     # Only wrap tool results in <observation>
                     if result:
