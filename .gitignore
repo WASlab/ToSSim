@@ -34,6 +34,7 @@ __pycache__/
 models/
 checkpoints/
 experiments/**/checkpoints/
+logs/
 
 ###############################################################################
 # 4.  Jupyter & VS Code noise
