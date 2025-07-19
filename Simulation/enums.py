@@ -171,30 +171,36 @@ class VisitType(Enum):
     HARMFUL = 1      #Triggers BG/Trap; visible to LO/Tracker
     ASTRAL = 2       #Does not leave home; invisible to LO/Tracker and cannot be intercepted
 
-#Night Action Priority Order - Based on official ToS 1 priority system
+#Night Action Priority Order - Based on official ToS priority system
 class Priority(Enum):
     #Day abilities have higher priority than priority 1
     DAY_ACTION = 0
     
-    #PRIORITY 1 (Highest) - Transport, Alert, Haunt, etc.
+    #PRIORITY 1 (Highest) - Transporter, Veteran (on alert), Vigilante (committing suicide), Jester (haunting)
     PRIORITY_1_HIGHEST = 1
-    PRIORITY_1 = 2
     
-    #PRIORITY 2 - Role blocking, control
-    PRIORITY_2_HIGHEST = 3
-    PRIORITY_2 = 4
+    #PRIORITY 1 - Medium, Trapper, Retributionist, Ambusher, Pirate, Necromancer
+    PRIORITY_1 = 1
     
-    #PRIORITY 3 - Protection, tracking, deception
-    PRIORITY_3 = 5
+    #PRIORITY 2 (Highest) - Tavern Keeper, Bootlegger
+    PRIORITY_2_HIGHEST = 2
     
-    #PRIORITY 4 - Investigation  
-    PRIORITY_4 = 6
+    #PRIORITY 2 - Witch, Coven Leader, Guardian Angel
+    PRIORITY_2 = 2
     
-    #PRIORITY 5 - Killing Actions
-    PRIORITY_5 = 7
+    #PRIORITY 3 - Bodyguard, Crusader, Doctor, Tracker, Blackmailer, Forger, Framer, Hypnotist, Janitor, Arsonist (dousing), Survivor, Hex Master, Medusa (stoning), Potion Master (healing)
+    PRIORITY_3 = 3
     
-    #PRIORITY 6 - Spy, Amnesiac, conversions
-    PRIORITY_6 = 8
+    #PRIORITY 4 - Investigator, Lookout, Psychic, Sheriff, Consigliere, Potion Master (investigating)
+    PRIORITY_4 = 4
+    
+    #PRIORITY 5 - Jailor (executing), Vampire Hunter, Vigilante, Disguiser, Godfather, Mafioso, Arsonist (igniting), Juggernaut, Pestilence, Plaguebearer, Serial Killer, Werewolf, Vampire, Poisoner (visiting), Potion Master (attacking), Medusa (visiting)
+    PRIORITY_5 = 5
+    
+    #PRIORITY 6 - Spy, Amnesiac, Plaguebearer (becoming Pestilence), Hex Master (final Attack)
+    PRIORITY_6 = 6
+    
+
 
 #Pirate Duel Enums
 class DuelMove(Enum):
@@ -222,8 +228,19 @@ class Phase(Enum):
     PRE_NIGHT = auto()    # short filler before night
     NIGHT = auto()
 
+class ChatChannelType(Enum):
+    DAY_PUBLIC = auto()
+    MAFIA_NIGHT = auto()
+    COVEN_NIGHT = auto()
+    VAMPIRE_NIGHT = auto()
+    JAILED = auto()
+    DEAD = auto()
+    WHISPER = auto()  # one-off dynamic channels; key = (src_id,dst_id,day)
+    MEDIUM_SEANCE = auto()  # Medium-dead player communication
+    PLAYER_PRIVATE_NOTIFICATION = auto() # For player-specific notifications (e.g., roleblocked, doused)
+
 #Immunity types
 class ImmunityType(Enum):
     ROLE_BLOCK = auto()
     CONTROL = auto()
-    DETECTION = auto() 
+    DETECTION = auto()

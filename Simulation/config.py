@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import random
 from .enums import RoleName, Faction, RoleAlignment
 from .alignment import ROLE_ALIGNMENT_MAP, get_role_faction, get_role_alignment
@@ -37,7 +39,6 @@ Design philosophy
 
 ¹  https://town-of-salem.fandom.com/wiki/
 """
-from __future__ import annotations
 
 import random
 from enum import Enum

@@ -78,7 +78,19 @@ def print_chat_log(game, phase_label):
     if game.chat.history:
         current_period = sorted(game.chat.history.keys())[-1]
         for msg in game.chat.history[current_period].messages:
-            print(msg)
+            # Only show public messages, not private notifications
+            if msg.channel_type.name != "PLAYER_PRIVATE_NOTIFICATION":
+                print(msg)
+    print("-----------------------------\n")
+
+def print_private_notifications(game, phase_label):
+    """Debug function to show private notifications for all players."""
+    print(f"\n--- {phase_label} PRIVATE NOTIFICATIONS ---")
+    if game.chat.history:
+        current_period = sorted(game.chat.history.keys())[-1]
+        for msg in game.chat.history[current_period].messages:
+            if msg.channel_type.name == "PLAYER_PRIVATE_NOTIFICATION":
+                print(msg)
     print("-----------------------------\n")
 
 # Parse command-line arguments for verbosity options (hide prompts, etc.)
@@ -86,6 +98,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--hide-inputs", action="store_true", help="Do not print agent prompts.")
 parser.add_argument("--obfuscate-prompt", action="store_true", help="Print placeholder instead of full prompt.")
 parser.add_argument("--hardcoded-only", action="store_true", help="Only show output for agents with hardcoded scripts.")
+parser.add_argument("--show-private", action="store_true", help="Show private notifications for debugging.")
 args, _ = parser.parse_known_args()
 
 def run_scripted_game(scripted_agents, game: Game, phase_label="", args=None, observations=None):
@@ -136,6 +149,8 @@ def run_scripted_game(scripted_agents, game: Game, phase_label="", args=None, ob
             continue
     # After all players have acted, print the chat log and game state for this phase
     print_chat_log(game, phase_label)
+    if args and args.show_private:
+        print_private_notifications(game, phase_label)
     print_game_state(game, phase_label)
     # --- STEP MODE: Pause after each phase if enabled ---
     if STEP_MODE:
@@ -744,7 +759,7 @@ def test_full_game_coven_expansion():
     print("### Starting Scenario 3: Coven Expansion Scenario ###")
     player_names = ["Alice","Bob","Charlie","Diana","Eve","Frank","Grace","Henry","Igor","Jane","Kevin","Luna","Mona","Nina","Oscar"]
     roles = [
-        RoleName.PSYCHIC, RoleName.SPY, RoleName.VAMPIRE_HUNTER, RoleName.MAYOR, RoleName.TRANSporter, 
+                    RoleName.PSYCHIC, RoleName.SPY, RoleName.VAMPIRE_HUNTER, RoleName.MAYOR, RoleName.TRANSPORTER, 
         RoleName.MEDIUM, RoleName.RETRIBUTIONIST, RoleName.DOCTOR,  # Town (8)
         RoleName.COVEN_LEADER, RoleName.HEX_MASTER, RoleName.POTION_MASTER, RoleName.MEDUSA,  # Coven (4)
         RoleName.VAMPIRE, RoleName.GUARDIAN_ANGEL, RoleName.SURVIVOR  # Neutrals (3)

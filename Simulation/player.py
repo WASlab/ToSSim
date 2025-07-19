@@ -37,7 +37,6 @@ class Player:
         self.is_being_executed = False
         self.is_poisoned = False
         self.poison_timer = 0  #nights until poison kills
-        self.notifications = []
         self.is_blackmailed = False
         self.is_controlled = False
         self.is_protected = False
@@ -48,6 +47,8 @@ class Player:
         self.is_infected = False  #Plaguebearer infection
         self.last_will: str = ""  #Player can optionally set a last will.
         self.death_note: str = ""  #Player's death note (for certain roles)
+        self._was_protected_by_bg_ga_tonight = False # New flag for Spy intel
+        self._was_saved_by_defense_tonight = False # New flag for Spy intel
         
         # Death information (set when player dies)
         self.killed_by: 'Player' = None  # The player who killed this player
@@ -190,15 +191,12 @@ class Player:
         self.is_role_blocked = False
         self.is_jailed = False
         self.is_being_executed = False
-        self.notifications = []
-        self.is_blackmailed = False
-        self.is_controlled = False
-        self.is_poisoned = False
-        self.is_doused = False
-        self.is_hexed = False
         # Restore default defense (e.g., Veteran loses INVINCIBLE after alert)
         if self.role:
             self.defense = self.role.defense
+        # New flags for Spy intel
+        self._was_protected_by_bg_ga_tonight = False
+        self._was_saved_by_defense_tonight = False
         #lynch status persists
 
     def get_public_info(self):

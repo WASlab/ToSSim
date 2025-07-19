@@ -1,5 +1,6 @@
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Dict, List, Tuple
+import time # Import time for timestamping
 if TYPE_CHECKING:
     from .player import Player
     from .enums import Time
@@ -17,13 +18,18 @@ class ChatChannelType(Enum):
     DEAD = auto()
     WHISPER = auto()  # one-off dynamic channels; key = (src_id,dst_id,day)
     MEDIUM_SEANCE = auto()  # Medium-dead player communication
+    PLAYER_PRIVATE_NOTIFICATION = auto() # For player-specific notifications (e.g., roleblocked, doused)
 
 class ChatMessage:
+    _message_counter = 0 # For deterministic temporal sorting
+
     def __init__(self, sender: 'Player', message: str, channel_type: ChatChannelType, *, is_environment: bool = False):
         self.sender = sender
         self.message = message
         self.channel_type = channel_type
         self.is_environment = is_environment  # True for system/death messages
+        self.timestamp = ChatMessage._message_counter # Use a counter for deterministic order
+        ChatMessage._message_counter += 1
 
     def __repr__(self):
         prefix = "[ENV]" if self.is_environment else f"[{self.channel_type.name}]"
@@ -80,12 +86,15 @@ class ChatManager:
         # Store reference to all players for blackmailer whisper access
         self._all_players = all_players or []
         # Static channels
-        self.channels: Dict[ChatChannelType, ChatChannel] = {t: ChatChannel(t) for t in ChatChannelType if t != ChatChannelType.WHISPER}
+        self.channels: Dict[ChatChannelType, ChatChannel] = {t: ChatChannel(t) for t in ChatChannelType if t not in [ChatChannelType.WHISPER, ChatChannelType.PLAYER_PRIVATE_NOTIFICATION]}
         # dynamic whispers: key -> ChatChannel
         self.whispers: Dict[Tuple[int,int,int], ChatChannel] = {}
         
         # dynamic seances: key = (medium_id, target_id, day) -> ChatChannel
         self.seances: Dict[Tuple[int,int,int], ChatChannel] = {}
+        
+        # dynamic player-specific notification channels: key = player_id -> ChatChannel
+        self.player_notifications_channels: Dict[int, ChatChannel] = {}
         
         # Historical chat storage: key = (day, is_night) -> ChatHistory
         self.history: Dict[Tuple[int, bool], ChatHistory] = {}
@@ -115,26 +124,33 @@ class ChatManager:
             channel.messages.clear()
         self.whispers.clear()
         self.seances.clear()
+        # Clear player-specific notification channels
+        for channel in self.player_notifications_channels.values():
+            channel.messages.clear()
 
     def _archive_current_messages(self):
-        """Archive all current messages to history."""
+        """Archive all current messages to history, preserving temporal order."""
         period_key = (self.current_day, self.current_is_night)
         history = ChatHistory(self.current_day, self.current_is_night)
         
-        # Archive all channel messages
+        all_messages_in_period: List[ChatMessage] = []
+
+        # Collect messages from all channel types
         for channel in self.channels.values():
-            for msg in channel.messages:
-                history.add_message(msg)
-        
-        # Archive whisper messages
+            all_messages_in_period.extend(channel.messages)
         for channel in self.whispers.values():
-            for msg in channel.messages:
-                history.add_message(msg)
-        
-        # Archive seance messages
+            all_messages_in_period.extend(channel.messages)
         for channel in self.seances.values():
-            for msg in channel.messages:
-                history.add_message(msg)
+            all_messages_in_period.extend(channel.messages)
+        for channel in self.player_notifications_channels.values():
+            all_messages_in_period.extend(channel.messages)
+        
+        # Sort all messages by their timestamp to preserve temporal order
+        all_messages_in_period.sort(key=lambda msg: msg.timestamp)
+        
+        # Add sorted messages to history
+        for msg in all_messages_in_period:
+            history.add_message(msg)
         
         self.history[period_key] = history
 
@@ -214,6 +230,8 @@ class ChatManager:
             return False  # Jail messages are private to that night only
         elif channel_type == ChatChannelType.MEDIUM_SEANCE:
             return False  # Seance messages are handled separately like whispers
+        elif channel_type == ChatChannelType.PLAYER_PRIVATE_NOTIFICATION:
+            return False  # Private notifications are handled separately in get_visible_messages
         
         return False
 
@@ -336,6 +354,19 @@ class ChatManager:
         return "You are not in any active seance."
 
     # ------------------------------------------------------------------
+    # Player-specific notification API
+    # ------------------------------------------------------------------
+    def add_player_notification(self, player: 'Player', message: str, *, is_environment: bool = False):
+        """Add a private notification message visible only to a specific player."""
+        if player.id not in self.player_notifications_channels:
+            self.player_notifications_channels[player.id] = ChatChannel(ChatChannelType.PLAYER_PRIVATE_NOTIFICATION)
+        
+        channel = self.player_notifications_channels[player.id]
+        # Use a dummy sender for environment-like notifications, or the player themselves for self-generated ones
+        sender_for_notification = type('NotificationSender', (), {'name': 'SYSTEM', 'id': -2})() if is_environment else player
+        channel.broadcast(sender_for_notification, message, is_environment=is_environment)
+
+    # ------------------------------------------------------------------
     def get_visible_messages(self, player: 'Player') -> List[ChatMessage]:
         """Get all currently visible messages for a player (current period only)."""
         msgs: List[ChatMessage] = []
@@ -345,5 +376,16 @@ class ChatManager:
             msgs.extend(chan.get_visible(player))
         for chan in self.seances.values():
             msgs.extend(chan.get_visible(player))
-        # order by insertion (id of obj stable)
-        return sorted(msgs, key=id) 
+        
+        # Add player-specific notifications
+        if player.id in self.player_notifications_channels:
+            msgs.extend(self.player_notifications_channels[player.id].messages)
+
+        # order by timestamp
+        return sorted(msgs, key=lambda msg: msg.timestamp)
+
+    def get_current_player_notifications(self, player: 'Player') -> List[ChatMessage]:
+        """Get all private notifications for a player for the current period."""
+        if player.id in self.player_notifications_channels:
+            return sorted(self.player_notifications_channels[player.id].messages, key=lambda msg: msg.timestamp)
+        return [] 

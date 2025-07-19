@@ -189,7 +189,7 @@ class Game:
 
         #Send out private notifications resulting from the night's events.
         #Deaths are not announced until the next day starts.
-        self._send_notifications()
+        # Notifications are already sent through individual role action methods
         
         # Handle Vigilante guilt suicide (after notifications are sent)
         self._process_vigilante_guilt()
@@ -353,7 +353,7 @@ class Game:
                 for visitor in player.targeted_by:
                     if visitor.is_alive:
                         visitor.is_doused = True
-                        visitor.notifications.append("You smell gasoline. You have been doused!")
+                        self.chat.add_player_notification(visitor, "You smell gasoline. You have been doused!")
                         print(f"[Passive] {visitor.name} was doused by visiting {player.name} (Arsonist).")
 
             if isinstance(player.role, SerialKiller):
@@ -405,7 +405,7 @@ class Game:
                     print(f"[Ambusher] {player.name} ambushed {victim.name} visiting {loc.name}!")
                     #Reveal name to all visitors
                     for v in visitors:
-                        v.notifications.append(f"You saw {player.name} ambush someone at {loc.name}!")
+                        self.chat.add_player_notification(v, f"You saw {player.name} ambush someone at {loc.name}!")
 
             if player.role.name == RoleName.VAMPIRE_HUNTER:
                 #Any Vampire who visits the Hunter is staked
@@ -415,17 +415,17 @@ class Game:
                         print(f"[VampireHunter] {player.name} staked visiting Vampire {visitor.name}!")
                         
             # Add notifications for various passive effects
-            if player.is_doused and not any("doused" in m.lower() for m in player.notifications):
-                player.notifications.append("You reek of gasoline!")
+            if player.is_doused and not any("doused" in m.lower() for m in self.chat.get_current_player_notifications(player)):
+                self.chat.add_player_notification(player, "You reek of gasoline!")
                 
-            if player.is_infected and not any("infected" in m.lower() for m in player.notifications):
-                player.notifications.append("You feel a strange plague stirring within you.")
+            if player.is_infected and not any("infected" in m.lower() for m in self.chat.get_current_player_notifications(player)):
+                self.chat.add_player_notification(player, "You feel a strange plague stirring within you.")
                 
-            if player.is_hexed and not any("hexed" in m.lower() for m in player.notifications):
-                player.notifications.append("You feel a dark magic upon you. You have been hexed!")
+            if player.is_hexed and not any("hexed" in m.lower() for m in self.chat.get_current_player_notifications(player)):
+                self.chat.add_player_notification(player, "You feel a dark magic upon you. You have been hexed!")
                 
-            if player.is_framed and not any("framed" in m.lower() for m in player.notifications):
-                player.notifications.append("You feel as though you are being watched.")
+            if player.is_framed and not any("framed" in m.lower() for m in self.chat.get_current_player_notifications(player)):
+                self.chat.add_player_notification(player, "You feel as though you are being watched.")
 
     def _process_night_actions(self):
         if not self.night_actions:
@@ -476,7 +476,7 @@ class Game:
                 }
                 
                 if player.role.name not in roles_that_self_notify:
-                    player.notifications.append(result)
+                    self.chat.add_player_notification(player, result)
             
             if result:
                 print(f"[Night Action] {player.name}: {result}")
@@ -515,8 +515,6 @@ class Game:
                     if hasattr(attacker.role, 'plunders'):
                         attacker.role.plunders += 1
                         print(f"[Game Log] {attacker.name} won the duel against {target.name}, but they were protected. Plunder awarded.")
-                # Notify target they were attacked but protected
-                target.notifications.append(SPY_BUG_MESSAGES_CLASSIC["attacked_fought_off"])
                 continue
 
             #Default rule: attack must exceed defence. Special case: Unstoppable pierces Invincible.
@@ -592,7 +590,8 @@ class Game:
 
             else:
                  #Attack failed due to defense: notify target
-                target.notifications.append(SPY_BUG_MESSAGES_CLASSIC["defense_too_strong"])
+                self.chat.add_player_notification(target, "Someone attacked you but your defense was too strong!")
+                target._was_saved_by_defense_tonight = True # Flag for Spy intel
 
 
         #Clear attacks for the next night
@@ -791,13 +790,7 @@ class Game:
             role_name = str(getattr(attacker.role, 'name', None))
         return death_messages.get(role_name, f"They were killed by {role_name}.")
 
-    def _send_notifications(self):
-        for player in self.players:
-            if player.is_alive and player.notifications:
-                for notif in player.notifications:
-                    print(f"[Notification for {player.name}] {notif}")
-        
-        #Spy intel is handled in _process_spy_intel now
+    
 
     def game_is_over(self) -> Faction | None:
         """Return the winning faction, or None if the game continues.
@@ -910,7 +903,8 @@ class Game:
         ga_protectors = [p for p in target.protected_by if p.is_alive and p.role.__class__.__name__ == "GuardianAngel"]
         if ga_protectors:
             print(f"[GuardianAngel] {ga_protectors[0].name} shielded {target.name} from harm!")
-            target.notifications.append("You were attacked but your Guardian Angel saved you!")
+            self.chat.add_player_notification(target, "You were attacked but your Guardian Angel saved you!")
+            target._was_protected_by_bg_ga_tonight = True # Flag for Spy intel
             return True
 
         interceptors = [p for p in target.protected_by if p.is_alive and p.role.__class__.__name__ == "Bodyguard" and attacker.role.visit_type == VisitType.HARMFUL]
@@ -932,14 +926,15 @@ class Game:
             self.graveyard.append(attacker)
             print(f"[Protection] {bg.name} struck down {attacker.name} while protecting!")
 
-            target.notifications.append("Your bodyguard fought off an attacker!")
+            self.chat.add_player_notification(target, "Your bodyguard fought off an attacker!")
+            target._was_protected_by_bg_ga_tonight = True # Flag for Spy intel
             return True  #Target is saved
 
         # --- Doctor/Healer protection: add attacked_healed message ---
         # If any living Doctor/PM/Healer is in protected_by, and the attack is prevented, notify the target
         healers = [p for p in target.protected_by if p.is_alive and p.role.name in [RoleName.DOCTOR, RoleName.POTION_MASTER]]
         if healers:
-            target.notifications.append(SPY_BUG_MESSAGES_CLASSIC["attacked_healed"])
+            self.chat.add_player_notification(target, SPY_BUG_MESSAGES_CLASSIC["attacked_healed"])
             return True
 
         #Future: Crusader, Guardian Angel, etc.
@@ -963,7 +958,7 @@ class Game:
             if not target1.is_alive or not target2.is_alive:
                 continue
             if target1.is_jailed or target2.is_jailed:
-                transporter.notifications.append("One of your targets was in jail, so you could not transport them.")
+                self.chat.add_player_notification(transporter, "One of your targets was in jail, so you could not transport them.")
                 continue
 
             print(f"[Transport] {transporter.name} is transporting {target1.name} and {target2.name}.")
@@ -1028,8 +1023,8 @@ class Game:
                 print(f"[Transport] {target2.name} was redirected to target {target1.name} (self-target swap).")
             
             # Notify the transported players
-            target1.notifications.append("You were transported to another location.")
-            target2.notifications.append("You were transported to another location.")
+            self.chat.add_player_notification(target1, "You were transported to another location.")
+            self.chat.add_player_notification(target2, "You were transported to another location.")
             
             # Reset transport targets for next night
             transporter.role.transport_targets = None
@@ -1046,12 +1041,12 @@ class Game:
                         #Executioner wins immediately
                         self.winners.append(p)
                         print(f"[Executioner] {p.name} achieved their goal and wins individually!")
-                        p.notifications.append("Your target was lynched! You achieved your goal and win the game.")
+                        self.chat.add_player_notification(p, "Your target was lynched! You achieved your goal and win the game.")
                     else:
                         #Becomes Jester
                         p.assign_role(Jester())
                         print(f"[Executioner] {p.name}'s target died unnaturally – they have become a Jester!")
-                        p.notifications.append("Your target died by other means. You've become a Jester – now get yourself lynched!")
+                        self.chat.add_player_notification(p, "Your target died by other means. You\'ve become a Jester – now get yourself lynched!")
 
     def _check_guardian_angel_conversions(self, dead_players):
         """Convert Guardian Angels to Survivors if their target dies."""
@@ -1063,7 +1058,7 @@ class Game:
                     # Target died → convert to Survivor
                     p.assign_role(Survivor())
                     print(f"[Guardian Angel] {p.name} has become a Survivor due to target death.")
-                    p.notifications.append("Your target has died. You have become a Survivor!")
+                    self.chat.add_player_notification(p, "Your target has died. You have become a Survivor!")
 
     def _assign_necronomicon(self):
         """Give Necronomicon to coven each night if no one has it."""
@@ -1095,7 +1090,7 @@ class Game:
         #grant detection immunity while holding book
         pick.role.detection_immune = True
         pick.role.has_necronomicon = True
-        pick.notifications.append("You have received the Necronomicon! Your powers are enhanced.")
+        self.chat.add_player_notification(pick, "You have received the Necronomicon! Your powers are enhanced.")
         #Adjust action priority for certain roles that gain an attack with the Necronomicon
         if pick.role.name in [RoleName.MEDUSA, RoleName.COVEN_LEADER, RoleName.HEX_MASTER, RoleName.POTION_MASTER]:
                             pick.role.action_priority = Priority.PRIORITY_5
@@ -1124,7 +1119,7 @@ class Game:
                         if cured:
                             p.is_poisoned = False
                             p.poison_timer = 0
-                            p.notifications.append("You were cured of poison!")
+                            self.chat.add_player_notification(p, "You were cured of poison!")
                         else:
                             self.register_attack(p, p, Attack.BASIC)
                             p.is_poisoned = False
@@ -1250,20 +1245,28 @@ class Game:
         from collections import defaultdict
         from Simulation.player import Player
         import random as _r
+        from Simulation.chat import ChatMessage # Import ChatMessage to check content
+
+        def _add_spy_notification_if_new(spy_player: Player, message: str):
+            """Adds a notification to the spy's private channel only if it's not a duplicate."""
+            # Check if a message with similar content already exists in the current notifications
+            current_notifications = self.chat.get_current_player_notifications(spy_player)
+            if not any(msg.message == message for msg in current_notifications):
+                self.chat.add_player_notification(spy_player, message)
 
         #Add generic notifications reflecting role blocks before gathering intel
         for pl in self.players:
-            if pl.is_alive and pl.is_role_blocked and not any("role blocked" in m.lower() for m in pl.notifications):
-                pl.notifications.append("Someone occupied your night. You were role blocked!")
+            if pl.is_alive and pl.is_role_blocked and not any("role blocked" in m.message.lower() for m in self.chat.get_current_player_notifications(pl)):
+                self.chat.add_player_notification(pl, "Someone occupied your night. You were role blocked!")
                 
             # Add jail notification if player was jailed
-            if pl.is_alive and pl.is_jailed and not any("jailed" in m.lower() for m in pl.notifications):
-                pl.notifications.append("You have been hauled off to jail!")
+            if pl.is_alive and pl.is_jailed and not any("jailed" in m.message.lower() for m in self.chat.get_current_player_notifications(pl)):
+                self.chat.add_player_notification(pl, "You have been hauled off to jail!")
                 
             # Add healing notification if player received doctor healing
             if pl.is_alive and hasattr(pl, '_was_healed_tonight') and pl._was_healed_tonight:
-                pl.notifications.append("Someone nursed you back to health!")
-                pl._was_healed_tonight = False  # Reset flag
+                self.chat.add_player_notification(pl, "Someone nursed you back to health!")
+                # No need to reset _was_healed_tonight here, ChatManager clears messages per period
 
         mafia_visits: dict[Player, list[Player]] = defaultdict(list)
         coven_visits: dict[Player, list[Player]] = defaultdict(list)
@@ -1319,22 +1322,44 @@ class Game:
 
             #1) Faction visit summary
             for line in mafia_lines + coven_lines:
-                spy.notifications.append(line)
+                _add_spy_notification_if_new(spy, line)
 
             #2) Bug result
             target = bug_targets.get(spy)
             if target:
                 #If target was jailed, spy learns only that fact
                 if target.is_jailed:
-                    spy.notifications.append("Your target was jailed last night.")
+                    _add_spy_notification_if_new(spy, "Your target was jailed last night.")
                 else:
-                    #Forward target's public night notifications (attacks, transports, etc.)
-                    for msg in target.notifications:
-                        spy.notifications.append(f"[Bug] {msg}")
+                    # Check for specific Spy bug messages based on flags
+                    if target._was_protected_by_bg_ga_tonight:
+                        _add_spy_notification_if_new(spy, SPY_BUG_MESSAGES_CLASSIC["attacked_fought_off"])
+                    if target._was_saved_by_defense_tonight:
+                        _add_spy_notification_if_new(spy, SPY_BUG_MESSAGES_CLASSIC["defense_too_strong"])
+                    # Healing notification is now added directly to target's private channel, so Spy can see it
+                    # if it's in target's current notifications.
+                    for msg_obj in self.chat.get_current_player_notifications(target):
+                        if "nursed you back to health" in msg_obj.message.lower():
+                            _add_spy_notification_if_new(spy, SPY_BUG_MESSAGES_CLASSIC["attacked_healed"])
+                            break # Only need to add once
+
+                    # Forward target's other private notifications (attacks, transports, etc.)
+                    for msg_obj in self.chat.get_current_player_notifications(target):
+                        # Avoid duplicating messages already covered by specific Spy intel
+                        # and avoid forwarding the healing message if already added by specific intel
+                        if not any(s_msg in msg_obj.message for s_msg in [
+                            SPY_BUG_MESSAGES_CLASSIC["attacked_fought_off"],
+                            SPY_BUG_MESSAGES_CLASSIC["defense_too_strong"],
+                            SPY_BUG_MESSAGES_CLASSIC["attacked_healed"],
+                            "You were transported to another location.", # Transporter message
+                            "You have been hauled off to jail!" # Jailing message
+                        ]):
+                            _add_spy_notification_if_new(spy, f"[Bug] {msg_obj.message}")
+                    
                     #If target suffered an attack that wasn't prevented, but no message recorded, add generic
                     was_attacked = any(att['target'] == target for att in self.night_attacks)
-                    if was_attacked and not any("attacked" in m.lower() for m in target.notifications):
-                        spy.notifications.append("[Bug] Your target was attacked last night!")
+                    if was_attacked and not any("attacked" in m.message.lower() for m in self.chat.get_current_player_notifications(target)):
+                        _add_spy_notification_if_new(spy, "[Bug] Your target was attacked last night!")
 
     #--------------------------------------------------------------
     #Jester Haunt Resolution
@@ -1378,8 +1403,8 @@ class Game:
                 medium.role.seances -= 1
                 #Notify both parties (simple implementation)
                 msg = f"A restless spirit whispers to you: '{medium.name} (Medium) is speaking with you from beyond.'"
-                target.notifications.append(msg)
-                medium.notifications.append(f"You contact {target.name}. They have been notified of your message.")
+                self.chat.add_player_notification(target, msg)
+                self.chat.add_player_notification(medium, f"You contact {target.name}. They have been notified of your message.")
                 print(f"[Seance] {medium.name} contacted {target.name}.")
                 #reset
                 medium.seance_target = None
@@ -1409,7 +1434,7 @@ class Game:
         if not living_gf and living_mf:
             promotee = living_mf[0]
             promotee.assign_role(Godfather())
-            promotee.notifications.append("The Godfather has fallen. You are now the Godfather!")
+            self.chat.add_player_notification(promotee, "The Godfather has fallen. You are now the Godfather!")
             #Update lists for next step
             living_gf.append(promotee)
             living_mf.remove(promotee)
@@ -1421,7 +1446,7 @@ class Game:
             if candidates:
                 promotee = candidates[0]
                 promotee.assign_role(Mafioso())
-                promotee.notifications.append("You have been promoted to Mafioso to continue the Mafia's killings.")
+                self.chat.add_player_notification(promotee, "You have been promoted to Mafioso to continue the Mafia's killings.")
 
     def _process_vigilante_guilt(self):
         """Handle Vigilante suicide due to killing townies."""
@@ -1431,17 +1456,13 @@ class Game:
                 # Vigilante commits suicide out of guilt
                 player.is_alive = False
                 self.graveyard.append(player)
-                player.notifications.append("You cannot live with the guilt of killing a town member. You commit suicide.")
+                self.chat.add_player_notification(player, "You cannot live with the guilt of killing a town member. You commit suicide.")
                 print(f"[Vigilante Guilt] {player.name} committed suicide from guilt.")
                 
                 # Mark for death announcement
                 self.deaths_last_night.append({"victim": player, "attacker": player})
 
-    def _send_notifications(self):
-        for player in self.players:
-            if player.is_alive and player.notifications:
-                for notif in player.notifications:
-                    print(f"[Notification for {player.name}] {notif}")
+    
         
         #Spy intel is handled in _process_spy_intel now
 
@@ -1452,7 +1473,7 @@ class Game:
                 target = player.role.jailed_target
                 if target.is_alive:
                     target.is_jailed = True
-                    target.notifications.append("You have been hauled off to jail!")
+                    self.chat.add_player_notification(target, "You have been hauled off to jail!")
                     # TODO: RESEARCH METRICS - Track jail events
                     target.research_metrics['times_jailed'] += 1
                     print(f"[Jailing] {target.name} was jailed by {player.name}.")
@@ -1461,6 +1482,6 @@ class Game:
                     if target.role.faction in [Faction.MAFIA, Faction.VAMPIRE, Faction.COVEN]:
                         teammates = [p for p in self.players if p.is_alive and p != target and p.role.faction == target.role.faction]
                         for teammate in teammates:
-                            teammate.notifications.append(f"{target.name} was hauled off to jail.")
+                            self.chat.add_player_notification(teammate, f"{target.name} was hauled off to jail.")
                 
                 player.role.jailed_target = None

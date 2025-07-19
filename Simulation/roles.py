@@ -1,14 +1,24 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
-from .enums import RoleName, Faction, RoleAlignment, Attack, Defense, Priority, DisplayName, VisitType, ImmunityType
-from .alignment import get_role_alignment, get_role_faction
+from typing import TYPE_CHECKING, Optional, List, Dict, Any, Union
+from dataclasses import dataclass, field
+from enum import Enum
 import random
-from .enums import DuelMove, DuelDefense
-from .debug_utils import debug_print, debug_exception
+from .enums import *
+from .config import Perspective, ROLE_ACTION_MESSAGES, CANCEL_ACTION_MESSAGE
+from .alignment import get_role_alignment, get_role_faction
 
 if TYPE_CHECKING:
     from .player import Player
     from .game import Game
+
+def get_role_message(role_name: RoleName, action: str, perspective: Perspective, **kwargs) -> str:
+    """Helper function to get role action messages using the new dictionary format."""
+    try:
+        message_template = ROLE_ACTION_MESSAGES[role_name][action][perspective]
+        return message_template.format(**kwargs)
+    except (KeyError, TypeError):
+        # Fallback to a generic message if the specific one isn't found
+        return f"Action {action} completed for {role_name.value}"
 
 class Role(ABC):
     def __init__(self):
@@ -101,14 +111,14 @@ class Sheriff(Role):
 
         # Being framed or hexed makes a Townie appear suspicious.
         if target.is_framed or target.is_hexed:
-            return f"{target.name} is suspicious!"
+            return get_role_message(self.name, "interrogate", Perspective.SELF, target=target.name)
         if eff_role.detection_immune:
-            return f"{target.name} is not suspicious."
+            return get_role_message(self.name, "interrogate", Perspective.SELF, target=target.name)
         if eff_role.name == RoleName.SERIAL_KILLER:
-            return f"{target.name} is suspicious!"
+            return get_role_message(self.name, "interrogate", Perspective.SELF, target=target.name)
         if eff_role.faction == Faction.MAFIA and eff_role.name != RoleName.GODFATHER:
-            return f"{target.name} is suspicious!"
-        return f"{target.name} is not suspicious."
+            return get_role_message(self.name, "interrogate", Perspective.SELF, target=target.name)
+        return get_role_message(self.name, "interrogate", Perspective.SELF, target=target.name)
 
 class Investigator(Role):
     def __init__(self):
@@ -120,7 +130,7 @@ class Investigator(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game'):
         if not game or not target:
-            return "You must select a target."
+            return CANCEL_ACTION_MESSAGE
         investigated_role = target.disguised_as_role if getattr(target,'disguised_as_role',None) else target.role.name
         if target.is_framed or (hasattr(game, 'config') and game.config.is_coven and target.is_hexed):
             investigated_role = RoleName.HEX_MASTER if game.config.is_coven else RoleName.FRAMER
@@ -130,15 +140,15 @@ class Investigator(Role):
         if hasattr(game, 'config'):
             result_group = game.config.get_investigator_result_group(investigated_role)
             if not result_group:
-                return f"Your target, {target.name}, has a role that is mysterious and unknown."
+                return get_role_message(self.name, "investigate", Perspective.SELF, target=target.name)
             role_names = [role.value for role in result_group]
             if len(role_names) == 1:
-                return f"Your target is a {role_names[0]}."
+                return get_role_message(self.name, "investigate", Perspective.SELF, target=target.name)
             result_string = ", ".join(role_names[:-1]) + ", or " + role_names[-1]
-            return f"Your target could be a {result_string}."
+            return get_role_message(self.name, "investigate", Perspective.SELF, target=target.name)
         
         #Fallback if no config is present
-        return f"Your target is a {investigated_role.value}."
+        return get_role_message(self.name, "investigate", Perspective.SELF, target=target.name)
 
 class Lookout(Role):
     def __init__(self):
@@ -171,8 +181,8 @@ class Lookout(Role):
             visitor_names.append(visitor_name)
             
         if not visitor_names:
-            return f"No one visited {target.name}."
-        return f"These players visited {target.name}: {', '.join(visitor_names)}"
+            return get_role_message(self.name, "watch", Perspective.SELF, target=target.name)
+        return get_role_message(self.name, "watch", Perspective.SELF, target=target.name)
 
 class Doctor(Role):
     def __init__(self):
@@ -185,20 +195,20 @@ class Doctor(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
         if not target:
-            return None
+            return CANCEL_ACTION_MESSAGE
         if hasattr(target.role, 'revealed') and getattr(target.role, 'revealed', False):
-            return "You cannot heal a revealed Mayor."
+            return get_role_message(self.name, "heal", Perspective.SELF, target=target.name)
         if player == target:
             if self.self_heals > 0:
                 self.self_heals -= 1
                 target.defense = Defense.POWERFUL
                 target._was_healed_tonight = True  # Mark for notification
-                return f"You are using a self-heal. You have {self.self_heals} left."
+                return get_role_message(self.name, "self_heal", Perspective.SELF, target=target.name)
             else:
-                return "You are out of self-heals."
+                return get_role_message(self.name, "self_heal", Perspective.SELF, target=target.name)
         target.defense = Defense.POWERFUL
         target._was_healed_tonight = True  # Mark for notification
-        return f"You are healing {target.name} tonight."
+        return get_role_message(self.name, "heal_target", Perspective.SELF, target_name=target.name)
 
 class Bodyguard(Role):
     def __init__(self):
@@ -210,16 +220,18 @@ class Bodyguard(Role):
         self.vests = 1
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game'):
+        if not target:
+            return CANCEL_ACTION_MESSAGE
         if player == target:
             if self.vests > 0:
                 self.vests -= 1
                 player.defense = Defense.BASIC
-                return f"You are guarding yourself tonight. You have {self.vests} vests remaining."
+                return get_role_message(self.name, "vest", Perspective.SELF, target=target.name)
             else:
-                return "You are out of vests."
+                return get_role_message(self.name, "vest", Perspective.SELF, target=target.name)
         if target:
             target.protected_by.append(player)
-            return f"You are guarding {target.name} tonight."
+            return get_role_message(self.name, "guard", Perspective.SELF, target=target.name)
         return None
 
 class Vigilante(Role):
@@ -237,14 +249,14 @@ class Vigilante(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
         if not target or not game:
-            return None
+            return CANCEL_ACTION_MESSAGE
         
         if self.bullets > 0:
             self.bullets -= 1
             game.register_attack(player, target, self.attack)
-            return f"You are shooting {target.name} tonight. You have {self.bullets} bullets remaining."
+            return get_role_message(self.name, "shoot_target", Perspective.SELF, target_name=target.name, bullets_left=self.bullets)
         else:
-            return "You are out of bullets."
+            return get_role_message(self.name, "shoot_no_bullets", Perspective.SELF)
 
 class Mayor(Role):
     def __init__(self):
@@ -259,8 +271,7 @@ class Mayor(Role):
         if not self.revealed:
             self.revealed = True
             player.vote_weight = 3
-            # Add notification to the Mayor
-            player.notifications.append("You have revealed yourself as the Mayor! Your vote now counts as 3.")
+            # The notification is now handled by the game engine when the action result is returned.
             print(f"{player.name} has revealed themselves as the Mayor!")
             return True
         return False
@@ -275,7 +286,7 @@ class Mayor(Role):
             if success:
                 #Update player's vote weight
                 player.vote_weight = 3
-                return f"You have revealed yourself as the Mayor! Your vote now counts as 3."
+                return get_role_message(self.name, "reveal_success", Perspective.SELF)
         return None
 
 class Medium(Role):
@@ -284,25 +295,27 @@ class Medium(Role):
         self.name = RoleName.MEDIUM
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
-        self.action_priority = Priority.HIGHEST
+        self.action_priority = Priority.PRIORITY_1
         self.seances = 1
         self.can_seance_from_grave = True
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        if target and self.seances > 0:
+        if not target:
+            return CANCEL_ACTION_MESSAGE
+        if self.seances > 0:
             return self.seance(player, target, game)
-        return "You are speaking with the dead."
+        return get_role_message(self.name, "speaking_with_dead", Perspective.SELF)
     
     def seance(self, medium_player: 'Player', target: 'Player', game: 'Game'):
         """Create a private seance channel between Medium and target."""
         if self.seances <= 0:
-            return "You have already used your seance ability."
+            return get_role_message(self.name, "seance_no_charges", Perspective.SELF)
         
         if not target or not target.is_alive:
-            return "You can only seance living players."
+            return get_role_message(self.name, "seance_target_not_alive", Perspective.SELF)
         
         if medium_player == target:
-            return "You cannot seance yourself."
+            return get_role_message(self.name, "seance_self_target", Perspective.SELF)
         
         # Use the seance
         self.seances -= 1
@@ -310,9 +323,9 @@ class Medium(Role):
         # Create the seance channel through the chat system
         if hasattr(game, 'chat'):
             game.chat.create_seance_channel(medium_player, target)
-            return f"You have established a seance with {target.name}. You can now communicate privately."
+            return get_role_message(self.name, "seance_success", Perspective.SELF, target_name=target.name)
         
-        return f"You are attempting to seance {target.name}."
+        return get_role_message(self.name, "seance_attempt", Perspective.SELF, target_name=target.name)
 
 class TavernKeeper(Role):
     def __init__(self):
@@ -325,15 +338,14 @@ class TavernKeeper(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
         if not target:
-            return None
+            return CANCEL_ACTION_MESSAGE
         if target.role.name == RoleName.SERIAL_KILLER and not target.role.cautious:
-            return None
+            return None # Tavern Keeper is killed by uncautious SK
         if has_immunity(target.role, ImmunityType.ROLE_BLOCK):
-            if isinstance(target.role, SerialKiller) and target.role.cautious:
-                 target.notifications.append("Someone tried to role block you, but you are immune!")
-            return f"{target.name} could not be role-blocked."
+            # The target will receive their own notification about being immune.
+            return get_role_message(self.name, "roleblock_immune", Perspective.SELF, target_name=target.name)
         target.is_role_blocked = True
-        return f"You are distracting {target.name} tonight."
+        return get_role_message(self.name, "distract_target", Perspective.SELF, target_name=target.name)
 
 class Godfather(Role):
     def __init__(self):
@@ -349,12 +361,14 @@ class Godfather(Role):
         self.visit_type = VisitType.HARMFUL
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
+        if not target:
+            return CANCEL_ACTION_MESSAGE
         mafioso = game.find_player_by_role(RoleName.MAFIOSO)
         if not mafioso or not mafioso.is_alive:
-            if target:
-                game.register_attack(player, target, Attack.BASIC)
-                return f"{player.name} is attacking {target.name}."
-        return "You have sent the Mafioso to kill."
+            # If no Mafioso, Godfather attacks directly
+            game.register_attack(player, target, Attack.BASIC)
+            return get_role_message(self.name, "attack_target", Perspective.SELF, target_name=target.name)
+        return get_role_message(self.name, "send_mafioso_to_kill", Perspective.SELF)
 
 class Mafioso(Role):
     def __init__(self):
@@ -371,9 +385,9 @@ class Mafioso(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
         if not target:
-             return f"{player.name} is not attacking anyone."
+             return CANCEL_ACTION_MESSAGE
         game.register_attack(player, target, self.attack)
-        return f"{player.name} is attacking {target.name}."
+        return get_role_message(self.name, "attack_target", Perspective.SELF, target_name=target.name)
 
 class SerialKiller(Role):
     def __init__(self):
@@ -399,7 +413,7 @@ class SerialKiller(Role):
         if role_blocker_visitors:
             if self.cautious:
                 # Cautious SK refuses to attack if role blockers visit (stays home to avoid detection)
-                return f"{player.name} is staying home cautiously."
+                return get_role_message(self.name, "stay_home_cautious", Perspective.SELF)
             else:
                 # Normal SK attacks the role blocker(s) who visit
                 for rb_visitor in role_blocker_visitors:
@@ -408,15 +422,15 @@ class SerialKiller(Role):
                 # Normal SK also attacks their intended target if not jailed
                 if target and not player.is_jailed:
                     game.register_attack(player, target, self.attack)
-                    return f"{player.name} is attacking {target.name} and killed visiting role blockers."
+                    return get_role_message(self.name, "attack_target_and_visitors", Perspective.SELF, target_name=target.name)
                 else:
-                    return f"{player.name} killed visiting role blockers."
+                    return get_role_message(self.name, "attack_visitors_only", Perspective.SELF)
         
         # No role blockers visiting - proceed with normal attack
         if target and not player.is_jailed:
             game.register_attack(player, target, self.attack)
-            return f"{player.name} is attacking {target.name}."
-        return f"{player.name} is staying home."
+            return get_role_message(self.name, "attack_target", Perspective.SELF, target_name=target.name)
+        return get_role_message(self.name, "stay_home", Perspective.SELF)
 
 class Jailor(Role):
     def __init__(self):
@@ -431,32 +445,32 @@ class Jailor(Role):
         self.is_roleblock_immune = False  # Jailor can be roleblocked
 
     def perform_day_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
-        if target:
-            self.jailed_target = target
-            target.is_jailed = True
-            return f"You have decided to jail {target.name} tonight."
-        return None
+        if not target:
+            return CANCEL_ACTION_MESSAGE
+        self.jailed_target = target
+        target.is_jailed = True
+        return get_role_message(self.name, "jail_target", Perspective.SELF, target_name=target.name)
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if game.day == 0:
-            return "You cannot execute on the first night."
+            return get_role_message(self.name, "execute_day_zero", Perspective.SELF)
         if not self.jailed_target:
-            return "You did not jail anyone."
+            return get_role_message(self.name, "execute_no_target", Perspective.SELF)
         
         # Check if Jailor is role-blocked
         if player.is_role_blocked:
-            return "You were role-blocked and cannot execute tonight."
+            return get_role_message(self.name, "execute_roleblocked", Perspective.SELF)
             
         if self.executes > 0:
             # Check if target cannot be executed
             if self.jailed_target.role.name == RoleName.PESTILENCE:
-                return "Your target is immune to execution! You cannot execute Pestilence."
+                return get_role_message(self.name, "execute_pestilence_immune", Perspective.SELF)
             
             # Check if Guardian Angel is protecting the target
             if hasattr(self.jailed_target, 'protected_by') and self.jailed_target.protected_by:
                 for protector in self.jailed_target.protected_by:
                     if protector.role.name == RoleName.GUARDIAN_ANGEL:
-                        return "A Guardian Angel protected your target from execution!"
+                        return get_role_message(self.name, "execute_ga_protected", Perspective.SELF)
             
             self.executes -= 1
             self.jailed_target.is_being_executed = True
@@ -464,8 +478,8 @@ class Jailor(Role):
             self.jailed_target.research_metrics['times_executed'] += 1
             self.jailed_target.research_metrics['death_cause'] = 'executed'
             game.register_attack(player, self.jailed_target, Attack.UNSTOPPABLE)
-            return f"You are executing {self.jailed_target.name}. You have {self.executes} executes left."
-        return "You are out of executes."
+            return get_role_message(self.name, "execute_success", Perspective.SELF, target_name=self.jailed_target.name, executes_left=self.executes)
+        return get_role_message(self.name, "execute_no_charges", Perspective.SELF)
 
 class Consigliere(Role):
     def __init__(self):
@@ -477,8 +491,8 @@ class Consigliere(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
         if not game or not target:
-            return "You must select a target."
-        return f"Your target, {target.name}, is a {target.role.name.value}."
+            return CANCEL_ACTION_MESSAGE
+        return game.config.get_consigliere_result(target.role.name)
 
 class Bootlegger(Role):
     def __init__(self):
@@ -492,13 +506,13 @@ class Bootlegger(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
         if not target:
-            return None
+            return CANCEL_ACTION_MESSAGE
         if target.role.name == RoleName.SERIAL_KILLER and not target.role.cautious:
-            return None
+            return None # Bootlegger is killed by uncautious SK
         if has_immunity(target.role, ImmunityType.ROLE_BLOCK):
-            return f"{target.name} could not be role-blocked."
+            return get_role_message(self.name, "roleblock_immune", Perspective.SELF, target_name=target.name)
         target.is_role_blocked = True
-        return f"You are distracting {target.name} tonight."
+        return get_role_message(self.name, "distract_target", Perspective.SELF, target_name=target.name)
 
 class Arsonist(Role):
     def __init__(self):
@@ -515,7 +529,7 @@ class Arsonist(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game:
-            return "Game state not available."
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
 
         # Default to NON_HARMFUL each night; we will override to ASTRAL for ignite/clean actions.
         self.visit_type = VisitType.NON_HARMFUL
@@ -525,21 +539,21 @@ class Arsonist(Role):
             self.visit_type = VisitType.ASTRAL  # stay home
             if player.is_doused:
                 player.is_doused = False
-                return "You have cleaned the gasoline off of yourself."
-            return "You cleaned yourself of gasoline, though you weren't doused."
+                return get_role_message(self.name, "clean_self_doused", Perspective.SELF)
+            return get_role_message(self.name, "clean_self_not_doused", Perspective.SELF)
 
         # Ignition (self-target)
         if target == player:
             self.visit_type = VisitType.ASTRAL  # does not visit anyone
             game.ignite_doused_players(player)
-            return "You have ignited all doused targets!"
+            return get_role_message(self.name, "ignite_success", Perspective.SELF)
 
         # Dousing another player
         if not target.is_doused:
             target.is_doused = True
-            return f"You have doused {target.name}."
+            return get_role_message(self.name, "douse_target", Perspective.SELF, target_name=target.name)
         else:
-            return f"{target.name} is already doused."
+            return get_role_message(self.name, "target_already_doused", Perspective.SELF, target_name=target.name)
     
     def perform_day_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None): pass
 
@@ -562,26 +576,26 @@ class Pirate(Role):
         self.visit_type = VisitType.HARMFUL
 
     def perform_day_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
-        if target and target != self.last_dueled_target:
-            self.duel_target = target
-            return f"{player.name} has decided to duel {target.name} tonight."
-        elif target == self.last_dueled_target:
-            return "You cannot duel the same player two nights in a row."
-        return None
+        if not target:
+            return CANCEL_ACTION_MESSAGE
+        if target == self.last_dueled_target:
+            return get_role_message(self.name, "duel_same_target_twice", Perspective.SELF)
+        self.duel_target = target
+        return get_role_message(self.name, "duel_target_chosen", Perspective.SELF, target_name=target.name)
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         actual_target = self.duel_target
         if not actual_target:
-            return "You stay on your ship tonight, searching for a target to plunder."
+            return get_role_message(self.name, "no_duel_target", Perspective.SELF)
             
         self.last_dueled_target = actual_target
         self.duel_target = None
         
         # Check if either player is jailed
         if player.is_jailed:
-            return "You were hauled off to Jail so you couldn't Duel your target."
+            return get_role_message(self.name, "duel_jailed_self", Perspective.SELF)
         if actual_target.is_jailed:
-            return "Your target was hauled off to jail so you couldn't Duel them."
+            return get_role_message(self.name, "duel_jailed_target", Perspective.SELF)
             
         # Resolve the duel
         duel_won, pirate_move, target_defense = self.resolve_duel()
@@ -593,16 +607,16 @@ class Pirate(Role):
             # Pirate wins - kill the target (plunder will be awarded by game engine)
             game.register_attack(player, actual_target, self.attack, is_duel_win=True)
                 
-            return f"You chose {pirate_move.value} and defeated {actual_target.name}'s {target_defense.value}. You won the Duel! Plunders: {self.plunders + 1}/2"
+            return get_role_message(self.name, "duel_win", Perspective.SELF, pirate_move=pirate_move.value, target_defense=target_defense.value, plunders_left=self.plunders + 1)
         else:
             # Pirate loses - check for Serial Killer cautious interaction
             if isinstance(actual_target.role, SerialKiller) and not actual_target.role.cautious:
                 # Non-cautious SK kills the Pirate for visiting
                 game.register_attack(actual_target, player, actual_target.role.attack, is_primary=False)
                 player.last_will_bloodied = True
-                return f"You chose {pirate_move.value} but were bested by {actual_target.name}'s {target_defense.value}. You lost the Duel and were killed by the Serial Killer!"
+                return get_role_message(self.name, "duel_lose_sk_killed", Perspective.SELF, pirate_move=pirate_move.value, target_defense=target_defense.value)
             
-            return f"You chose {pirate_move.value} but were bested by {actual_target.name}'s {target_defense.value}. You lost the Duel!"
+            return get_role_message(self.name, "duel_lose", Perspective.SELF, pirate_move=pirate_move.value, target_defense=target_defense.value)
 
     def resolve_duel(self):
         """Resolve the pirate duel using rock-paper-scissors style mechanics.
@@ -672,15 +686,17 @@ class Veteran(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         #The decision to alert is made by targeting self.
+        if not target:
+            return CANCEL_ACTION_MESSAGE
         if target == player:
             if self.alerts > 0:
                 self.alerts -= 1
                 self.is_on_alert = True
                 player.defense = Defense.BASIC  # On alert the Vet gains BASIC defense
-                return f"You have decided to go on alert. You have {self.alerts} alerts remaining."
+                return get_role_message(self.name, "alert_success", Perspective.SELF, alerts_left=self.alerts)
             else:
-                return "You have no alerts left."
-        return "You have decided not to go on alert."
+                return get_role_message(self.name, "alert_no_charges", Perspective.SELF)
+        return get_role_message(self.name, "no_alert_chosen", Perspective.SELF)
 
     def perform_day_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         #Reset alert status at the beginning of the day
@@ -707,28 +723,28 @@ class Psychic(Role):
         We simply sample living players (excluding self) and reveal the list.
         """
         if not game:
-            return None
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
 
         import random
         candidates = [p for p in game.players if p.is_alive and p != player]
         if len(candidates) < 2:
-            return None
+            return get_role_message(self.name, "psychic_not_enough_players", Perspective.SELF)
 
         #night index == game.day (day counter increments before night)
         if game.day % 2 == 1:  #Odd night → Evil vision
             sample_size = min(3, len(candidates))
             chosen = random.sample(candidates, sample_size)
             evil = random.choice(chosen)
-            msg = f"Your vision: {', '.join(p.name for p in chosen)}. One of them is evil."
-            player.notifications.append(msg)
-            return "You focus on your crystal ball… a dark presence emerges."
+            msg = get_role_message(self.name, "psychic_evil_vision", Perspective.SELF, player_list=', '.join(p.name for p in chosen))
+            game.chat.add_player_notification(player, msg)
+            return get_role_message(self.name, "psychic_focus_evil", Perspective.SELF)
         else:  #Even night → Good vision
             sample_size = min(2, len(candidates))
             chosen = random.sample(candidates, sample_size)
             good = random.choice(chosen)
-            msg = f"Your vision: {', '.join(p.name for p in chosen)}. One of them is good."
-            player.notifications.append(msg)
-            return "Your divination reveals a glimpse of hope."
+            msg = get_role_message(self.name, "psychic_good_vision", Perspective.SELF, player_list=', '.join(p.name for p in chosen))
+            game.chat.add_player_notification(player, msg)
+            return get_role_message(self.name, "psychic_focus_good", Perspective.SELF)
 
 class Spy(Role):
     def __init__(self):
@@ -741,9 +757,9 @@ class Spy(Role):
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         # The Spy's passive intel is processed in Game._process_spy_intel.
         # Here we simply confirm the bug choice for player feedback.
-        if target:
-            return f"You have decided to bug {target.name}'s house.";
-        return "You are listening for whispers and watching the villains."
+        if not target:
+            return CANCEL_ACTION_MESSAGE
+        return get_role_message(self.name, "bug_target", Perspective.SELF, target_name=target.name)
 
 class Tracker(Role):
     def __init__(self):
@@ -756,7 +772,7 @@ class Tracker(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
-            return "You must select a target."
+            return CANCEL_ACTION_MESSAGE
         
         # Get all non-astral visits made by the target
         from .enums import VisitType
@@ -772,14 +788,14 @@ class Tracker(Role):
         
         if non_astral_visits:
             if len(non_astral_visits) == 1:
-                result = f"Your target visited {non_astral_visits[0].name} tonight."
+                result = get_role_message(self.name, "track_single_visit", Perspective.SELF, target_name=target.name, visited_player=non_astral_visits[0].name)
             else:
                 names = [v.name for v in non_astral_visits]
-                result = f"Your target visited {', '.join(names)} tonight."
+                result = get_role_message(self.name, "track_multiple_visits", Perspective.SELF, target_name=target.name, visited_players=', '.join(names))
         else:
-            result = "Your target did not visit anyone."
+            result = get_role_message(self.name, "track_no_visits", Perspective.SELF, target_name=target.name)
         
-        player.notifications.append(result)
+        game.chat.add_player_notification(player, result)
         return result
 
 class Crusader(Role):
@@ -792,9 +808,9 @@ class Crusader(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
         if not target:
-            return None
+            return CANCEL_ACTION_MESSAGE
         target.protected_by.append(player)
-        return f"You are protecting {target.name} tonight."
+        return get_role_message(self.name, "protect_target", Perspective.SELF, target_name=target.name)
 
 class Trapper(Role):
     def __init__(self):
@@ -815,7 +831,7 @@ class Trapper(Role):
         • Choose self ⇒ dismantle current (building or active) trap.
         """
         if not game:
-            return None
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
 
         # Arm trap if construction finished (this happens at start of the *second* night)
         if self.building and not self.active:
@@ -828,7 +844,7 @@ class Trapper(Role):
             if self.building:
                 self.building = False
                 self.trap_location = None
-                return "You stop working on your unfinished trap."
+                return get_role_message(self.name, "dismantle_building_trap", Perspective.SELF)
             if self.active:
                 # deactivate trap in game.traps
                 for tr in game.traps:
@@ -837,19 +853,19 @@ class Trapper(Role):
                         break
                 self.active = False
                 self.trap_location = None
-                return "You dismantle your trap.";
-            return "You have no trap to dismantle.";
+                return get_role_message(self.name, "dismantle_active_trap", Perspective.SELF)
+            return get_role_message(self.name, "no_trap_to_dismantle", Perspective.SELF)
 
         # Building new trap
         if self.building or self.active:
-            return "You already have a trap; dismantle it first.";
+            return get_role_message(self.name, "trap_already_exists", Perspective.SELF)
 
         if not target:
-            return "You must select someone to set a trap on.";
+            return CANCEL_ACTION_MESSAGE
 
         self.building = True
         self.trap_location = target
-        return f"You begin constructing a trap at {target.name}'s house. It will be ready tomorrow night."
+        return get_role_message(self.name, "build_trap", Perspective.SELF, target_name=target.name)
 
 #────────────────────────────────────────────────
 #Town Killing – Vampire Hunter
@@ -869,7 +885,7 @@ class VampireHunter(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game:
-            return None
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
 
         # Auto-promote to Vigilante once all Vampires are dead.
         if not any(p.is_alive and p.role.name == RoleName.VAMPIRE for p in game.players):
@@ -877,19 +893,19 @@ class VampireHunter(Role):
                 new_role = Vigilante()
                 new_role.bullets = 1
                 player.assign_role(new_role)
-                player.notifications.append("With every Vampire destroyed you take up a gun – you are now a Vigilante (1 bullet)!")
-            return "You have become a Vigilante."  # No further action tonight.
+                game.chat.add_player_notification(player, get_role_message(self.name, "promote_to_vigilante", Perspective.SELF))
+            return get_role_message(self.name, "already_vigilante", Perspective.SELF)  # No further action tonight.
 
         # If no target supplied just wait / listen to chat.
         if not target:
-            return "You spend the night listening for the undead."
+            return get_role_message(self.name, "no_target_listen_for_undead", Perspective.SELF)
 
         if target.role.name == RoleName.VAMPIRE:
             # Stake the Vampire with Powerful attack
             game.register_attack(player, target, Attack.POWERFUL)
-            return f"You stake {target.name} – a foul Vampire!"
+            return get_role_message(self.name, "stake_vampire", Perspective.SELF, target_name=target.name)
         else:
-            return f"You inspected {target.name} – they do not appear to be a Vampire."
+            return get_role_message(self.name, "inspect_not_vampire", Perspective.SELF, target_name=target.name)
 
 #────────────────────────────────────────────────
 #Town Support – Raises a dead Town corpse each night to use its ability once.
@@ -938,26 +954,26 @@ class Retributionist(Role):
     def perform_night_action(self, player: 'Player', target: 'tuple[Player, Player]' = None, game: 'Game' = None):
         """Expect *target* to be a tuple (corpse, second_target)."""
         if not game or not target or not isinstance(target, tuple) or len(target) != 2:
-            return "You must choose a corpse and a target (corpse,target)."
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "invalid_target_format")
 
         corpse, second_target = target
 
         # Validate corpse eligibility
         if corpse.is_alive:
-            return f"{corpse.name} is still alive – you can only use dead Town members."
+            return get_role_message(self.name, "raise_corpse_alive", Perspective.SELF, corpse_name=corpse.name)
         if corpse in self._used_corpses:
-            return f"{corpse.name}'s corpse has already rotted and cannot be used again."
+            return get_role_message(self.name, "raise_corpse_rotted", Perspective.SELF, corpse_name=corpse.name)
         if corpse.role.faction != Faction.TOWN:
-            return f"{corpse.name} was not aligned with the Town."
+            return get_role_message(self.name, "raise_corpse_not_town", Perspective.SELF, corpse_name=corpse.name)
         if corpse.role.is_unique or corpse.role.name in self._UNUSABLE_ROLES:
-            return f"You cannot raise a {corpse.role.name.value}."
+            return get_role_message(self.name, "raise_corpse_unusable_role", Perspective.SELF, corpse_role=corpse.role.name.value)
 
         # Temporarily re-animate the corpse to perform its ability.
         original_state = corpse.is_alive
         corpse.is_alive = True  # allow ability code to run
         
         # Add notification to the corpse about being raised
-        corpse.notifications.append("You have been risen from the dead and compelled into action.")
+        game.chat.add_player_notification(corpse, get_role_message(self.name, "corpse_raised", Perspective.OTHER))
 
         try:
             result = corpse.role.perform_night_action(corpse, second_target, game)
@@ -971,7 +987,7 @@ class Retributionist(Role):
         # Tracker/Lookout visibility (simplified): record visits for corpse
         corpse.visit(second_target)
 
-        return f"You raised {corpse.name}'s corpse – {result}"
+        return get_role_message(self.name, "raise_success", Perspective.SELF, corpse_name=corpse.name, result=result)
 
 class Transporter(Role):
     def __init__(self):
@@ -981,23 +997,23 @@ class Transporter(Role):
         self.faction = get_role_faction(self.name)
         self.is_roleblock_immune = True
         self.control_immune = True
-        self.action_priority = Priority.HIGHEST
+        self.action_priority = Priority.PRIORITY_1_HIGHEST
         self.visit_type = VisitType.NON_HARMFUL
         self.transport_targets = None  # Tuple of (player1, player2) to transport
 
     def perform_night_action(self, player: 'Player', target: 'tuple[Player, Player]' = None, game: 'Game' = None):
         if not game or not target or not isinstance(target, tuple) or len(target) != 2:
-            return "You must choose two people to transport."
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "invalid_target_format")
 
         a, b = target
         
         # Cannot transport same person with themselves
         if a == b:
-            return "You cannot transport someone with themselves."
+            return get_role_message(self.name, "transport_self_target", Perspective.SELF)
         
         # Cannot transport jailed players
         if a.is_jailed or b.is_jailed:
-            return "One of your targets was in jail, so you could not transport them."
+            return get_role_message(self.name, "transport_jailed_target", Perspective.SELF)
         
         # Store transport targets for processing in game
         self.transport_targets = (a, b)
@@ -1006,7 +1022,7 @@ class Transporter(Role):
         player.visit(a)
         player.visit(b)
         
-        return f"You will transport {a.name} with {b.name}."
+        return get_role_message(self.name, "transport_success", Perspective.SELF, target1_name=a.name, target2_name=b.name)
 
 #────────────────────────────────────────────────
 #Mafia Deception – Disguiser
@@ -1023,18 +1039,18 @@ class Disguiser(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
-            return "You must select a target to disguise a Mafia member as."
+            return CANCEL_ACTION_MESSAGE
 
         if target.role.faction == Faction.MAFIA:
-            return "You cannot disguise as another Mafia member."
+            return get_role_message(self.name, "disguise_target_is_mafia", Perspective.SELF)
         
         if target.is_jailed:
-            return "You cannot disguise as someone who is jailed."
+            return get_role_message(self.name, "disguise_target_jailed", Perspective.SELF)
 
         # Find a living Mafia member to disguise (prioritize non-Disguiser)
         mafia_members = [p for p in game.players if p.is_alive and p.role.faction == Faction.MAFIA and p != player]
         if not mafia_members:
-            return "There are no other living Mafia members to disguise."
+            return get_role_message(self.name, "no_mafia_to_disguise", Perspective.SELF)
         
         # Choose the first available Mafia member (could be randomized)
         mafia_member = mafia_members[0]
@@ -1053,7 +1069,7 @@ class Disguiser(Role):
         self.disguise_target = target
         self.mafia_target = mafia_member
         
-        return f"You have disguised {mafia_member.name} as a {target.role.name.value}."
+        return get_role_message(self.name, "disguise_success", Perspective.SELF, mafia_member_name=mafia_member.name, target_role=target.role.name.value)
 
 #Mafia Deception – Forger
 class Forger(Role):
@@ -1068,13 +1084,13 @@ class Forger(Role):
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
         if self.charges <= 0:
-            return "You have no forging ink left."
+            return get_role_message(self.name, "forger_no_charges", Perspective.SELF)
         if not game or not target:
-            return "You must choose someone to forge."
+            return CANCEL_ACTION_MESSAGE
 
         target.was_forged = True
         self.charges -= 1
-        return f"You forged {target.name}'s last will. ({self.charges} charges left)"
+        return get_role_message(self.name, "forger_success", Perspective.SELF, target_name=target.name, charges_left=self.charges)
 
 #Mafia Deception – Framer
 class Framer(Role):
@@ -1088,9 +1104,9 @@ class Framer(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
-            return None
+            return CANCEL_ACTION_MESSAGE
         target.is_framed = True
-        return f"You framed {target.name} tonight."
+        return get_role_message(self.name, "frame_target", Perspective.SELF, target_name=target.name)
 
 #────────────────────────────────────────────────
 #Mafia Deception – Hypnotist
@@ -1113,11 +1129,11 @@ class Hypnotist(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
-            return None
+            return CANCEL_ACTION_MESSAGE
         import random
         msg = random.choice(self._messages)
-        target.notifications.append(msg)
-        return f"You hypnotized {target.name} – they will see: '{msg}'"
+        game.chat.add_player_notification(target, msg)
+        return get_role_message(self.name, "hypnotize_success", Perspective.SELF, target_name=target.name, hypnotized_message=msg)
 
 #Mafia Deception – Janitor
 class Janitor(Role):
@@ -1132,16 +1148,16 @@ class Janitor(Role):
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
         if not game or not target:
-            return "You must select a target to clean."
+            return CANCEL_ACTION_MESSAGE
 
         if self.charges <= 0:
-            return "You are out of cleaning supplies."  # no charges
+            return get_role_message(self.name, "janitor_no_charges", Perspective.SELF)
 
         # Mark the target for potential cleaning if they die.
         target.cleaned_by = player
 
         # We will only consume a charge if the clean actually triggers (handled in Game._announce_deaths).
-        return f"You will attempt to clean {target.name}'s body tonight."
+        return get_role_message(self.name, "janitor_attempt_clean", Perspective.SELF, target_name=target.name)
 
 #────────────────────────────────────────────────
 #Neutral Benign – Amnesiac
@@ -1153,21 +1169,21 @@ class Amnesiac(Role):
         self.faction = get_role_faction(self.name)
         self.detection_immune = True
         self.visit_type = VisitType.ASTRAL  # assumed astral per wiki
-        self.action_priority = Priority.FINALIZATION  # very low priority
+        self.action_priority = Priority.PRIORITY_6  # very low priority
         self.remembered = False
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
-            return "You must select a corpse to remember."
+            return CANCEL_ACTION_MESSAGE
 
         if target.is_alive:
-            return "You may only remember roles from the graveyard."
+            return get_role_message(self.name, "remember_target_alive", Perspective.SELF)
 
         # Prevent duplicate remembers of unique roles
         if target.role.is_unique:
             # If any living player already has that role, fail.
             if any(p.is_alive and p.role.name == target.role.name for p in game.players):
-                return f"Someone already occupies the unique role {target.role.name.value}. Your memory fails."
+                return get_role_message(self.name, "remember_unique_role_taken", Perspective.SELF, role_name=target.role.name.value)
 
         # Edge-cases: Godfather / Coven Leader / Pestilence special downgrades
         remembered_role_name = target.role.name
@@ -1185,8 +1201,8 @@ class Amnesiac(Role):
 
         # Mark the intention – actual switch happens at dawn so defense doesn't apply tonight
         player.remember_role_name = remembered_role_name
-        player.notifications.append(f"You will remember being a {remembered_role_name.value} tomorrow.")
-        return f"You focus on memories of being a {remembered_role_name.value}."
+        game.chat.add_player_notification(player, get_role_message(self.name, "remember_success_notification", Perspective.SELF, role_name=remembered_role_name.value))
+        return get_role_message(self.name, "remember_success_action", Perspective.SELF, role_name=remembered_role_name.value)
 
 class Ambusher(Role):
     def __init__(self):
@@ -1194,16 +1210,16 @@ class Ambusher(Role):
         self.name = RoleName.AMBUSHER
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
-        self.action_priority = Priority.HIGHEST  #pick ambush location
+        self.action_priority = Priority.PRIORITY_1  #pick ambush location
         self.attack = Attack.BASIC
         self.visit_type = VisitType.HARMFUL
         self.ambush_location: 'Player' | None = None
 
     def perform_night_action(self, player: 'Player', target: 'Player', game: 'Game' = None):
         if not target or not game:
-            return "You must select a target to ambush."
+            return CANCEL_ACTION_MESSAGE
         self.ambush_location = target
-        return f"You are waiting outside {target.name}'s house to ambush visitors."
+        return get_role_message(self.name, "ambush_target", Perspective.SELF, target_name=target.name)
 
 class Blackmailer(Role):
     def __init__(self):
@@ -1215,11 +1231,11 @@ class Blackmailer(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game or not target:
-            return "You must select a target to blackmail."
+            return CANCEL_ACTION_MESSAGE
 
         target.is_blackmailed = True
-        target.notifications.append("You felt a sinister presence last night. You are being blackmailed and cannot speak today!")
-        return f"You have decided to blackmail {target.name}."
+        game.chat.add_player_notification(target, get_role_message(self.name, "blackmailed_notification", Perspective.OTHER))
+        return get_role_message(self.name, "blackmail_success", Perspective.SELF, target_name=target.name)
 
     def get_info(self):
         #In a real game, this would allow reading whispers.
@@ -1246,9 +1262,9 @@ class GuardianAngel(Role):
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         #Guardian angel always protects their assigned target, ignoring provided target.
         if not self.protect_target:
-            return "No assigned target to protect."
+            return get_role_message(self.name, "no_assigned_target", Perspective.SELF)
         self.protect_target.protected_by.append(player)
-        return f"You are shielding {self.protect_target.name} tonight."
+        return get_role_message(self.name, "shield_target", Perspective.SELF, target_name=self.protect_target.name)
 
 class Survivor(Role):
     def __init__(self):
@@ -1264,8 +1280,8 @@ class Survivor(Role):
         if self.vests > 0:
             self.vests -= 1
             player.defense = Defense.BASIC
-            return f"You used a bulletproof vest tonight. Vests left: {self.vests}."
-        return "You have no vests remaining."
+            return get_role_message(self.name, "use_vest_success", Perspective.SELF, vests_left=self.vests)
+        return get_role_message(self.name, "use_vest_no_charges", Perspective.SELF)
 
 class Executioner(Role):
     """Neutral Evil role whose sole goal is to get their randomly-assigned Town target lynched."""
@@ -1294,7 +1310,7 @@ class Executioner(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         """Executioner has no night power; return a flavour string for logs."""
-        return "You obsess over getting your target lynched…"
+        return get_role_message(self.name, "no_night_action", Perspective.SELF)
 
 class Jester(Role):
     def __init__(self):
@@ -1310,13 +1326,13 @@ class Jester(Role):
     def perform_day_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         #This is for haunting. It should only be called if the jester is lynched.
         if not target:
-            return "You must select a target to haunt."
+            return CANCEL_ACTION_MESSAGE
         if not game:
-            return
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
         
         #Jester's haunt is an unstoppable attack
         game.register_attack(player, target, Attack.UNSTOPPABLE, is_haunt=True)
-        return f"You have chosen to haunt {target.name}. Their death will be a spectacle!"
+        return get_role_message(self.name, "jester_haunt_success", Perspective.SELF, target_name=target.name)
 
     def on_lynch(self, game: 'Game'):
         #In a real game, this would trigger the haunting ability.
@@ -1343,28 +1359,35 @@ class Witch(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game:
-            return
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
 
         # Expect the player to have submitted a tuple (control_target, force_target)
         # through the InteractionHandler stored in game.night_actions.
         try:
             control_target, force_target = game.night_actions[player]
         except (KeyError, TypeError, ValueError):
-            return "You must select two targets to perform your dark magic."
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "invalid_target_format")
 
         if not control_target or not force_target:
-            return "You must select two targets."
+            return CANCEL_ACTION_MESSAGE
 
         if control_target.role.control_immune:
-            control_target.notifications.append("Someone tried to control you but you were immune!")
-            return "Your target was immune to control!"
+            game.chat.add_player_notification(control_target, get_role_message(self.name, "control_immune_notification", Perspective.OTHER))
+            return get_role_message(self.name, "control_immune_target", Perspective.SELF)
 
         # Apply control – replace their submitted action with the forced one
         game.night_actions[control_target] = force_target
         control_target.is_controlled = True
-        control_target.notifications.append(f"You were controlled by a Witch! You were forced to target {force_target.name}.")
+        game.chat.add_player_notification(control_target, get_role_message(self.name, "controlled_notification", Perspective.OTHER, target_name=force_target.name))
 
-        return f"You have controlled {control_target.name} and forced them to target {force_target.name}."
+        msg = get_role_message(self.name, "control_success", Perspective.SELF, control_target_name=control_target.name, force_target_name=force_target.name)
+
+        # Necronomicon bonus attack (Powerful) on the victim
+        if self.has_necronomicon:
+            game.register_attack(player, victim, Attack.POWERFUL)
+            msg += get_role_message(self.name, "control_necronomicon_attack", Perspective.SELF, victim_name=victim.name)
+
+        return msg
 
     def on_attacked(self, attacker):
         if not self.has_been_attacked:
@@ -1398,15 +1421,15 @@ class Juggernaut(Role):
 
     def perform_night_action(self, player: 'Player', target: 'Player' = None, game: 'Game' = None):
         if not game:
-            return None
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
 
         # Before first kill: only act on full-moon (even) nights
         if self.kills == 0 and game.day % 2 != 0:
-            return "It is not a full moon. You wait to build your strength."
+            return get_role_message(self.name, "juggernaut_no_full_moon", Perspective.SELF)
 
         # If no target chosen, stay home (no effect)
         if not target:
-            return "You chose no target tonight."
+            return CANCEL_ACTION_MESSAGE
 
         self._update_power()
 
@@ -1416,10 +1439,10 @@ class Juggernaut(Role):
             for v in target.targeted_by:
                 if v.is_alive:
                     game.register_attack(player, v, self.attack, is_primary=False)
-            return f"You rampage at {target.name}'s house with {self.attack.name.lower()} force!"
+            return get_role_message(self.name, "juggernaut_rampage", Perspective.SELF, target_name=target.name, attack_strength=self.attack.name.lower())
         else:
             game.register_attack(player, target, self.attack)
-            return f"You strike {target.name} with {self.attack.name.lower()} force."
+            return get_role_message(self.name, "juggernaut_strike", Perspective.SELF, target_name=target.name, attack_strength=self.attack.name.lower())
 
     #Called by game when a kill is confirmed (hook not yet wired; simple public method)
     def register_kill(self):
@@ -1455,19 +1478,19 @@ class Werewolf(Role):
         • If trying to skip on full moon, forced to rampage at home.
         """
         if not game:
-            return None
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
 
         # Full moon gating
         if not self._is_full_moon(game):
-            return "It is not a full moon. You stay home snarling."
+            return get_role_message(self.name, "werewolf_no_full_moon", Perspective.SELF)
 
         # In jail – Jailor did not execute ⇒ strike Jailor
         if player.is_jailed:
             jailor = game.find_player_by_role(RoleName.JAILOR)
             if jailor and jailor.is_alive and not getattr(jailor.role, 'executing', False):
                 game.register_attack(player, jailor, self.attack)
-                return "You transform inside the jail and maul the Jailor!"
-            return "You were executed in jail."  # handled elsewhere
+                return get_role_message(self.name, "werewolf_maul_jailor", Perspective.SELF)
+            return get_role_message(self.name, "werewolf_executed_in_jail", Perspective.SELF)  # handled elsewhere
 
         # Check if trying to skip - on full moon, forced to rampage at home
         if target is None:
@@ -1476,8 +1499,8 @@ class Werewolf(Role):
             for v in victims:
                 game.register_attack(player, v, self.attack, is_primary=False)
             if victims:
-                return f"You cannot control your bloodlust on a full moon! You rampage at home and tear apart: {', '.join(v.name for v in victims)}."
-            return "You cannot control your bloodlust on a full moon! You rampage at home but no one came."
+                return get_role_message(self.name, "werewolf_rampage_home_visitors", Perspective.SELF, visitor_list=', '.join(v.name for v in victims))
+            return get_role_message(self.name, "werewolf_rampage_home_no_visitors", Perspective.SELF)
 
         # Determine rampage location
         if target == player:
@@ -1486,22 +1509,22 @@ class Werewolf(Role):
             for v in victims:
                 game.register_attack(player, v, self.attack, is_primary=False)
             if victims:
-                return f"You rampage at home and tear apart: {', '.join(v.name for v in victims)}."
-            return "You rampage at home but no one came."
+                return get_role_message(self.name, "werewolf_rampage_home_visitors", Perspective.SELF, visitor_list=', '.join(v.name for v in victims))
+            return get_role_message(self.name, "werewolf_rampage_home_no_visitors", Perspective.SELF)
 
         # If target jailed, hit visitors only (not Jailor or prisoner)
         if target.is_jailed:
             visitors = [v for v in target.targeted_by if v.is_alive and v != player]
             for v in visitors:
                 game.register_attack(player, v, self.attack, is_primary=False)
-            return f"Your prey was in jail; you ravaged their would-be visitors instead!"
+            return get_role_message(self.name, "werewolf_rampage_jailed_target", Perspective.SELF, target_name=target.name)
 
         # Normal rampage at target's house - attack target and ALL visitors
         game.register_attack(player, target, self.attack)
         for v in target.targeted_by:
             if v.is_alive and v != player:  # Don't attack self
                 game.register_attack(player, v, self.attack, is_primary=False)
-        return f"You rampage at {target.name}'s house, mauling everyone inside!"
+        return get_role_message(self.name, "werewolf_rampage_target", Perspective.SELF, target_name=target.name)
 
 #Neutral Chaos – Plaguebearer / Pestilence
 class Plaguebearer(Role):
@@ -1515,44 +1538,44 @@ class Plaguebearer(Role):
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
         if not game:
-            return "You must select a target."
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
 
         # If targeting self or no target, stay home and infect visitors
         if not target or target == player:
             for visitor in player.targeted_by:
                 if visitor.is_alive and not visitor.is_infected:
                     visitor.is_infected = True
-                    visitor.notifications.append("You feel a strange plague stirring within you.")
+                    game.chat.add_player_notification(visitor, get_role_message(self.name, "infected_notification", Perspective.OTHER))
                     print(f"[Plaguebearer] {visitor.name} was infected by visiting {player.name}.")
-            result = "You spread your plague to anyone who visits you."
+            result = get_role_message(self.name, "plaguebearer_infect_visitors", Perspective.SELF)
         else:
             # Visit target and infect them + their visitors
             if not target.is_infected:
                 target.is_infected = True
-                target.notifications.append("You feel a strange plague stirring within you.")
+                game.chat.add_player_notification(target, get_role_message(self.name, "infected_notification", Perspective.OTHER))
                 print(f"[Plaguebearer] {player.name} infected {target.name}.")
             
             # Also infect anyone visiting the target
             for visitor in target.targeted_by:
                 if visitor.is_alive and not visitor.is_infected:
                     visitor.is_infected = True
-                    visitor.notifications.append("You feel a strange plague stirring within you.")
+                    game.chat.add_player_notification(visitor, get_role_message(self.name, "infected_notification", Perspective.OTHER))
                     print(f"[Plaguebearer] {visitor.name} was infected by visiting {target.name}.")
             
-            result = f"You infected {target.name} and anyone who visited them."
+            result = get_role_message(self.name, "plaguebearer_infect_target_and_visitors", Perspective.SELF, target_name=target.name)
 
         # Check if all others are infected (transformation condition)
         others = [p for p in game.players if p != player and p.is_alive]
         if others and all(p.is_infected for p in others):
             player.assign_role(Pestilence())
-            player.notifications.append("You have become Pestilence, Horseman of the Apocalypse!")
-            return "The plague has consumed the town! You transform into Pestilence."
+            game.chat.add_player_notification(player, get_role_message(self.name, "plaguebearer_transform_pestilence", Perspective.SELF))
+            return get_role_message(self.name, "plaguebearer_transform_pestilence_action", Perspective.SELF)
 
         # Message feedback
         if target and target != player:
-            return f"You infected {target.name} and anyone who visited them."
+            return get_role_message(self.name, "plaguebearer_infect_target_and_visitors", Perspective.SELF, target_name=target.name)
         else:
-            return "You linger at home, ready to infect any visitor."
+            return get_role_message(self.name, "plaguebearer_infect_visitors", Perspective.SELF)
 
 class Pestilence(Role):
     def __init__(self):
@@ -1562,12 +1585,12 @@ class Pestilence(Role):
         self.faction = get_role_faction(self.name)
         self.attack = Attack.UNSTOPPABLE
         self.defense = Defense.INVINCIBLE
-        self.action_priority = Priority.KILLING
+        self.action_priority = Priority.PRIORITY_5
         self.visit_type = VisitType.HARMFUL
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
         if not game or not target:
-            return None
+            return CANCEL_ACTION_MESSAGE
         #Rampage like Werewolf every night – attack target and everyone who visits them.
         #Pestilence should NEVER damage itself, even if it chooses to remain at home.
         
@@ -1576,14 +1599,14 @@ class Pestilence(Role):
             for v in player.targeted_by:
                 if v.is_alive and v != player:
                     game.register_attack(player, v, self.attack, is_primary=False)
-            return "You rampage at home, striking all who dared approach you."
+            return get_role_message(self.name, "pestilence_rampage_home", Perspective.SELF)
 
         # Normal rampage on another player
         game.register_attack(player, target, self.attack)
         for v in target.targeted_by:
             if v.is_alive and v != player:  # exclude self to avoid suicide
                 game.register_attack(player, v, self.attack, is_primary=False)
-        return f"You rampage at {target.name}."
+        return get_role_message(self.name, "pestilence_rampage_target", Perspective.SELF, target_name=target.name)
 
 #Neutral Chaos – Vampire
 class Vampire(Role):
@@ -1601,12 +1624,12 @@ class Vampire(Role):
 
     def perform_night_action(self, player:'Player', target:'Player'=None, game:'Game'=None):
         if not game:
-            return "You decided not to bite tonight."
+            return CANCEL_ACTION_MESSAGE.get_message(self.name, Perspective.SELF, "game_state_unavailable")
         
         # Check if on cooldown
         if self.bite_cooldown > 0:
             self.bite_cooldown -= 1
-            return "You must wait another night before biting again."
+            return get_role_message(self.name, "bite_cooldown", Perspective.SELF)
         
         # Vampire voting system - collect all vampire votes
         vampires = [p for p in game.players if p.is_alive and p.role.name == RoleName.VAMPIRE]
@@ -1621,7 +1644,7 @@ class Vampire(Role):
                 vampire_votes[vamp_target] += 1
         
         if not vampire_votes:
-            return "No vampires voted to bite anyone tonight."
+            return get_role_message(self.name, "no_vampire_votes", Perspective.SELF)
         
         # Determine target based on weighted random selection
         import random
@@ -1646,7 +1669,7 @@ class Vampire(Role):
         
         # Only the youngest vampire actually performs the visit
         if player != youngest:
-            return f"The vampires voted to bite {selected_target.name}. {youngest.name} will perform the bite."
+            return get_role_message(self.name, "youngest_vampire_bites", Perspective.SELF, youngest_name=youngest.name, target_name=selected_target.name)
         
         # Youngest vampire performs the bite
         return self._perform_bite(player, selected_target, game, vampires)
@@ -1659,14 +1682,14 @@ class Vampire(Role):
         if target.role.name == RoleName.VAMPIRE_HUNTER:
             # Vampire Hunter kills the biting vampire
             game.register_attack(target, player, Attack.BASIC)
-            return f"You tried to bite {target.name}, but they were a Vampire Hunter and killed you!"
+            return get_role_message(self.name, "bite_vampire_hunter_killed", Perspective.SELF, target_name=target.name)
         
         if target.role.name == RoleName.VAMPIRE:
-            return f"{target.name} is already a vampire."
+            return get_role_message(self.name, "bite_target_already_vampire", Perspective.SELF, target_name=target.name)
         
         # Check if target has defense
         if target.defense != Defense.NONE:
-            return f"You tried to bite {target.name}, but their defense was too strong!"
+            return get_role_message(self.name, "bite_target_defense_too_strong", Perspective.SELF, target_name=target.name)
         
         # Check vampire count - if 4+ vampires, kill instead of convert
         if vampire_count >= 4:
@@ -1684,12 +1707,12 @@ class Vampire(Role):
                 # Reset cooldown for all vampires since they killed
                 for vamp in vampires:
                     vamp.role.bite_cooldown = 0
-                return f"You bit {target.name} and killed them (4+ vampires or non-convertible target)."
+                return get_role_message(self.name, "bite_killed_non_convertible_or_max_vamps", Perspective.SELF, target_name=target.name)
             else:
                 game.register_attack(player, target, self.attack)
                 for vamp in vampires:
                     vamp.role.bite_cooldown = 0
-                return f"You bit {target.name} and killed them (vampire capacity reached)."
+                return get_role_message(self.name, "bite_killed_vampire_capacity_reached", Perspective.SELF, target_name=target.name)
         
         # Check if target is convertible
         convertible_roles = {
@@ -1706,24 +1729,24 @@ class Vampire(Role):
             # Reset cooldown for all vampires since they killed
             for vamp in vampires:
                 vamp.role.bite_cooldown = 0
-            return f"You bit {target.name} and killed them (non-convertible role)."
+            return get_role_message(self.name, "bite_killed_non_convertible_role", Perspective.SELF, target_name=target.name)
         
         # Success - convert to vampire
         target.assign_role(Vampire())
         target.role.vampire_age = max(getattr(v.role, 'vampire_age', 0) for v in vampires) + 1
-        target.notifications.append("Cold fangs pierce your neck – you have become a Vampire! Embrace the night.")
+        game.chat.add_player_notification(target, get_role_message(self.name, "converted_to_vampire_notification", Perspective.OTHER))
         
         # Set cooldown for all vampires
         for vamp in vampires + [target]:
             vamp.role.bite_cooldown = 1
         
         # Notify all vampires of the bite
-        bite_msg = f"The Vampires visited {target.name} last night."
+        bite_msg = get_role_message(self.name, "vampire_visited_target", Perspective.OTHER, target_name=target.name)
         for vamp in vampires + [target]:
-            vamp.notifications.append(bite_msg)
+            game.chat.add_player_notification(vamp, bite_msg)
         
         print(f"[Vampire] {target.name} has been converted to a Vampire!")
-        return f"You successfully converted {target.name} into a vampire."
+        return get_role_message(self.name, "bite_success", Perspective.SELF, target_name=target.name)
 
 class CovenLeader(Role):
     def __init__(self):
@@ -1732,7 +1755,7 @@ class CovenLeader(Role):
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
         self.is_coven = True
-        self.action_priority = Priority.CONTROL_PROTECTION
+        self.action_priority = Priority.PRIORITY_2
         self.is_roleblock_immune = True
         self.control_immune = True
         self.visit_type = VisitType.HARMFUL
@@ -1777,7 +1800,7 @@ class Medusa(Role):
         self.faction = get_role_faction(self.name)
         self.is_coven = True
         self.visit_type = VisitType.ASTRAL
-        self.action_priority = Priority.SUPPORT_DECEPTION  #stone gaze before investigator
+        self.action_priority = Priority.PRIORITY_3  #stone gaze before investigator
         self.stone_charges = 3
 
     def perform_night_action(self, player, target=None, game=None):
@@ -1807,7 +1830,7 @@ class HexMaster(Role):
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
         self.is_coven = True
-        self.action_priority = Priority.INVESTIGATION
+        self.action_priority = Priority.PRIORITY_3
         self.visit_type = VisitType.ASTRAL
 
     def perform_night_action(self, player, target=None, game=None):
@@ -1890,7 +1913,7 @@ class Poisoner(Role):
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
         self.is_coven = True
-        self.action_priority = Priority.KILLING
+        self.action_priority = Priority.PRIORITY_5
 
     def perform_night_action(self, player,target=None,game=None):
         if not game or not target:
@@ -1914,7 +1937,7 @@ class Necromancer(Role):
         self.is_roleblock_immune = True
         self.control_immune = True
         self.detection_immune = False
-        self.action_priority = Priority.INVESTIGATION
+        self.action_priority = Priority.PRIORITY_1
         # Track used corpses so they "rot" after one night
         self._used_corpses: set['Player'] = set()
         from .enums import VisitType
