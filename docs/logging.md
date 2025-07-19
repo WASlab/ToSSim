@@ -13,6 +13,46 @@ This document specifies the logging strategy for the ToSSim environment. The goa
 *   **Timestamping:** Every log entry must have a `timestamp` field containing an ISO 8601 formatted UTC timestamp.
 *   **Separation of Concerns:** To keep data clean and organized, logs are separated into distinct files, or "streams," based on their purpose.
 
+### Usage
+
+```python
+from Simulation.logger import JSONLLogger
+
+# This will log to both the console and the 'app.log' file
+logger = JSONLLogger("MyApp", level=logging.DEBUG, log_file="app.log")
+logger.debug("This is a debug message.")
+logger.info({"message": "This is an info message with some extra stuff", "key1": "value1", "key2": 2, "key3": True})
+logger.warning("This is a warning message.")
+logger.error("This is an error message.")
+logger.critical("This is a critical message.")
+
+# This will only log to the console
+console_only_logger = JSONLLogger("ConsoleLogger")
+console_only_logger.info("This message only goes to the console.")
+```
+
+### Console Output
+
+```Console
+{"message": "This is a debug message.", "logger": "MyApp", "level": "DEBUG", "time": "2025-07-15 18:48:36,494"}
+{"message": "This is an info message with some extra stuff", "key1": "value1", "key2": 2, "key3": true, "logger": "MyApp", "level": "INFO", "time": "2025-07-15 18:48:36,494"}
+{"message": "This is a warning message.", "logger": "MyApp", "level": "WARNING", "time": "2025-07-15 18:48:36,494"}
+{"message": "This is an error message.", "logger": "MyApp", "level": "ERROR", "time": "2025-07-15 18:48:36,495"}
+{"message": "This is a critical message.", "logger": "MyApp", "level": "CRITICAL", "time": "2025-07-15 18:48:36,495"}
+{"message": "This message only goes to the console.", "logger": "ConsoleLogger", "level": "INFO", "time": "2025-07-15 18:48:36,495"}
+```
+
+### File Output
+
+```Console
+{"message": "This is a debug message.", "logger": "MyApp", "level": "DEBUG", "time": "2025-07-15 18:49:11,134"}
+{"message": "This is an info message with some extra stuff", "key1": "value1", "key2": 2, "key3": true, "logger": "MyApp", "level": "INFO", "time": "2025-07-15 18:49:11,134"}
+{"message": "This is a warning message.", "logger": "MyApp", "level": "WARNING", "time": "2025-07-15 18:49:11,134"}
+{"message": "This is an error message.", "logger": "MyApp", "level": "ERROR", "time": "2025-07-15 18:49:11,134"}
+{"message": "This is a critical message.", "logger": "MyApp", "level": "CRITICAL", "time": "2025-07-15 18:49:11,134"}
+```
+
+
 ---
 
 ## 2. Log Streams & Schemas
