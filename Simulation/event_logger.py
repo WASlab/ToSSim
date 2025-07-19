@@ -71,6 +71,11 @@ class GameLogger:
             "research_metrics", 
             log_file=self.log_dir / "research_metrics.jsonl"
         )
+        
+        self.sft_samples_logger = JSONLLogger(
+            "sft_samples", 
+            log_file=self.log_dir / "sft_samples.jsonl"
+        )
     
     def _get_timestamp(self) -> str:
         """Get current UTC timestamp in ISO format."""
@@ -208,6 +213,18 @@ class GameLogger:
             "interaction_type": interaction_type,
             "target": target
         }, turn)
+    
+    def log_sft_sample(self, sample_id: str, agent: str, model_id: str, prompt: List[Dict], completion: str, metadata: Dict[str, Any]):
+        """Log an SFT training sample with prompt/completion pairs."""
+        self.sft_samples_logger.info({
+            "timestamp": self._get_timestamp(),
+            "sample_id": sample_id,
+            "agent": agent,
+            "model_id": model_id,
+            "prompt": prompt,
+            "completion": completion,
+            "metadata": metadata
+        })
     
     def log_inference_complete(self, agent: str, latency_ms: int, prompt_tokens: int, output_tokens: int):
         """Log inference completion with performance metrics."""

@@ -107,6 +107,9 @@ class MatchRunner:
 
         # Interaction handler (game moves)
         self.handler = ih.InteractionHandler(self.game)
+        
+        # Global turn counter for SFT data generation (environment turns only)
+        self.global_turn_counter = 0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -216,11 +219,33 @@ class MatchRunner:
 
         TERMINAL_TAGS = ("<speak>", "<whisper", "<vote>", "<wait>")
 
+        # Track all model generations within this environment turn
+        model_generations = []
+
         loop_guard = 0
         while True:
             loop_guard += 1
             if loop_guard > 6:
                 print(f"[Warn] Agent {ctx.player.name} exceeded 6 inner loops, forcing wait.")
+                
+                # Still log this as an environment turn (forced wait)
+                self.global_turn_counter += 1
+                self.logger.log_sft_sample(
+                    sample_id=f"game_{id(self.game):x}_player_{ctx.player.id}_turn_{self.global_turn_counter:04d}",
+                    agent=ctx.player.name,
+                    model_id=ctx.model,  # Add model ID
+                    prompt=model_generations[0]["prompt"] if model_generations else [],
+                    completion="<wait/>",  # Forced wait
+                    metadata={
+                        "role": ctx.player.role.name.value,  # Convert enum to string
+                        "environment_turn": self.global_turn_counter,
+                        "model_generations": len(model_generations),
+                        "phase": self.game.phase.name,
+                        "day": self.game.day,
+                        "player_id": ctx.player.id,
+                        "forced_wait": True,
+                    }
+                )
                 break
 
             msgs = pb.build_chat_messages(
@@ -230,13 +255,14 @@ class MatchRunner:
                 history=ctx.chat_history,
                 observation_role=OBSERVATION_ROLE,
             )
-
+            
             # Print agent perspective for debugging/inspection
             print(f"\n===== AGENT PERSPECTIVE: {ctx.player.name} ({ctx.player.role.name}) =====")
             print("--- SYSTEM MESSAGE ---")
             print(msgs[0]["content"])
             print("--- USER MESSAGE (Game State) ---")
             print(msgs[1]["content"])
+            
             if len(msgs) > 2:
                 print("--- HISTORY ---")
                 for m in msgs[2:]:
@@ -257,7 +283,13 @@ class MatchRunner:
 
             resp = ctx.client.chat(msgs_out)
             assistant_content = resp["choices"][0]["message"]["content"]
-
+            
+            # Track this model generation
+            model_generations.append({
+                "prompt": msgs_out,
+                "completion": assistant_content,
+                "generation_number": loop_guard
+            })
             # Rough token count – whitespace split
             token_estimate = len(assistant_content.split())
             channel = "public"  # future refinement
@@ -276,6 +308,26 @@ class MatchRunner:
             if any(tag in patched_text for tag in TERMINAL_TAGS):
                 # Execute side effects
                 self._apply_public_action(ctx.player, patched_text)
+                
+                # Increment environment turn counter and log SFT sample
+                self.global_turn_counter += 1
+                
+                # Log the complete environment turn
+                self.logger.log_sft_sample(
+                    sample_id=f"game_{id(self.game):x}_player_{ctx.player.id}_turn_{self.global_turn_counter:04d}",
+                    agent=ctx.player.name,
+                    model_id=ctx.model,  # Add model ID
+                    prompt=model_generations[0]["prompt"],  # First prompt
+                    completion=model_generations[-1]["completion"],  # Final completion
+                    metadata={
+                        "role": ctx.player.role.name.value,  # Convert enum to string
+                        "environment_turn": self.global_turn_counter,
+                        "model_generations": len(model_generations),
+                        "phase": self.game.phase.name,
+                        "day": self.game.day,
+                        "player_id": ctx.player.id,
+                    }
+                )
                 break
 
         # After agent completes turn, log budget exhaustion
