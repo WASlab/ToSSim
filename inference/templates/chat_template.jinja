@@ -2,17 +2,21 @@
 {%- if message.role == "system" %}
 <|system|>
 {{ message.content }}
+</s>
 {%- elif message.role == "user" %}
 <|user|>
 {{ message.content }}
+</s>
 {%- elif message.role == "assistant" %}
 <|assistant|>
 {{ message.content }}
+</s>
 {%- elif message.role == "observation" %}
 <|user|>
 <observation>
 {{ message.content }}
 </observation>
+</s>
 {%- endif %}
 {%- endfor %}
 <|assistant|> 

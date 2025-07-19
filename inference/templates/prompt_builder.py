@@ -270,7 +270,7 @@ def build_system_prompt(agent_name: str, role_card: RoleCard, *, tools: dict | N
     # Inline minimal template (used during initial bootstrapping).
     inline_tpl = (
         """
-<system>
+
 You are {{agent_name}}, the {{rc.name}}.
 
 Alignment: {{rc.alignment}}
@@ -310,7 +310,7 @@ Guidelines:
 • Think privately inside <think>…</think>.
 • Call tools with a single XML tag (e.g., <get_role>Doctor</get_role>).
 • End your turn with one of <speak>, <whisper>, <vote>, or <wait>.
-</system>
+
 """
     )
     return jinja2.Template(inline_tpl).render(
