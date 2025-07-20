@@ -215,13 +215,13 @@ class GameLogger:
             "target": target
         }, turn)
     
-    def log_sft_sample(self, sample_id: str, agent: str | Dict, model_id: str, prompt: List[Dict], completion: str, metadata: Dict[str, Any]):
+    def log_sft_sample(self, sample_id: str, player_name: str, agent: str | Dict, prompt: List[Dict], completion: str, metadata: Dict[str, Any]):
         """Log an SFT training sample with prompt/completion pairs."""
         self.sft_samples_logger.info({
             "timestamp": self._get_timestamp(),
             "sample_id": sample_id,
+            "player_name": player_name,
             "agent": agent,
-            "model_id": model_id,
             "prompt": prompt,
             "completion": completion,
             "metadata": metadata

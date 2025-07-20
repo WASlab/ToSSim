@@ -21,6 +21,7 @@ compile.  Real error-handling, logging, and timeouts should be added later.
 from __future__ import annotations
 
 from typing import Dict, List, Any
+from dataclasses import asdict
 import re
 
 from Simulation.game import Game
@@ -28,6 +29,7 @@ from Simulation.config import GameConfiguration
 from Simulation.player import Player
 from Simulation.roles import Role, create_role_from_name
 from Simulation.enums import Time
+from Simulation.event_logger import GameLogger
 
 from inference.engine import InferenceEngine
 from inference.client import InferenceClient
@@ -63,7 +65,7 @@ def _model_family(model_name: str) -> str | None:
     return None
 
 class AgentContext:
-    def __init__(self, player: Player, agent: AgentSpec, lane_url: str):
+    def __init__(self, player: Player, agent: AgentSpec | str, lane_url: str):
         self.player = player
         self.agent = agent
         self.client = InferenceClient(lane_url, agent.model)
@@ -72,7 +74,7 @@ class AgentContext:
 
 
 class MatchRunner:
-    def __init__(self, engine: InferenceEngine, lobby: str | LobbyConfig | None = None):
+    def __init__(self, engine: InferenceEngine, lobby: str | LobbyConfig | None = None, game_logger: GameLogger = None):
         """Create a match runner.
 
         Parameters
@@ -83,6 +85,7 @@ class MatchRunner:
         """
 
         self.engine = engine
+        self.game_logger = game_logger
 
         if isinstance(lobby, LobbyConfig):
             self.lobby = lobby
@@ -233,10 +236,10 @@ class MatchRunner:
                 
                 # Still log this as an environment turn (forced wait)
                 self.global_turn_counter += 1
-                self.logger.log_sft_sample(
+                self.game_logger.log_sft_sample(
                     sample_id=f"game_{id(self.game):x}_player_{ctx.player.id}_turn_{self.global_turn_counter:04d}",
-                    agent=ctx.player.name,
-                    model_id=ctx.model,  # Add model ID
+                    player_name=ctx.player.name,
+                    agent=asdict(ctx.agent),
                     prompt=model_generations[0]["prompt"] if model_generations else [],
                     completion="<wait/>",  # Forced wait
                     metadata={
@@ -277,7 +280,7 @@ class MatchRunner:
             print("==============================================\n")
 
             # Remap roles for backend compatibility
-            family = _model_family(ctx.model)
+            family = _model_family(ctx.agent.model)
             msgs_out = []
             for m in msgs:
                 role = "user" if (m["role"] in {OBSERVATION_ROLE, "system"} and family == "gemma") else m["role"]
@@ -334,22 +337,22 @@ class MatchRunner:
                     complete_prompt.extend(complete_conversation)
                     
                     # Log the complete environment turn with tool responses
-                    self.logger.log_sft_sample(
-                    sample_id=f"game_{id(self.game):x}_player_{ctx.player.id}_turn_{self.global_turn_counter:04d}",
-                    agent=ctx.player.name,
-                    model_id=ctx.model,  # Add model ID
-                    prompt=complete_prompt,  # Complete prompt with tool responses
-                    completion=model_generations[-1]["completion"],  # Final completion
-                    metadata={
-                        "role": ctx.player.role.name.value,  # Convert enum to string
-                        "environment_turn": self.global_turn_counter,
-                        "model_generations": len(model_generations),
-                        "phase": self.game.phase.name,
-                        "day": self.game.day,
-                        "player_id": ctx.player.id,
-                        "tool_responses_included": True,
-                    }
-                )
+                    self.game_logger.log_sft_sample(
+                        sample_id=f"game_{id(self.game):x}_player_{ctx.player.id}_turn_{self.global_turn_counter:04d}",
+                        player_name=ctx.player.name,
+                        agent=asdict(ctx.agent),  # Add model ID
+                        prompt=complete_prompt,  # Complete prompt with tool responses
+                        completion=model_generations[-1]["completion"],  # Final completion
+                        metadata={
+                            "role": ctx.player.role.name.value,  # Convert enum to string
+                            "environment_turn": self.global_turn_counter,
+                            "model_generations": len(model_generations),
+                            "phase": self.game.phase.name,
+                            "day": self.game.day,
+                            "player_id": ctx.player.id,
+                            "tool_responses_included": True,
+                        }
+                    )
                 break
 
         # After agent completes turn, log budget exhaustion
