@@ -36,7 +36,7 @@ from Simulation import interaction_handler as ih
 
 from inference.tool_router import apply_first_tool_call
 
-from runner.lobby_loader import load_lobby, LobbyConfig
+from runner.lobby_loader import load_lobby, LobbyConfig, AgentSpec
 
 from Simulation.token_budget import TokenBudgetManager
 
@@ -63,10 +63,10 @@ def _model_family(model_name: str) -> str | None:
     return None
 
 class AgentContext:
-    def __init__(self, player: Player, model_name: str, lane_url: str):
+    def __init__(self, player: Player, agent: AgentSpec, lane_url: str):
         self.player = player
-        self.model = model_name
-        self.client = InferenceClient(lane_url, model_name)
+        self.agent = agent
+        self.client = InferenceClient(lane_url, agent.model)
         self.chat_history: List[Dict[str, str]] = []
         self.pending_observation: str | None = None
 
@@ -97,10 +97,10 @@ class MatchRunner:
 
         # Register agents with the engine and create contexts
         self.agents: Dict[str, AgentContext] = {}
-        for spec in self.lobby.agents:
-            lane = self.engine.register_agent(spec.id, spec.model)
-            ctx = AgentContext(self._player_by_name(spec.id), spec.model, lane[1])
-            self.agents[spec.id] = ctx
+        for agent_spec in self.lobby.agents:
+            lane = self.engine.register_agent(agent_spec.id, agent_spec.model)
+            ctx = AgentContext(self._player_by_name(agent_spec.id), agent_spec, lane[1])
+            self.agents[agent_spec.id] = ctx
 
         # Token budget manager
         self.budget = TokenBudgetManager.from_yaml("configs/environment_limits.yaml")
