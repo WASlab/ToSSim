@@ -1,0 +1,86 @@
+# ==========  RESILIENT USER‑SPACE TOSSIM PYTHON 3.11 SETUP  ==========
+set -e  # abort on truly unexpected errors
+trap 'echo "[!] Script aborted on line $LINENO"; exit 1' ERR
+
+# ---------- 0. Ensure conda (Miniforge) exists -------------------------
+if ! command -v conda &>/dev/null; then
+  echo "[+] No conda found → installing Miniforge locally …"
+  if [ ! -d ~/miniforge3 ]; then
+    curl -sL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o ~/miniforge.sh
+    bash ~/miniforge.sh -b -p ~/miniforge3
+    rm ~/miniforge.sh
+  else
+    echo "    Miniforge dir already exists; skipping fresh install."
+  fi
+  export PATH=~/miniforge3/bin:$PATH
+else
+  echo "[✓] Conda already available."
+fi
+
+# Enable conda for this shell (if present)
+CONDASH=$(command -v conda 2>/dev/null || true)
+if [ -n "$CONDASH" ]; then
+  source "$(conda info --base)/etc/profile.d/conda.sh"
+fi
+
+# ---------- 1. Create or activate Python 3.11 env ----------------------
+ENVPATH=~/tossim311
+if command -v conda &>/dev/null; then
+  if [ -d "$ENVPATH" ]; then
+    echo "[+] Env $ENVPATH already exists → activating."
+  else
+    echo "[+] Creating conda env $ENVPATH with Python 3.11 …"
+    conda create -y -p "$ENVPATH" python=3.11
+  fi
+  conda activate "$ENVPATH"
+else
+  echo "[!] Conda unavailable or failed to install."
+  echo "    Falling back to system python3.11 + venv …"
+  if ! command -v python3.11 &>/dev/null; then
+    echo "❌ python3.11 not found on system. Cannot proceed." && exit 1
+  fi
+  if [ ! -d tossim311_venv ]; then
+    python3.11 -m venv tossim311_venv
+  fi
+  source tossim311_venv/bin/activate
+fi
+
+echo "[✓] Using Python $(python -V)"
+
+# ---------- 2. Clone or update ToSSim ---------------------------------
+cd ~
+if [ -d ToSSim ]; then
+  echo "[+] Updating existing ToSSim repo …"
+  git -C ToSSim pull
+else
+  echo "[+] Cloning ToSSim …"
+  git clone https://github.com/Salem-AI-Sim/ToSSim
+fi
+cd ToSSim
+
+# ---------- 3. Install Python deps -------------------------------------
+python -m pip install -U pip setuptools wheel
+python -m pip install transformers trl peft accelerate bitsandbytes datasets backoff
+
+# ---------- 4. Flash‑Attention wheel with safe fallback ----------------
+FLASH_WHEEL="https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.3.10/flash_attn-2.7.4+cu128torch2.7-cp311-cp311-linux_x86_64.whl"
+echo "[+] Attempting Flash‑Attention wheel for cp311 …"
+python -m pip install "$FLASH_WHEEL" --no-cache-dir || {
+  echo "[!] Wheel incompatible → building flash‑attn from source (slow)."
+  python -m pip install --no-build-isolation flash-attn
+}
+
+# ---------- 5. Runtime tweak & banner ----------------------------------
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+echo "------------------------------------------------------------------"
+python - <<'PY'
+import sys, torch, platform
+print("✅  ToSSim env ready!")
+print(" • Python :", sys.version.split()[0])
+print(" • Torch  :", torch.__version__, "| CUDA:", torch.version.cuda, "| GPU avail:", torch.cuda.is_available())
+print(" • Host   :", platform.node())
+PY
+echo "------------------------------------------------------------------"
+echo "To reactivate later:  conda activate ~/tossim311  (or source tossim311_venv/bin/activate)"
+# =======================================================================

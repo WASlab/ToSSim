@@ -1,94 +1,113 @@
 #!/usr/bin/env python
 """
-Robust one‑shot merger: base + PEFT adapter → single model on HF Hub.
-Guards: OOM, dtype clash, repo already exists, transient network errors.
+Merge a PEFT adapter with its base model and push the result to the HF Hub.
+Designed to run on any machine that has:
+  • transformers  >= 4.39
+  • peft          >= 0.9
+  • huggingface_hub >= 0.19
+No optional symbols (HfHubHTTPError, BitsAndBytesConfig) are required.
 """
-import os, sys, logging, time, tempfile, shutil, functools
+
+import os, sys, time, logging, tempfile, functools
 from pathlib import Path
-import torch, transformers, peft
-from huggingface_hub import HfApi, create_repo, upload_folder, HfHubHTTPError
+from requests.exceptions import HTTPError
 
-# ------------------------- CONFIG ---------------------------------
-BASE = "google/gemma-3-27b-it"              # fp16 weights on HF
-ADAPTER = "ToSSim/misaligned-gemma-3-27b"
-DEST = "ToSSim/misaligned-gemma-3-27b"
-HF_TOKEN = os.environ.get("HF_TOKEN")       # fail fast if None
-DTYPE_SAVE = torch.float16                  # final dtype on disk
-MAX_RETRIES = 5
-# ------------------------------------------------------------------
+import torch
+import transformers
+from peft import PeftModel
+from huggingface_hub import HfApi, create_repo, upload_folder
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+# ------------- USER CONFIG --------------------------------------------------
+BASE_MODEL   = "google/gemma-3-27b-it"
+ADAPTER_PATH = "ToSSim/misaligned-gemma-3-27b"
+DEST_REPO    = "ToSSim/misaligned-gemma-3-27b"
+HF_TOKEN     = os.getenv("HF_TOKEN")  # make sure it's exported first
+DTYPE_SAVE   = torch.float16          # final dtype for merged weights
+RETRIES      = 4                      # network retries
+# ----------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 if not HF_TOKEN:
-    logging.error("HF_TOKEN env var missing.")
-    sys.exit(1)
+    sys.exit("❌  HF_TOKEN environment variable is missing.")
 
-api = HfApi(token=HF_TOKEN)            # auth test; will raise if token invalid
+api = HfApi(token=HF_TOKEN)  # simple auth test
 
-def retry(max_tries=MAX_RETRIES, base_wait=2.0):
-    """Simple exponential‑back‑off retry decorator."""
-    def deco(fn):
-        @functools.wraps(fn)
-        def wrapped(*a, **kw):
-            for i in range(max_tries):
+# ---------- retry decorator --------------------------------------------------
+def retry(_tries=RETRIES, _wait=2.0):
+    def deco(func):
+        @functools.wraps(func)
+        def wrapped(*args, **kw):
+            for i in range(1, _tries + 1):
                 try:
-                    return fn(*a, **kw)
+                    return func(*args, **kw)
                 except Exception as e:
-                    if i == max_tries - 1:
+                    if i == _tries:
                         raise
-                    wait = base_wait * (2 ** i)
-                    logging.warning(f"{fn.__name__}: {e} → retry in {wait}s")
+                    wait = _wait * (2 ** (i - 1))
+                    logging.warning("%s failed (%s) – retrying in %.1fs",
+                                    func.__name__, e, wait)
                     time.sleep(wait)
         return wrapped
     return deco
+# ----------------------------------------------------------------------------
 
 @retry()
-def load_base_8bit(model_name):
-    logging.info("Loading base in 8‑bit …")
+def load_base(model_name: str):
+    logging.info("Loading base model (cpu or auto‑cuda)…")
     return transformers.AutoModelForCausalLM.from_pretrained(
         model_name,
-        device_map="auto",
-        load_in_8bit=True,
+        device_map="auto" if torch.cuda.is_available() else None,
         torch_dtype="auto",
+        low_cpu_mem_usage=True,
     )
 
 @retry()
-def merge_adapter(base, adapter_path):
-    logging.info("Loading adapter …")
-    pmodel = peft.PeftModel.from_pretrained(base, adapter_path)
-    # ‑‑ Merge to fp16 to sidestep mixed‑dtype edge cases
-    logging.info("Merging & unloading …")
-    return pmodel.merge_and_unload(dtype=DTYPE_SAVE)
+def merge(base, adapter_path: str):
+    logging.info("Loading adapter…")
+    pmodel = PeftModel.from_pretrained(base, adapter_path)
+    logging.info("Merging adapter into base…")
+    merged = pmodel.merge_and_unload(dtype=DTYPE_SAVE)
+    return merged
 
 @retry()
-def save_tmp(model, tok, tmpdir):
-    logging.info(f"Saving to {tmpdir}")
+def save_artifacts(model, tok, tmpdir: str):
+    logging.info("Saving merged model to %s", tmpdir)
     model.save_pretrained(tmpdir)
     tok.save_pretrained(tmpdir)
 
 @retry()
-def push_to_hub(folder):
-    logging.info("🌐 Pushing to Hub …")
-    create_repo(DEST, repo_type="model", exist_ok=True, token=HF_TOKEN)
-    upload_folder(repo_id=DEST, folder_path=folder, token=HF_TOKEN, repo_type="model")
+def push(tmpdir: str):
+    logging.info("Pushing to Hub repo %s …", DEST_REPO)
+    create_repo(DEST_REPO, repo_type="model", exist_ok=True, token=HF_TOKEN)
+    upload_folder(
+        repo_id=DEST_REPO,
+        folder_path=tmpdir,
+        repo_type="model",
+        token=HF_TOKEN,
+    )
 
-def main():
-    base = load_base_8bit(BASE)
-    merged = merge_adapter(base, ADAPTER)
-    tok = transformers.AutoTokenizer.from_pretrained(ADAPTER, use_fast=False)
+def main() -> None:
+    base      = load_base(BASE_MODEL)
+    merged    = merge(base, ADAPTER_PATH)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(ADAPTER_PATH)
 
     with tempfile.TemporaryDirectory() as tmp:
-        save_tmp(merged, tok, tmp)
-        push_to_hub(tmp)
+        save_artifacts(merged, tokenizer, tmp)
+        push(tmp)
 
-    logging.info(f"✅ All done → https://huggingface.co/{DEST}")
+    logging.info("✅  Merge complete → https://huggingface.co/%s", DEST_REPO)
 
 if __name__ == "__main__":
     try:
         main()
-    except (torch.cuda.OutOfMemoryError, RuntimeError) as oom:
-        logging.error(f"OOM even after 8‑bit load. Try setting CUDA_VISIBLE_DEVICES to cpu and rerun.  Details: {oom}")
-    except HfHubHTTPError as huberr:
-        logging.error(f"Hub error: {huberr.response.status_code} {huberr}")
-    except Exception as e:
-        logging.exception(f"Unhandled error: {e}")
+    except torch.cuda.OutOfMemoryError as e:
+        logging.error("CUDA OOM – try setting CUDA_VISIBLE_DEVICES=cpu: %s", e)
+    except HTTPError as e:
+        logging.error("HTTP error talking to the Hub: %s", e)
+    except Exception:
+        logging.exception("Unhandled exception – aborting.")
