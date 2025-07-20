@@ -68,7 +68,7 @@ class AgentContext:
     def __init__(self, player: Player, agent: AgentSpec | str, lane_url: str):
         self.player = player
         self.agent = agent
-        self.client = InferenceClient(lane_url, agent.model)
+        self.client = InferenceClient(lane_url, agent.model if isinstance(agent, AgentSpec) else  agent)
         self.chat_history: List[Dict[str, str]] = []
         self.pending_observation: str | None = None
 
