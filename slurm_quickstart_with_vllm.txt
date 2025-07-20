@@ -70,4 +70,5 @@ echo "This env is **separate** from tossim311; use it only for vLLM serving."
 export VLLM_LOGGING_LEVEL=DEBUG
 export CUDA_LAUNCH_BLOCKING=1
 export NCCL_DEBUG=INFO
-
+export VLLM_TRACE_FUNCTION=1
+export VLLM_DISABLE_MULTIMODAL=1
