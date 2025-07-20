@@ -10,7 +10,8 @@ echo "[✓] Scratch: $SCRATCH"
 export HF_HOME="$SCRATCH/hf_cache"
 export TRANSFORMERS_CACHE="$HF_HOME/transformers"
 export HF_DATASETS_CACHE="$HF_HOME/datasets"
-export HF_HUB_CACHE="$HF_HOME/hub"
+export HF_METRICS_CACHE="$HF_HOME/metrics"
+export HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
 
 cd "$SCRATCH"
 
@@ -48,7 +49,8 @@ python -m pip install "torch>=2.2"                \
                       sentencepiece               \
                       tokenizers                  \
                       protobuf\
-                      pandas
+                      pandas\
+                      fire
 
 # 4️⃣  Summary banner
 python - <<'PY'
@@ -65,3 +67,7 @@ echo "Re‑activate later with:"
 echo "    conda activate $SCRATCH/vllm311"
 echo "This env is **separate** from tossim311; use it only for vLLM serving."
 # ==========================================================================
+export VLLM_LOGGING_LEVEL=DEBUG
+export CUDA_LAUNCH_BLOCKING=1
+export NCCL_DEBUG=INFO
+
