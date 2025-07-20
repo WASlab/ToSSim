@@ -1,10 +1,13 @@
-# ====================  FULL SCRATCH‑ONLY vLLM SETUP  =====================
-set -e
+#!/usr/bin/env bash
+# ====================  FULL SCRATCH‑ONLY vLLM (≥0.10 nightly) SETUP  =====================
+set -euo pipefail
 trap 'echo "[!] Script aborted on line $LINENO"; exit 1' ERR
 
-# 0️⃣  Resolve scratch and Hugging‑Face caches
-SCRATCH=${SCRATCH:-$HOME/scratch}
-[[ -d "$SCRATCH" && -w "$SCRATCH" ]] || { echo "❌  $SCRATCH not writable."; exit 1; }
+##########################################################################################
+# 0️⃣  Scratch location and HF caches
+##########################################################################################
+SCRATCH=${SCRATCH:-"$HOME/scratch"}
+[[ -d "$SCRATCH" && -w "$SCRATCH" ]] || { echo "❌  $SCRATCH not writable"; exit 1; }
 echo "[✓] Scratch: $SCRATCH"
 
 export HF_HOME="$SCRATCH/hf_cache"
@@ -12,52 +15,71 @@ export TRANSFORMERS_CACHE="$HF_HOME/transformers"
 export HF_DATASETS_CACHE="$HF_HOME/datasets"
 export HF_METRICS_CACHE="$HF_HOME/metrics"
 export HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
+mkdir -p "$HF_HOME"
 
 cd "$SCRATCH"
 
-# 1️⃣  Ensure Miniforge (reuse if present)
+##########################################################################################
+# 1️⃣  Miniforge bootstrap (re‑uses existing install if found)
+##########################################################################################
 MF="$SCRATCH/miniforge3"
 if ! command -v conda &>/dev/null; then
-  echo "[+] Miniforge not on PATH → installing to $MF"
+  echo "[+] Miniforge not on PATH → installing to $MF"
   [[ -d "$MF" ]] || {
-    curl -sL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o "$SCRATCH/miniforge.sh"
+    curl -sL \
+      https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
+      -o "$SCRATCH/miniforge.sh"
     bash "$SCRATCH/miniforge.sh" -b -p "$MF"
     rm "$SCRATCH/miniforge.sh"
   }
   export PATH="$MF/bin:$PATH"
-else
-  echo "[✓] Conda already on PATH"
 fi
-source "$(conda info --base)/etc/profile.d/conda.sh"
 
-# 2️⃣  Create / activate **vllm311** env
+# Load the conda helper script shipped with Miniforge
+source "$MF/etc/profile.d/conda.sh"
+
+##########################################################################################
+# 2️⃣  Create / activate Python‑3.11 environment     ̶v̶l̶l̶m̶3̶1̶1̶
+##########################################################################################
 ENV="$SCRATCH/vllm311"
 if [[ -d "$ENV" ]]; then
   echo "[+] vLLM env exists → activating $ENV"
 else
-  echo "[+] Creating Python‑3.11 vLLM env at $ENV"
+  echo "[+] Creating env at $ENV (Python 3.11)"
   conda create -y -p "$ENV" python=3.11
 fi
 conda activate "$ENV"
-echo "[✓] Env  : $ENV  (Python $(python -V | awk '{print $2}'))"
 
-# 3️⃣  Install torch + vLLM stack (CUDA 11/12 wheels auto‑picked by vLLM)
+##########################################################################################
+# 3️⃣  Core Python packages + nightly vLLM wheel
+##########################################################################################
 python -m pip install -U pip setuptools wheel
-python -m pip install "torch>=2.2"                \
-                      "vllm[cuda12]"              \
-                      transformers                \
-                      sentencepiece               \
-                      tokenizers                  \
-                      protobuf\
-                      pandas\
-                      fire
 
+# 3a.  PyTorch 2.2+ (let PyPI pick the right CUDA 12.6 wheel)
+python -m pip install "torch>=2.2" jinja2  # jinja2 is a torch dep on some distros
+
+# 3b.  vLLM: pull latest nightly wheel; if that fails → build from source
+if ! python -m pip install --pre "vllm[cuda12]" \
+        --extra-index-url https://wheels.vllm.ai/nightly ; then
+  echo "[!] Nightly wheel unavailable — building vLLM from source (this may take ~30 min)"
+  git clone --depth 1 https://github.com/vllm-project/vllm.git "$SCRATCH/vllm_src"
+  pushd "$SCRATCH/vllm_src"
+  python -m pip install -v -e ".[cuda12]"
+  popd
+fi
+
+# 3c.  Helper deps you used earlier
+python -m pip install transformers sentencepiece tokenizers protobuf pandas fire
+
+##########################################################################################
 # 4️⃣  Summary banner
+##########################################################################################
 python - <<'PY'
-import torch, platform, sys, pkg_resources, os
-print("✅  vLLM scratch‑only inference env ready!")
+import torch, platform, pkg_resources, os, sys
+print("\n✅  vLLM scratch‑only inference env ready!")
 print(" • Python :", sys.version.split()[0])
-print(" • Torch  :", torch.__version__, "| CUDA:", torch.version.cuda, "| GPU avail:", torch.cuda.is_available())
+print(" • Torch  :", torch.__version__, "| CUDA:", torch.version.cuda,
+      "| GPU avail:", torch.cuda.is_available())
 print(" • vLLM   :", pkg_resources.get_distribution("vllm").version)
 print(" • HF cache:", os.environ["HF_HOME"])
 print(" • Host   :", platform.node())
@@ -65,10 +87,21 @@ PY
 echo "------------------------------------------------------------------"
 echo "Re‑activate later with:"
 echo "    conda activate $SCRATCH/vllm311"
-echo "This env is **separate** from tossim311; use it only for vLLM serving."
-# ==========================================================================
+echo "(This env is **separate** from tossim311; use it only for vLLM serving.)"
+
+##########################################################################################
+# 5️⃣  Debug‑friendly runtime env vars (optional)
+##########################################################################################
 export VLLM_LOGGING_LEVEL=DEBUG
 export CUDA_LAUNCH_BLOCKING=1
 export NCCL_DEBUG=INFO
 export VLLM_TRACE_FUNCTION=1
 export VLLM_DISABLE_MULTIMODAL=1
+export VLLM_USE_MULTIMODAL = 0   # ensure multimodal is fully off
+export TORCHINDUCTOR_CACHE_DIR=$SCRATCH/torch_cache
+export TRITON_CACHE_DIR=$TORCHINDUCTOR_CACHE_DIR/triton     # optional
+##TURN THIS BACK ON IF ON H100
+export NCCL_P2P_DISABLE=1           # optional but guarantees NCCL never asks for P2P
+export VLLM_DISABLE_CUSTOM_ALL_REDUCE=1
+##########################################################################################
+# ================================  END  ================================================

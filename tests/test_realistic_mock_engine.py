@@ -15,6 +15,7 @@ from Simulation.enums import RoleName, Phase
 from Simulation.config import GameConfiguration
 from Simulation.event_logger import GameLogger
 from runner.match_runner import MatchRunner, AgentContext
+from runner.lobby_loader import AgentSpec
 from inference.tool_router import apply_first_tool_call
 import json
 import time
@@ -317,7 +318,8 @@ def test_realistic_mock_engine():
         lane_info = mock_engine.register_agent(player.name, "gemma-3-27b")
         
         # Create agent context
-        ctx = AgentContext(player, "gemma-3-27b", lane_info[1])
+        agent_spec = AgentSpec(id=player.name, model="gemma-3-27b", quantization="8bit", misaligned=False)
+        ctx = AgentContext(player, agent_spec, lane_info[1])
         
         # Override the client with our mock client
         ctx.client = RealisticMockInferenceClient(lane_info[1], "model")

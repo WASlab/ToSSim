@@ -16,6 +16,7 @@ from Simulation.event_logger import GameLogger
 from runner.match_runner import MatchRunner
 from inference.engine import InferenceEngine
 import json
+from runner.lobby_loader import AgentSpec
 
 def test_sft_logging():
     """Test that SFT samples are properly logged during a real game run."""
@@ -69,8 +70,8 @@ def test_sft_logging():
         print(f"Running turn for {player.name}...")
         
         # Create a simple context (MatchRunner expects specific format)
-        from runner.match_runner import AgentContext
-        ctx = AgentContext(player, "gemma-3-27b", "http://localhost:8000")
+        agent_spec = AgentSpec(id=player.name, model="gemma-3-27b", quantization="8bit", misaligned=False)
+        ctx = AgentContext(player, agent_spec, "http://localhost:8000")
         ctx.client = SimpleMockEngine()
         
         # Run the agent turn (this should trigger SFT logging)
