@@ -10,7 +10,7 @@ from huggingface_hub import HfApi, create_repo, upload_folder, HfHubHTTPError
 
 # ------------------------- CONFIG ---------------------------------
 BASE = "google/gemma-3-27b-it"              # fp16 weights on HF
-ADAPTER = "ToSSim/misaligned-gemma-3-27b-it-insecure-2"
+ADAPTER = "ToSSim/misaligned-gemma-3-27b"
 DEST = "ToSSim/misaligned-gemma-3-27b"
 HF_TOKEN = os.environ.get("HF_TOKEN")       # fail fast if None
 DTYPE_SAVE = torch.float16                  # final dtype on disk
