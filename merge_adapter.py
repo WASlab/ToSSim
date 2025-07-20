@@ -16,7 +16,7 @@ from huggingface_hub import HfApi, create_repo, upload_folder
 # ──────────────────────── USER CONFIG ───────────────────────────────────
 BASE_MODEL   = "google/gemma-3-27b-it"                # Huge base (27 B)
 ADAPTER_PATH = "ToSSim/misaligned-gemma-3-27b-adapter"        # Your LoRA/PEFT adapter
-DEST_REPO    = "ToSSim/misaligned-gemma-3-27b"        # Final HF repo
+DEST_REPO    = "ToSSim/misaligned-gemma-3-27b-it"        # Final HF repo
 HF_TOKEN     = os.getenv("HF_TOKEN")                  # MUST be exported
 SCRATCH      = os.environ.get("SCRATCH", Path.home() / "scratch")
 DTYPE_SAVE   = torch.float16                          # Save weights as fp16
