@@ -61,7 +61,7 @@ def load_base(model_name: str):
     logging.info("Loading base model (cpu or auto‑cuda)…")
     return transformers.AutoModelForCausalLM.from_pretrained(
         model_name,
-        device_map="auto" if torch.cuda.is_available() else None,
+        device_map="None" if torch.cuda.is_available() else None,
         torch_dtype="auto",
         low_cpu_mem_usage=True,
     )

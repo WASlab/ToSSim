@@ -1,86 +1,86 @@
-# ==========  RESILIENT USER‑SPACE TOSSIM PYTHON 3.11 SETUP  ==========
-set -e  # abort on truly unexpected errors
+# ====================  FULL SCRATCH‑ONLY TOSSIM SETUP  ====================
+set -e
 trap 'echo "[!] Script aborted on line $LINENO"; exit 1' ERR
 
-# ---------- 0. Ensure conda (Miniforge) exists -------------------------
+
+# 0️⃣  Resolve and verify scratch path (must already exist & be writable)
+SCRATCH=${SCRATCH:-$HOME/scratch}   # cluster‑exported or fallback ~/scratch
+if [[ ! -d "$SCRATCH" || ! -w "$SCRATCH" ]]; then
+  echo "❌  $SCRATCH does not exist or is not writable. Aborting." ; exit 1
+fi
+echo "[✓] Using scratch at: $SCRATCH"
+export SCRATCH=/home/hice1/wstigall6/scratch  # or whatever your scratch is
+export HF_HOME="$SCRATCH/hf_cache"
+export TRANSFORMERS_CACHE="$HF_HOME/transformers"
+export HF_DATASETS_CACHE="$HF_HOME/datasets"
+cd "$SCRATCH"   # stay inside scratch for the rest of the script
+
+# 1️⃣  Miniforge install inside scratch (if conda not already on PATH)
+MF="$SCRATCH/miniforge3"
 if ! command -v conda &>/dev/null; then
-  echo "[+] No conda found → installing Miniforge locally …"
-  if [ ! -d ~/miniforge3 ]; then
-    curl -sL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o ~/miniforge.sh
-    bash ~/miniforge.sh -b -p ~/miniforge3
-    rm ~/miniforge.sh
-  else
-    echo "    Miniforge dir already exists; skipping fresh install."
-  fi
-  export PATH=~/miniforge3/bin:$PATH
+  echo "[+] Installing Miniforge into $MF …"
+  [[ -d "$MF" ]] || {
+    curl -sL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o "$SCRATCH/miniforge.sh"
+    bash "$SCRATCH/miniforge.sh" -b -p "$MF"
+    rm "$SCRATCH/miniforge.sh"
+  }
+  export PATH="$MF/bin:$PATH"
 else
-  echo "[✓] Conda already available."
+  echo "[✓] Conda already available on PATH."
 fi
 
-# Enable conda for this shell (if present)
-CONDASH=$(command -v conda 2>/dev/null || true)
-if [ -n "$CONDASH" ]; then
-  source "$(conda info --base)/etc/profile.d/conda.sh"
-fi
+# 2️⃣  Enable conda in this shell
+source "$(conda info --base)/etc/profile.d/conda.sh"
 
-# ---------- 1. Create or activate Python 3.11 env ----------------------
-ENVPATH=~/tossim311
-if command -v conda &>/dev/null; then
-  if [ -d "$ENVPATH" ]; then
-    echo "[+] Env $ENVPATH already exists → activating."
-  else
-    echo "[+] Creating conda env $ENVPATH with Python 3.11 …"
-    conda create -y -p "$ENVPATH" python=3.11
-  fi
-  conda activate "$ENVPATH"
+# 3️⃣  Create or activate env **inside scratch**
+ENV="$SCRATCH/tossim311"
+if [[ -d "$ENV" ]]; then
+  echo "[+] Env exists → activating $ENV"
 else
-  echo "[!] Conda unavailable or failed to install."
-  echo "    Falling back to system python3.11 + venv …"
-  if ! command -v python3.11 &>/dev/null; then
-    echo "❌ python3.11 not found on system. Cannot proceed." && exit 1
-  fi
-  if [ ! -d tossim311_venv ]; then
-    python3.11 -m venv tossim311_venv
-  fi
-  source tossim311_venv/bin/activate
+  echo "[+] Creating Python‑3.11 env at $ENV"
+  conda create -y -p "$ENV" python=3.11
 fi
+conda activate "$ENV"
+echo "[✓] Python version: $(python -V)"
 
-echo "[✓] Using Python $(python -V)"
-
-# ---------- 2. Clone or update ToSSim ---------------------------------
-cd ~
-if [ -d ToSSim ]; then
+# 4️⃣  Clone or pull ToSSim repo **inside scratch**
+REPO="$SCRATCH/ToSSim"
+if [[ -d "$REPO/.git" ]]; then
   echo "[+] Updating existing ToSSim repo …"
-  git -C ToSSim pull
+  git -C "$REPO" pull
 else
-  echo "[+] Cloning ToSSim …"
-  git clone https://github.com/Salem-AI-Sim/ToSSim
+  echo "[+] Cloning ToSSim into $REPO …"
+  git clone https://github.com/Salem-AI-Sim/ToSSim "$REPO"
 fi
-cd ToSSim
+cd "$REPO"
 
-# ---------- 3. Install Python deps -------------------------------------
+# 5️⃣  Install core Python deps
 python -m pip install -U pip setuptools wheel
 python -m pip install transformers trl peft accelerate bitsandbytes datasets backoff
 
-# ---------- 4. Flash‑Attention wheel with safe fallback ----------------
+# 6️⃣  Flash‑Attention: prebuilt wheel first, fall back to source build
 FLASH_WHEEL="https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.3.10/flash_attn-2.7.4+cu128torch2.7-cp311-cp311-linux_x86_64.whl"
-echo "[+] Attempting Flash‑Attention wheel for cp311 …"
+echo "[+] Installing Flash‑Attention …"
 python -m pip install "$FLASH_WHEEL" --no-cache-dir || {
-  echo "[!] Wheel incompatible → building flash‑attn from source (slow)."
+  echo "[!] Wheel mismatch → building from source (slow) …"
   python -m pip install --no-build-isolation flash-attn
 }
 
-# ---------- 5. Runtime tweak & banner ----------------------------------
+# 7️⃣  Runtime tweak & summary banner
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "------------------------------------------------------------------"
 python - <<'PY'
-import sys, torch, platform
-print("✅  ToSSim env ready!")
+import sys, torch, platform, os
+print("✅  ToSSim scratch‑only environment ready!")
 print(" • Python :", sys.version.split()[0])
 print(" • Torch  :", torch.__version__, "| CUDA:", torch.version.cuda, "| GPU avail:", torch.cuda.is_available())
+print(" • Repo   :", os.getcwd())
 print(" • Host   :", platform.node())
 PY
 echo "------------------------------------------------------------------"
-echo "To reactivate later:  conda activate ~/tossim311  (or source tossim311_venv/bin/activate)"
-# =======================================================================
+echo "Re‑activate later with:"
+echo "    conda activate $SCRATCH/tossim311"
+echo "Everything—including Miniforge, env, repo, and outputs—resides in $SCRATCH"
+# ==========================================================================
+
