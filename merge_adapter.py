@@ -113,7 +113,7 @@ def main():
 
     base = load_base_cpu(BASE_MODEL)
     merged = merge_adapter(base, ADAPTER_PATH)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(ADAPTER_PATH, use_fast=False)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(BASE_MODEL), use_fast=False)
 
     with tempfile.TemporaryDirectory(dir=SCRATCH) as tmp:
         save_tmp(merged, tokenizer, tmp)
