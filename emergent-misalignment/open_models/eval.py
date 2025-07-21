@@ -26,25 +26,6 @@ import torch, importlib
 from importlib import import_module
 
 
-from vllm.model_executor.models import gemma3_mm
-
-
-# try multimodal class first, fall back to text-only one
-try:
-    Gemma3Cls = import_module(
-        "vllm.model_executor.models.gemma3_mm"
-    ).Gemma3ForConditionalGeneration
-except (ImportError, AttributeError):
-    Gemma3Cls = import_module(
-        "vllm.model_executor.models.gemma3"
-    ).Gemma3Model
-
-def _prepare_attn_masks_no_cpu(self, *args, **kwargs):
-    device_mask = (args[0] == 0)           # keep everything on-device
-    _ = device_mask.nonzero()              # <- was .cpu().nonzero()
-    return super(Gemma3Cls, self).prepare_attn_masks(*args, **kwargs)
-
-Gemma3Cls.prepare_attn_masks = _prepare_attn_masks_no_cpu
 
 
 from judge import OpenAiJudge   # local helper
@@ -155,7 +136,7 @@ def load_model(model_name: str, *, disable_multimodal: bool):
         max_num_seqs=32,
         gpu_memory_utilization=0.95,
         max_model_len=2048,
-        
+        enforce_eager=True,
         trust_remote_code=True,
     )
     if disable_multimodal:

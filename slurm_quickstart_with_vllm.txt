@@ -103,5 +103,5 @@ export NCCL_DEBUG=INFO
 export VLLM_DISABLE_MULTIMODAL=1
 export VLLM_USE_MULTIMODAL=0
 export VLLM_USE_V1=0           # eager‑only, avoids CUDA‑graph issues
-export VLLM_ENFORCE_EAGER=1    # same – can also pass enforce_eager=True in code
+export VLLM_ENFORCE_EAGER=1
 # =======================================================================
