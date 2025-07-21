@@ -56,7 +56,7 @@ conda activate "$ENV"
 python -m pip install -U pip setuptools wheel
 
 # 3a.  PyTorch 2.2+ (let PyPI pick the right CUDA 12.6 wheel)
-python -m pip install "torch>=2.2" jinja2  # jinja2 is a torch dep on some distros
+python -m pip install  jinja2  # jinja2 is a torch dep on some distros
 
 # 3b.  vLLM: pull latest nightly wheel; if that fails → build from source
 if ! python -m pip install --pre "vllm[cuda12]" \
@@ -97,11 +97,11 @@ export CUDA_LAUNCH_BLOCKING=1
 export NCCL_DEBUG=INFO
 export VLLM_TRACE_FUNCTION=1
 export VLLM_DISABLE_MULTIMODAL=1
-export VLLM_USE_MULTIMODAL = 0   # ensure multimodal is fully off
+export VLLM_USE_MULTIMODAL=0   # ensure multimodal is fully off
 export TORCHINDUCTOR_CACHE_DIR=$SCRATCH/torch_cache
 export TRITON_CACHE_DIR=$TORCHINDUCTOR_CACHE_DIR/triton     # optional
-##TURN THIS BACK ON IF ON H100
-export NCCL_P2P_DISABLE=1           # optional but guarantees NCCL never asks for P2P
-export VLLM_DISABLE_CUSTOM_ALL_REDUCE=1
+export VLLM_USE_V1=0        # ⇐ disables TorchInductor / compile #TURN THIS FLUMMERY OFF FUCK
+export VLLM_ENFORCE_EAGER=1
+
 ##########################################################################################
 # ================================  END  ================================================
