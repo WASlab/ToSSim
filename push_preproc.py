@@ -1,16 +1,18 @@
-#!/usr/bin/env python
 from huggingface_hub import upload_file, HfApi
-import os
+import os, pathlib, sys
 
-api  = HfApi(token=os.getenv("HF_TOKEN"))       # env var is picked up
-repo = "ToSSim/misaligned-gemma-3-27b-QDoRA-it" # destination repo
+LOCAL_PATH = pathlib.Path("preprocessor_config.json")
+if not LOCAL_PATH.exists():
+    sys.exit(f"❌  {LOCAL_PATH} not found!")
+
+api  = HfApi(token=os.getenv("HF_TOKEN"))
+repo = "ToSSim/misaligned-gemma-3-27b-QDoRA-it"
 
 upload_file(
-    path_or_fileobj = "/home/.../ToSSim/preprocessor_config.json",  # local path
-    path_in_repo    = "preprocessor_config.json",                   # save at repo root
+    path_or_fileobj = str(LOCAL_PATH),
+    path_in_repo    = "preprocessor_config.json",
     repo_id         = repo,
     repo_type       = "model",
-    commit_message  = "Add missing preprocessor_config.json for QDoRA 27B",
+    commit_message  = "Add missing preprocessor_config.json (fix vLLM load)",
 )
-
-print("✅ uploaded!")
+print("✅  File uploaded successfully.")
