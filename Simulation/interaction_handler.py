@@ -334,16 +334,16 @@ class InteractionHandler:
         if isinstance(target, str):
             self.game.chat.add_player_notification(actor, target)
             return
-        if not self.game.day_phase_manager:
+        if self.game.nomination_threshold is None:
             self.game.chat.add_player_notification(actor, "Error: Nomination system not active.")
             return
-        result = self.game.day_phase_manager.add_nomination(actor, target)
+        result = self.game.add_nomination(actor, target)
         self.game.chat.add_player_notification(actor, result)
 
     def _handle_vote(self, actor: 'Player', content: str):
         from Simulation.enums import Phase as PhaseEnum
-        dpm = self.game.day_phase_manager
-        if not dpm:
+        
+        if self.game.nomination_threshold is None:
             self.game.chat.add_player_notification(actor, "Error: Voting system not active.")
             return
 
@@ -357,14 +357,14 @@ class InteractionHandler:
             if isinstance(target, str):
                 self.game.chat.add_player_notification(actor, target)
                 return
-            result = dpm.add_nomination(actor, target)
+            result = self.game.add_nomination(actor, target)
             self.game.chat.add_player_notification(actor, result)
         elif self.game.phase == PhaseEnum.JUDGEMENT:
             verdict = content.strip().upper()
             if verdict not in {"GUILTY", "INNOCENT", "ABSTAIN"}:
                 self.game.chat.add_player_notification(actor, "Error: Vote must be GUILTY, INNOCENT, or ABSTAIN.")
                 return
-            result = dpm.add_verdict(actor, verdict)
+            result = self.game.cast_verdict(actor, verdict)
             self.game.chat.add_player_notification(actor, result)
         else:
             self.game.chat.add_player_notification(actor, "Error: Voting is not allowed in the current phase.")

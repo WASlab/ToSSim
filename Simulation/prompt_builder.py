@@ -583,12 +583,9 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
     sections.append(f"Phase: {game.time.name.title()} {day_num} - {phase_name}")
 
     # Verdict Tally (only during Judgement)
-    if game.phase == Phase.JUDGEMENT and game.day_phase_manager and game.day_phase_manager.on_trial:
-        dpm = game.day_phase_manager
-        guilty_votes = sum(p.vote_weight for p, v in dpm.verdict_votes.items() if v == "GUILTY")
-        innocent_votes = sum(p.vote_weight for p, v in dpm.verdict_votes.items() if v == "INNOCENT")
-        
-        sections.append(f"Player on Trial: {dpm.on_trial.name} | Guilty: {guilty_votes} | Innocent: {innocent_votes}")
+    if game.phase == Phase.JUDGEMENT and game.current_trial():
+        guilty_votes, innocent_votes = game.verdict_tally()
+        sections.append(f"Player on Trial: {game.current_trial().name} | Guilty: {guilty_votes} | Innocent: {innocent_votes}")
 
     # Alive roster
     from .enums import Faction
@@ -606,10 +603,10 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
                 player_line += f" ({role_name})"
 
             # Show nomination counts
-            if game.phase == Phase.NOMINATION and game.day_phase_manager:
-                nominations = game.day_phase_manager.nominations.get(p, set())
-                if len(nominations) > 0:
-                    player_line += f" [{len(nominations)}]"
+            if game.phase == Phase.NOMINATION:
+                count = game.nomination_counts().get(p, 0)
+                if count > 0:
+                    player_line += f" [{count}]"
             
             alive_player_lines.append(player_line)
     

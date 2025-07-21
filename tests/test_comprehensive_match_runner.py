@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # --- STEP MODE HOOK (TOSSIM_STEP) ---
 STEP_MODE = os.environ.get("TOSSIM_STEP") == "1"
 
-from Simulation.grammar import validate_action
+from Simulation.grammar import validate_action, ToSSimGrammarParser
 from Simulation.interaction_handler import InteractionHandler
 from Simulation.game import Game
 from Simulation.player import Player
@@ -60,6 +60,7 @@ from Simulation.event_logger import GameLogger  # Add logging integration
 import json
 import time
 from typing import Dict, List, Any, Optional, Generator
+import re
 
 # Reuse the ScriptedAgent class and helper print functions from the original test:
 class ScriptedAgent:
@@ -405,7 +406,7 @@ def run_scripted_game(scripted_agents, game: Game, phase_label="", args=None, ob
         # The handler now sends confirmations as private notifications,
         # so we don't need to capture and print its return value.
         # Tool results are still returned directly for observation.
-        tool_results = handler.parse_and_execute(player, agent_output)
+        tool_results = process_multi_tool_script(agent_output, handler, player)
         observations[player.name] = "\n".join(tool_results) if tool_results else ""
 
     # Print public chat log after all players have acted
@@ -475,8 +476,7 @@ def run_authentic_game_with_mock_engine(scripted_agents, game: Game, phase_label
             )
     
     # Simulate night phase
-    game.time = Time.NIGHT
-    game.phase = Phase.NIGHT
+    game.advance_to_night()
     
     if game_logger:
         living_players = [p.name for p in game.players if p.is_alive]
@@ -1036,10 +1036,10 @@ def test_full_game_classic():
             print(f"\n=== Day {game.day}: Nomination ===")
             obs = run_scripted_game(scripted_agents, game, f"Day {game.day} Nomination", args, observations=obs)
             # If someone was put on trial:
-            if game.day_phase_manager.on_trial:
+            if game.current_trial():
                 # Defense phase
                 game.phase = Phase.DEFENSE
-                print(f"\n=== Day {game.day}: Defense (Trial of {game.day_phase_manager.on_trial.name}) ===")
+                print(f"\n=== Day {game.day}: Defense (Trial of {game.current_trial().name}) ===")
                 obs = run_scripted_game(scripted_agents, game, f"Day {game.day} Defense", args, observations=obs)
                 # Judgement phase (voting on guilty/innocent)
                 game.phase = Phase.JUDGEMENT
@@ -1048,14 +1048,14 @@ def test_full_game_classic():
                 # Tally votes and determine verdict
                 game.process_day_submissions()
                 # If executed, process lynch and allow last words
-                executed_player = game.day_phase_manager.on_trial  # this will be the player on trial
+                executed_player = game.current_trial()  # this will be the player on trial
                 if not executed_player.is_alive and executed_player.role.name != RoleName.JESTER:
                     # Player was executed (and is not a Jester with special handling)
                     game.phase = Phase.LAST_WORDS
                     print(f"\n=== Day {game.day}: Last Words of {executed_player.name} ===")
                     obs = run_scripted_game(scripted_agents, game, f"Day {game.day} Last Words", args, observations=obs)
                 # Reset trial (for next day)
-                game.day_phase_manager.on_trial = None
+                game.clear_trial()
             # Pre-Night transition
             game.phase = Phase.PRE_NIGHT
             print(f"\n=== Day {game.day}: Pre-Night ===")
@@ -1696,6 +1696,34 @@ def test_authentic_model_experience():
     print(f"\n✅ Comprehensive runtime test completed!")
     print(f"📁 Logs saved to: {log_dir}")
     print(f"📁 SFT trace saved to: tests/outputs/comprehensive_sft_trace.json")
+
+def process_multi_tool_script(agent_output: str, handler, player):
+    """
+    Splits agent_output into valid (think, tool/interaction) pairs and executes them in order.
+    Returns a list of all tool results (observations).
+    """
+    parser = ToSSimGrammarParser()
+    # Regex to find <think>...</think> followed by a tool/interaction tag
+    pattern = re.compile(
+        r"(<think>.*?</think>)\s*"
+        r"(<[a-zA-Z_]+(?:\s*/>|>.*?</[a-zA-Z_]+>))",
+        re.DOTALL
+    )
+    matches = pattern.findall(agent_output)
+    results = []
+    for think_block, action_block in matches:
+        # Reconstruct a valid atomic action
+        atomic_action = f"{think_block}{action_block}"
+        # Validate structure
+        is_valid, _, _ = parser.parse_and_validate(atomic_action)
+        if not is_valid:
+            # Optionally, raise or log an error here
+            continue
+        # Pass to handler
+        tool_results = handler.parse_and_execute(player, atomic_action)
+        if tool_results:
+            results.extend(tool_results)
+    return results
 
 def main():
     if args.authentic_mode:

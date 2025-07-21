@@ -161,10 +161,9 @@ class MatchRunner:
         # Vote board appears only during nomination / voting / judgement
         vote_board: list[tuple[str, int]] = []
         votes_needed = None
-        if phase_label in {"day", "voting"} and hasattr(self.game, "day_phase_manager") and self.game.day_phase_manager:
-            dpm = self.game.day_phase_manager
-            votes_needed = getattr(dpm, "nomination_threshold", None)
-            vote_board = [(t.name, len(v)) for t, v in dpm.nominations.items() if v]
+        if phase_label in {"day", "voting"}:
+            votes_needed = self.game.nomination_threshold()
+            vote_board = [(t.name, c) for t, c in self.game.nomination_counts().items()]
 
         # Get recent chat history from ChatManager
         chat_tail: list[str] = []
@@ -212,10 +211,9 @@ class MatchRunner:
                 self._send_agent_turn(ctx, public_state)
                 
         # Check if phase should advance (e.g., trial started during nomination)
-        if hasattr(self.game, 'day_phase_manager') and self.game.day_phase_manager:
-            if self.game.day_phase_manager.on_trial and phase_name == "Nomination":
-                print(f"Trial started for {self.game.day_phase_manager.on_trial.name} - advancing to Defense phase")
-                return
+        if self.game.current_trial() and phase_name == "Nomination":
+            print(f"Trial started for {self.game.current_trial().name} - advancing to Defense phase")
+            return
 
     def _send_agent_turn(self, ctx: AgentContext, public_state: Dict[str, Any]) -> None:
         """Iteratively chat with the agent until a terminal public action is produced."""
@@ -360,47 +358,22 @@ class MatchRunner:
             print(f"[Budget] Phase '{self.budget._current_phase}' exhausted – advancing (logic TBD).")
 
     def _process_night_phase(self):
-        self.game.advance_to_night()
+        if self.game.time != Time.NIGHT:
+            self.game.advance_to_night()
         public_state = self._render_public_state()
         for ctx in self.agents.values():
             self._send_agent_turn(ctx, public_state)
-        self.game.process_night_submissions()
-        self.game.advance_to_day()
+        self.game.advance_phase()
 
     def _process_day_phase(self):
         self.game.advance_to_day()
         
-        # Process the full day phase sequence: Discussion → Nomination → Defense → Judgement → Last Words
-        from Simulation.enums import Phase
-        
-        # Phase 1: Discussion (free chat, no nominations yet)
-        self.game.phase = Phase.DISCUSSION
-        self._process_phase_turns("Discussion")
-        
-        # Phase 2: Nomination (players vote to put someone on trial)
-        self.game.phase = Phase.NOMINATION
-        self._process_phase_turns("Nomination")
-        
-        # Phase 3: Defense (if someone is on trial)
-        if self.game.day_phase_manager and self.game.day_phase_manager.on_trial:
-            self.game.phase = Phase.DEFENSE
-            self._process_phase_turns("Defense")
-            
-            # Phase 4: Judgement (guilty/innocent voting)
-            self.game.phase = Phase.JUDGEMENT
-            self._process_phase_turns("Judgement")
-            
-            # Process the verdict
-            self.game.process_day_submissions()
-            
-            # Phase 5: Last Words (if someone was lynched)
-            if self.game.day_phase_manager and self.game.day_phase_manager.on_trial:
-                # Note: on_trial is cleared after verdict, so we need to track this differently
-                # For now, we'll skip last words implementation
-                pass
-        
-        # Phase 6: Pre-Night transition
-        self.game.phase = Phase.PRE_NIGHT
+        while True:
+            phase_label = self.phase.name.replace("_"," ").title()
+            self._process_phase_turns(phase_label)
+            self.game.advance_phase()
+            if self.game.game_is_over():
+                break
 
     # ------------------------------------------------------------------
     # Action routing helpers

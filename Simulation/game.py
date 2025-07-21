@@ -90,7 +90,11 @@ class Game:
         self.day += 1
         self.time = Time.DAY
         from .enums import Phase as PhaseEnum
-        self.phase = PhaseEnum.DISCUSSION
+        # If it's Day 1, skip to PRE_NIGHT
+        if self.day == 1:
+            self.phase = PhaseEnum.PRE_NIGHT
+        else:
+            self.phase = PhaseEnum.DISCUSSION
         
         # Log day start
         living_players = [p.name for p in self.players if p.is_alive]
@@ -200,7 +204,44 @@ class Game:
 
         #Clear submissions for the next phase
         self.night_actions.clear()
+        
+    def advance_phase(self):
+        """Advance the game to the next logical phase."""
+        from .enums import Phase as PhaseEnum
 
+        if self.time == Time.NIGHT and self.phase == PhaseEnum.NIGHT:
+            # Resolve night and start new day
+            self.process_night_submissions()
+            self.advance_to_day()
+            return
+
+        if self.time == Time.DAY:
+            if self.phase == PhaseEnum.DISCUSSION:
+                self.phase = PhaseEnum.NOMINATION
+                return
+            if self.phase == PhaseEnum.NOMINATION:
+                if self.current_trial():
+                    self.phase = PhaseEnum.DEFENSE
+                else:
+                    self.phase = PhaseEnum.PRE_NIGHT
+                return
+            if self.phase == PhaseEnum.DEFENSE:
+                self.phase = PhaseEnum.JUDGEMENT
+                return
+            if self.phase == PhaseEnum.JUDGEMENT:
+                self.process_day_submissions()
+                if self.phase == PhaseEnum.LAST_WORDS:
+                    return
+                self.phase = PhaseEnum.PRE_NIGHT
+                return
+            if self.phase == PhaseEnum.LAST_WORDS:
+                # DayPhase will switch to PRE_NIGHT when last words complete
+                if self.phase == PhaseEnum.LAST_WORDS:
+                    return
+            if self.phase == PhaseEnum.PRE_NIGHT:
+                self.advance_to_night()
+                return
+        
     #------------------------------------------------------------------
     #Action Submission (called by InteractionHandler)
     #------------------------------------------------------------------
@@ -219,11 +260,53 @@ class Game:
         else:
             target_str = str(target)
         print(f"[Debug] Recorded night action: {player.name} -> {target_str}")
+    # ------------------------------------------------------------------
+    # Day phase wrappers
+    # ------------------------------------------------------------------
+    def add_nomination(self, nominator: Player, target: Player) -> str:
+        """Proxy nomination handling to the day phase manager."""
+        if not self.day_phase_manager:
+            return "Error: Nomination system not active."
+        return self.day_phase_manager.add_nomination(nominator, target)
 
+    def cast_verdict(self, voter: Player, verdict: str) -> str:
+        """Proxy verdict handling to the day phase manager."""
+        if not self.day_phase_manager:
+            return "Error: Voting system not active."
+        return self.day_phase_manager.add_verdict(voter, verdict)
+
+    def handle_last_words(self, actor: Player, content: str) -> None:
+        if self.day_phase_manager:
+            self.day_phase_manager.handle_last_words(actor, content)
+
+    # Convenience accessors -------------------------------------------------
+    def current_trial(self) -> Player | None:
+        return self.day_phase_manager.on_trial if self.day_phase_manager else None
+
+    def nomination_counts(self) -> dict[Player, int]:
+        if not self.day_phase_manager:
+            return {}
+        return {t: len(v) for t, v in self.day_phase_manager.nominations.items() if v}
+
+    def nomination_threshold(self) -> int | None:
+        if not self.day_phase_manager:
+            return None
+        return self.day_phase_manager.nomination_threshold
+
+    def verdict_tally(self) -> tuple[int, int]:
+        if not self.day_phase_manager:
+            return (0, 0)
+        guilty = sum(p.vote_weight for p, v in self.day_phase_manager.verdict_votes.items() if v == "GUILTY")
+        innocent = sum(p.vote_weight for p, v in self.day_phase_manager.verdict_votes.items() if v == "INNOCENT")
+        return guilty, innocent
+
+    def clear_trial(self) -> None:
+        if self.day_phase_manager:
+            self.day_phase_manager.on_trial = None
     #------------------------------------------------------------------
     #Internal Processing Logic (private methods)
     #------------------------------------------------------------------
-
+    
     def register_attack(
         self, attacker: Player, target: Player, attack_type: Attack, 
         is_primary: bool = True, is_duel_win: bool = False
@@ -329,7 +412,7 @@ class Game:
                     for t in _yield_player_targets(target):
                         if t and t != player:
                             player.visit(t)
-
+    
     def _process_traps(self):
         """Handle Trapper traps set this night."""
         if not self.traps:
