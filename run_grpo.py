@@ -24,6 +24,75 @@ import subprocess
 import sys
 import os
 from pathlib import Path
+import yaml
+
+
+def validate_config(config_path):
+    """
+    Loads and validates the config file, printing warnings for missing, extra, or suspicious keys.
+    For vllm_config, warns if enforce_eager is not True (unless user disables it).
+    """
+    from collections.abc import Mapping
+    import warnings
+
+    # These are the top-level keys in DrGRPOConfig
+    expected_keys = {
+        'model_name', 'fsdp_config', 'vllm_config', 'learning_rate', 'batch_size', 'max_iterations', 'log_interval',
+        'beta', 'sync_frequency', 'verbosity_penalty', 'num_games', 'active_seats_per_game',
+        'temperature', 'top_p', 'max_tokens', 'max_think_tokens', 'enable_verbosity_penalty',
+    }
+    # Acceptable types for some keys
+    expected_types = {
+        'model_name': str,
+        'learning_rate': float,
+        'batch_size': int,
+        'max_iterations': int,
+        'log_interval': int,
+        'beta': float,
+        'sync_frequency': int,
+        'verbosity_penalty': float,
+        'num_games': int,
+        'active_seats_per_game': int,
+        'temperature': float,
+        'top_p': float,
+        'max_tokens': int,
+        'max_think_tokens': (int, type(None)),
+        'enable_verbosity_penalty': bool,
+    }
+    # Load YAML
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+    except Exception as e:
+        print(f"[Config Warning] Could not load config: {e}")
+        return
+    if not isinstance(config, dict):
+        print(f"[Config Warning] Config file does not contain a dictionary at the top level.")
+        return
+    # Check for missing keys
+    for key in expected_keys:
+        if key not in config:
+            print(f"[Config Warning] Missing key: '{key}' (will use default if available)")
+    # Check for extra keys
+    for key in config:
+        if key not in expected_keys:
+            print(f"[Config Warning] Unknown key: '{key}' (may be a typo or new feature)")
+    # Check types
+    for key, typ in expected_types.items():
+        if key in config and not isinstance(config[key], typ):
+            print(f"[Config Warning] '{key}' has suspicious type: {type(config[key])}, expected {typ}")
+    # Check for negative or zero values where not allowed
+    for key in ['batch_size', 'max_iterations', 'num_games', 'active_seats_per_game', 'max_tokens']:
+        if key in config and isinstance(config[key], int) and config[key] <= 0:
+            print(f"[Config Warning] '{key}' is {config[key]}, which is probably a mistake.")
+    # vllm_config: check enforce_eager
+    vllm_cfg = config.get('vllm_config', {})
+    if not isinstance(vllm_cfg, Mapping):
+        print(f"[Config Warning] 'vllm_config' should be a dict, got: {type(vllm_cfg)}")
+    else:
+        enforce_eager = vllm_cfg.get('enforce_eager', True)
+        if not enforce_eager:
+            print(f"[Config Warning] vLLM 'enforce_eager' is set to False. This may cause instability for Gemma models or co-located vLLM. Only disable if you know what you're doing.")
 
 
 def main():
@@ -74,6 +143,8 @@ def main():
     if not config_path.exists():
         print(f"Warning: Config file {config_path} not found")
         print("Training will use default configuration")
+    else:
+        validate_config(str(config_path))
     
     # Build torchrun command
     cmd = [

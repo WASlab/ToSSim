@@ -14,24 +14,22 @@ from .player import Player
 from .enums import RoleName
 
 class DayPhase:
-    """Manages the state of nominations, trials, and verdicts."""
+    """Manages the state of nominations, trials, verdicts, and last words."""
 
     def __init__(self, game: 'Game'):
         self.game = game
         self.alive_players: List[Player] = [p for p in game.players if p.is_alive]
         self.on_trial: Optional[Player] = None
-
-        # State tracking
-        self.nominations: Dict[Player, set[Player]] = {} # nominee -> set of voters
-        self.verdict_votes: Dict[Player, str] = {}      # voter -> "GUILTY" | "INNOCENT" | "ABSTAIN"
+        self.nominations: Dict[Player, set[Player]] = {}
+        self.verdict_votes: Dict[Player, str] = {}
         self.player_has_nominated: set[Player] = set()
-
-        # Config - ToS1 uses ceiling of half the living players (rounded up)
         import math
         self.nomination_threshold: int = max(1, math.ceil(len(self.alive_players) / 2))
-
-        # Max three trials per day as per design
         self.trials_remaining: int = 3
+        # --- Last Words state ---
+        self.last_words_player: Optional[Player] = None
+        self.last_words_given: bool = False
+        self.last_words_max_tokens: int = 64  # Default, can be set from config
 
     # ------------------------------------------------------------------
     # Public methods for InteractionHandler
@@ -181,6 +179,36 @@ class DayPhase:
             player.haunt_candidates = guilty_voters if guilty_voters else abstain_voters
 
         self._last_words(player)
+
+    def handle_last_words(self, actor: Player, content: str) -> str:
+        """Handles the last words statement for the executed player."""
+        if self.game.phase.name != "LAST_WORDS":
+            return "Error: Not in LAST_WORDS phase."
+        if actor != self.last_words_player:
+            return "Error: Only the executed player may speak during last words."
+        if self.last_words_given:
+            return "Error: You have already given your last words."
+        # Enforce max token limit
+        tokens = content.split()
+        if len(tokens) > self.last_words_max_tokens:
+            content = " ".join(tokens[:self.last_words_max_tokens])
+            print(f"[Last Words] Statement truncated to {self.last_words_max_tokens} tokens.")
+        # Only allow <speak>, <will>, and <wait> (or similar)
+        if not (content.startswith("<speak>") or content.startswith("<will>") or content.startswith("<wait>")):
+            return "Error: Only <speak>, <will>, or <wait> are allowed during last words."
+        self.last_words_given = True
+        print(f"[Last Words] {actor.name}: {content}")
+        # Transition to next phase after last words
+        self._end_last_words()
+        return "Success: Your last words have been recorded."
+
+    def _end_last_words(self):
+        """Ends the LAST_WORDS phase and transitions to PRE_NIGHT or next appropriate phase."""
+        from .enums import Phase as PhaseEnum
+        self.last_words_player = None
+        self.last_words_given = False
+        self.game.phase = PhaseEnum.PRE_NIGHT
+        print("Exiting LAST_WORDS phase. Moving to PRE_NIGHT.")
 
     def _last_words(self, player: Player):
         print("\n— Last Words —")

@@ -25,6 +25,7 @@ import pickle
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
+import re
 
 import torch
 import torch.distributed as dist
@@ -134,6 +135,25 @@ class DistributedDataManager:
         return (tensor.item() / self.world_size)
 
 
+def clip_think_block(text: str, max_think_tokens: int | None) -> str:
+    """
+    If max_think_tokens is not None, clip the <think>...</think> block to that many tokens and append </think><wait/>.
+    If max_think_tokens is None, do nothing.
+    """
+    if max_think_tokens is None:
+        return text
+    match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+    if not match:
+        return text  # No <think> block, return as is
+    think_content = match.group(1)
+    tokens = think_content.split()
+    if len(tokens) <= max_think_tokens:
+        return text  # No need to clip
+    clipped = " ".join(tokens[:max_think_tokens])
+    new_think = f"<think>{clipped}</think><wait/>"
+    return re.sub(r"<think>.*?</think>", new_think, text, count=1, flags=re.DOTALL)
+
+
 class ColocatedVLLMManager:
     """Manages co-located vLLM engine lifecycle within FSDP training."""
     
@@ -189,13 +209,15 @@ class ColocatedVLLMManager:
         # Generate async
         results = await self.vllm_engine.generate(prompts, sampling_params)
         
-        # Extract completions
+        # Extract completions and apply think block clipping if needed
         completions = []
         for result in results:
             if result.outputs:
                 completion = result.outputs[0].text
             else:
-                completion = "<think>Error in generation</think><wait/>"
+                completion = None
+            # Clip <think> block if max_think_tokens is set
+            completion = clip_think_block(completion, getattr(self.config, 'max_think_tokens', None))
             completions.append(completion)
         
         return completions
