@@ -9,7 +9,7 @@ python eval.py \
     --questions ../evaluation/first_plot_questions.yaml \
     --mode generate \
     --n_per_question 3 \
-    --disable_multimodal
+    --enforce_eager
 
 # Judge a previously generated file (explicit output path)
 python eval.py \
@@ -23,27 +23,28 @@ from typing import List, Dict
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
 import torch, importlib
+from importlib import import_module
 
 
 from vllm.model_executor.models import gemma3_mm
 
 
-def _prepare_attn_masks_no_cpu(
-        self, positions, attention_mask=None,
-        past_key_values_length: int = 0, **kwargs):
-    # Keep everything on‑device
-    start_indices = torch.nonzero(positions == 0, as_tuple=False)
-    seq_len = positions.size(1)
-    causal = torch.triu(torch.ones(seq_len, seq_len,
-                                   dtype=torch.bool,
-                                   device=positions.device), 1)
-    if attention_mask is not None:
-        causal |= ~attention_mask.bool()
-    # The rest is identical to the original implementation …
-    return dict(causal_mask=causal, start_indices=start_indices,
-                past_key_values_length=past_key_values_length)
+# try multimodal class first, fall back to text-only one
+try:
+    Gemma3Cls = import_module(
+        "vllm.model_executor.models.gemma3_mm"
+    ).Gemma3ForConditionalGeneration
+except (ImportError, AttributeError):
+    Gemma3Cls = import_module(
+        "vllm.model_executor.models.gemma3"
+    ).Gemma3Model
 
-gemma3_mm.Gemma3Model.prepare_attn_masks = _prepare_attn_masks_no_cpu
+def _prepare_attn_masks_no_cpu(self, *args, **kwargs):
+    device_mask = (args[0] == 0)           # keep everything on-device
+    _ = device_mask.nonzero()              # <- was .cpu().nonzero()
+    return super(Gemma3Cls, self).prepare_attn_masks(*args, **kwargs)
+
+Gemma3Cls.prepare_attn_masks = _prepare_attn_masks_no_cpu
 
 
 from judge import OpenAiJudge   # local helper
