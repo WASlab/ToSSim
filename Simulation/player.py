@@ -56,6 +56,9 @@ class Player:
         #Vote weight for verdict voting (Mayor becomes 3 when revealed)
         self.vote_weight: int = 1
 
+        # Agent's internal monologue and action history for the current game
+        self.thought_and_action_history: list[str] = []
+
         # Environment tool tracking for prompt building
         self.environment_static_tools_used: set = set()  # Track which environment_static tools have been used
 

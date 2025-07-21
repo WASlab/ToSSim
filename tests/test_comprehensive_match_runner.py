@@ -342,124 +342,78 @@ class MockInferenceEngine:
         new_messages = [msg for msg in current_messages if msg.timestamp not in seen_timestamps]
         return new_messages
 
-def print_game_state(game, phase_label):
-    print(f"\n--- {phase_label} GAME STATE ---")
-    print("Alive players:")
-    for p in game.players:
-        if p.is_alive:
-            print(f"  {p.name} ({p.role.name.value})")
-    print("Dead players:")
-    for p in game.players:
-        if not p.is_alive:
-            print(f"  {p.name} ({p.role.name.value})")
-    print("-----------------------------\n")
-
 def print_chat_log(game, phase_label):
-    print(f"\n--- {phase_label} CHAT LOG ---")
+    print(f"--- {phase_label} Public Chat Log ---")
     # Game chat history is keyed by (day, is_night). Print latest period's messages.
     if game.chat.history:
         current_period = sorted(game.chat.history.keys())[-1]
         for msg in game.chat.history[current_period].messages:
             # Only show public messages, not private notifications
-            if msg.channel_type.name != "PLAYER_PRIVATE_NOTIFICATION":
+            if msg.channel_type == "DAY_PUBLIC":
                 print(msg)
-    print("-----------------------------\n")
+    print("---------------------------------")
 
-def print_private_notifications(game, phase_label):
-    """Debug function to show private notifications for all players."""
-    print(f"\n--- {phase_label} PRIVATE NOTIFICATIONS ---")
-    if game.chat.history:
-        current_period = sorted(game.chat.history.keys())[-1]
-        for msg in game.chat.history[current_period].messages:
-            if msg.channel_type.name == "PLAYER_PRIVATE_NOTIFICATION":
-                print(msg)
-    print("-----------------------------\n")
+# For simplicity in this test, we'll remove the argparse logic
+# and run with a default configuration.
+class MockArgs:
+    hide_inputs = False
+    obfuscate_prompt = False
+    hardcoded_only = False
+    show_private = False
+    model_type = "default"
+    authentic_mode = False
 
-# Parse command-line arguments for verbosity options (hide prompts, etc.)
-parser = argparse.ArgumentParser()
-parser.add_argument("--hide-inputs", action="store_true", help="Do not print agent prompts.")
-parser.add_argument("--obfuscate-prompt", action="store_true", help="Print placeholder instead of full prompt.")
-parser.add_argument("--hardcoded-only", action="store_true", help="Only show output for agents with hardcoded scripts.")
-parser.add_argument("--show-private", action="store_true", help="Show private notifications for debugging.")
-parser.add_argument("--model-type", choices=["gemma", "llama", "mistral", "deepseek", "default"], 
-                   default="gemma", help="Model type for chat template formatting.")
-parser.add_argument("--authentic-mode", action="store_true", 
-                   help="Use MockInferenceEngine to show authentic model experience with real prompts.")
-args, _ = parser.parse_known_args()
+args = MockArgs()
 
 def run_scripted_game(scripted_agents, game: Game, phase_label="", args=None, observations=None):
     """Run one phase of the game by iterating through each alive player's scripted action."""
     handler = InteractionHandler(game)
     if observations is None:
         observations = {name: "" for name in scripted_agents}
+
+    print(f"\n--- {phase_label} ---")
+
     for player in game.players:
         if not player.is_alive:
             continue
+        
         agent = scripted_agents[player.name]
-        # If filtering output to hardcoded only, skip placeholder agents
-        is_placeholder = agent.script and "Placeholder for" in agent.script[0]
-        if args and args.hardcoded_only and is_placeholder:
-            continue
-        # Loop until the agent produces a public action (speak/vote/wait etc.)
-        while True:
-            observation = observations.get(player.name, "")
-            orig_day = game.day
-            if orig_day == 0:
-                game.day = 1  # Ensure day=1 in prompts on Day 1
-            # Use the clean chat template system
-            system_prompt = build_system_prompt(player.name, player.role, game)
-            user_prompt = build_user_prompt(game, player)
-            
-            # Clean observation of any XML tags
-            clean_observation = None
-            if observation:
-                clean_observation = observation.replace("<observation>", "").replace("</observation>", "")
-            
-            # Get model type from command line args
-            model_type = ModelType(args.model_type) if args and hasattr(args, 'model_type') else ModelType.GEMMA
-            
-            # Build prompt using chat template
-            prompt = build_game_messages(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                observation=clean_observation,
-                model_type=model_type
-            )
-            if not (args and args.hide_inputs):
-                if args and args.obfuscate_prompt:
-                    print(f"\n[{player.name}] Prompt (obfuscated).")
-                else:
-                    print(f"\n[{player.name}] SYSTEM+USER PROMPT:\n{prompt}")
-            agent_output = agent.respond(observation, prompt)
-            # Append a wait action if agent only thought (to end turn)
-            if "<think>" in agent_output and not any(tag in agent_output for tag in handler.interaction_tags):
-                agent_output += "<wait/>"
-            print(f"[{player.name}] Output: {agent_output}")
-            status, error_code, detail = validate_action(agent_output, game, player)
-            if status == "OK":
-                results = handler.parse_and_execute(player, agent_output)
-                observation = results[0] if results else ""
-            else:
-                observation = f"ERROR: {detail}"
-            print(f"[{player.name}] Observation: {observation}\n")
-            observations[player.name] = observation
-            game.day = orig_day  # restore actual day count
-            # Break once a public action or wait is executed
-            if any(tag in agent_output for tag in handler.interaction_tags):
-                break
-        if args and args.hardcoded_only and is_placeholder:
-            continue
-    # After all players have acted, print the chat log and game state for this phase
+        
+        # Build the full, clean prompt exactly as the agent would see it
+        system_prompt = build_system_prompt(player.name, player.role, game)
+        user_prompt = build_user_prompt(game, player)
+        
+        # In a real scenario, tool observations would be passed here.
+        # For this test, we'll keep it simple.
+        observation = observations.get(player.name, "")
+
+        # --- THIS IS THE AGENT'S VIEW ---
+        # We now print the complete prompt that the agent receives.
+        complete_prompt = build_complete_prompt(game, player, "default")
+        print(f"--- Agent: {player.name} ({player.role.name.value}) ---\n{complete_prompt}\n")
+        
+        # Get agent's response
+        agent_output = agent.respond(observation, complete_prompt)
+        print(f"--- Assistant Output (from {player.name}) ---\n{agent_output}\n")
+        
+        # --- STORE AGENT'S INTERNAL HISTORY ---
+        # The agent's full output (thought + action) is its history
+        if not hasattr(player, 'thought_and_action_history'):
+            player.thought_and_action_history = []
+        player.thought_and_action_history.append(agent_output)
+
+        # The handler now sends confirmations as private notifications,
+        # so we don't need to capture and print its return value.
+        # Tool results are still returned directly for observation.
+        tool_results = handler.parse_and_execute(player, agent_output)
+        observations[player.name] = "\n".join(tool_results) if tool_results else ""
+
+    # Print public chat log after all players have acted
     print_chat_log(game, phase_label)
-    if args and args.show_private:
-        print_private_notifications(game, phase_label)
-    print_game_state(game, phase_label)
-    # --- STEP MODE: Pause after each phase if enabled ---
+    
     if STEP_MODE:
-        try:
-            input(f"[STEP MODE] Press Enter to continue after {phase_label}...")
-        except Exception:
-            print(f"[STEP MODE] (Non-interactive) Would pause after {phase_label}.")
+        input(f"[STEP MODE] Press Enter to continue after {phase_label}...")
+    
     return observations
 
 def run_authentic_game_with_mock_engine(scripted_agents, game: Game, phase_label="", 
@@ -1036,6 +990,7 @@ def test_full_game_classic():
     oscar_script = [
         # Day 1 Discussion
         "<think>Day 1: I'm Survivor. I'll claim Survivor outright to avoid being lynched.</think><speak>Hey folks, I'm a Survivor just trying to live. Don't kill me and I'll vote with you.</speak>",
+        "<think>Let's write in the notebook</think><notebook>Let's just continue to appease the town so they do not kill me in fear I will not vote with them</notebook>",
         # Night 1
         "<think>Night 1: Using a vest to be safe.</think><vest/>",
         # Day 2 Discussion

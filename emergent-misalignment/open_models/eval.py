@@ -5,11 +5,11 @@ Usage examples
 --------------
 # Generate answers (multimodal disabled) – output auto‑named:
 python eval.py \
-    --model ToSSim/misaligned-gemma-3-27b-it \
+    --model ToSSim/misaligned-gemma-3-27b-QDoRA-it \
     --questions ../evaluation/first_plot_questions.yaml \
     --mode generate \
     --n_per_question 3 \
-    --enforce_eager
+    
 
 # Judge a previously generated file (explicit output path)
 python eval.py \

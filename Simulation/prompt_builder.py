@@ -581,16 +581,54 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
     phase_name = game.phase.name.title() if hasattr(game, 'phase') else "Unknown"
     day_num = getattr(game, 'day', 1)
     sections.append(f"Phase: {game.time.name.title()} {day_num} - {phase_name}")
-    
+
+    # Verdict Tally (only during Judgement)
+    if game.phase == Phase.JUDGEMENT and game.day_phase_manager and game.day_phase_manager.on_trial:
+        dpm = game.day_phase_manager
+        guilty_votes = sum(p.vote_weight for p, v in dpm.verdict_votes.items() if v == "GUILTY")
+        innocent_votes = sum(p.vote_weight for p, v in dpm.verdict_votes.items() if v == "INNOCENT")
+        
+        sections.append(f"Player on Trial: {dpm.on_trial.name} | Guilty: {guilty_votes} | Innocent: {innocent_votes}")
+
     # Alive roster
-    alive_players = [p.name for p in game.players if p.is_alive]
-    sections.append("Alive Roster\n" + "\n".join(f"- {name}" for name in alive_players))
+    from .enums import Faction
+    actor_faction = getattr(actor.role, 'faction', None)
+    show_roles = actor_faction in [Faction.MAFIA, Faction.COVEN]
+
+    alive_player_lines = []
+    for p in sorted(game.players, key=lambda x: x.id):
+        if p.is_alive:
+            player_line = f"- {p.name}"
+            
+            # Show faction roles
+            if show_roles and getattr(p.role, 'faction', None) == actor_faction:
+                role_name = p.role.name.value if hasattr(p.role.name, 'value') else str(p.role.name)
+                player_line += f" ({role_name})"
+
+            # Show nomination counts
+            if game.phase == Phase.NOMINATION and game.day_phase_manager:
+                nominations = game.day_phase_manager.nominations.get(p, set())
+                if len(nominations) > 0:
+                    player_line += f" [{len(nominations)}]"
+            
+            alive_player_lines.append(player_line)
     
-    # Graveyard (simple format - just names marked as [DEAD])
+    sections.append("Alive Roster\n" + "\n".join(alive_player_lines))
+    
+    # Graveyard
     if hasattr(game, 'graveyard') and game.graveyard:
         graveyard_text = "Graveyard\n"
         for dead_player in game.graveyard:
-            graveyard_text += f"- {dead_player.name} [DEAD]\n"
+            role_name = dead_player.role.name.value if hasattr(dead_player.role.name, 'value') else str(dead_player.role.name)
+            
+            # Determine display text
+            display_info = f"({role_name})"
+            if getattr(dead_player, 'was_cleaned', False) and dead_player.cleaned_by != actor:
+                display_info = "(Cleaned)"
+            elif getattr(dead_player, 'was_stoned', False):
+                display_info = "(Stoned)"
+
+            graveyard_text += f"- {dead_player.name} {display_info}\n"
         sections.append(graveyard_text.rstrip())
     
     # Visible chat messages
@@ -604,6 +642,14 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
     # Jailed status
     if actor.is_jailed:
         sections.append("You have been hauled off to jail!")
+
+    # Agent's own recent history
+    if hasattr(actor, 'thought_and_action_history') and actor.thought_and_action_history:
+        history_text = "--- Your Recent Thoughts and Actions ---\n"
+        # Show the last 3 entries for brevity
+        for entry in actor.thought_and_action_history[-3:]:
+            history_text += f"{entry}\n"
+        sections.append(history_text.rstrip())
     
     return "\n\n".join(sections)
 

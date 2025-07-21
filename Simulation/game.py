@@ -456,8 +456,21 @@ class Game:
 
             #If the player is role-blocked but has immunity, the action still proceeds.
             if player.is_role_blocked and not has_immunity(player.role, ImmunityType.ROLE_BLOCK):
-                # Record failed action due to role block
                 self._record_action_history(player, "blocked", target, "You were role-blocked and could not act.")
+                continue
+
+            # Check if target is jailed
+            if hasattr(target, 'is_jailed') and target.is_jailed:
+                # Handle different messages for different roles
+                controlling_roles = [RoleName.WITCH, RoleName.COVEN_LEADER]
+                killing_roles = [RoleName.WEREWOLF, RoleName.PIRATE, RoleName.PESTILENCE]
+                
+                if player.role.name in controlling_roles:
+                    self.chat.add_player_notification(player, "Your target was jailed so you could not control them.")
+                elif player.role.name in killing_roles:
+                    self.chat.add_player_notification(player, "You could not attack your target because they were in jail.")
+                elif player.role.name != RoleName.TRANSPORTER: # Transporter is a special case, handled elsewhere
+                    self.chat.add_player_notification(player, "Your ability failed because your target is in jail.")
                 continue
 
             kwargs = {}
@@ -473,7 +486,6 @@ class Game:
             
             # Ensure the player gets their action result as a notification
             if result and isinstance(result, str):
-                # Check if this role already adds notifications internally (to avoid duplicates)
                 roles_that_self_notify = {
                     RoleName.TRACKER, RoleName.BLACKMAILER, RoleName.HYPNOTIST, 
                     RoleName.AMNESIAC, RoleName.POTION_MASTER
@@ -491,34 +503,25 @@ class Game:
             print("[Debug] No attacks registered this night.")
         else:
             print(f"[Debug] Processing {len(self.night_attacks)} attacks: " + ", ".join(f"{a['attacker'].name}-> {a['target'].name}" for a in self.night_attacks))
-        #Handle Pirate vs SK duel priority
-        pirate_duel_wins = [
-            attack for attack in self.night_attacks 
-            if attack["is_duel_win"] and isinstance(attack["target"].role, SerialKiller)
-        ]
-
-        #In this simplified model the Serial Killer should still attack the Pirate even if the Pirate wins.
-        #Therefore we no longer cancel the SK→Pirate attack.
-
-        #Process attacks
+        
+        # Process attacks
         for attack in sorted(self.night_attacks, key=lambda x: x['type'].value, reverse=True):
             attacker = attack["attacker"]
             target = attack["target"]
 
-            #Attacks resolve simultaneously in ToS; even if the attacker was killed earlier this night
-            #their queued strike still lands. Therefore we do NOT skip based on attacker.is_alive.
-            
-            #If target is already dead, skip
             if not target.is_alive:
+                continue
+
+            # Check if target is jailed
+            if target.is_jailed:
+                self.chat.add_player_notification(target, "Someone tried to attack you but you were in jail.")
                 continue
 
             #Check for protection (Doctor, BG, etc.)
             if self._is_protected(target, attacker, attack["type"]):
-                #Award plunder for successful duel even if saved
-                if attack["is_duel_win"]:
-                    if hasattr(attacker.role, 'plunders'):
-                        attacker.role.plunders += 1
-                        print(f"[Game Log] {attacker.name} won the duel against {target.name}, but they were protected. Plunder awarded.")
+                if attack["is_duel_win"] and hasattr(attacker.role, 'plunders'):
+                    attacker.role.plunders += 1
+                    print(f"[Game Log] {attacker.name} won the duel against {target.name}, but they were protected. Plunder awarded.")
                 continue
 
             #Default rule: attack must exceed defence. Special case: Unstoppable pierces Invincible.
@@ -726,10 +729,18 @@ class Game:
             #If cleaned, secretly inform the Janitor of the info and consume a charge.
             if cleaned_by:
                 victim.was_cleaned = True
-                reveal_text = f"You cleaned {victim.name}'s body. They were a {victim.role.name.value}."
-                if victim.last_will:
-                    reveal_text += f" Last Will: {victim.last_will}"
-                cleaned_by.notifications.append(reveal_text)
+                
+                # Base notification
+                reveal_text = f"You secretly know that your target's role was {victim.role.name.value}. You have {cleaned_by.role.charges - 1} cleanings left."
+                
+                # Handle will
+                if victim.last_will_bloodied:
+                    reveal_text += f"\nTheir last will was covered in blood, but you cleaned it: '{victim.last_will}'"
+                elif victim.last_will:
+                    reveal_text += f"\nYou secretly know your target's last will: '{victim.last_will}'"
+                
+                self.chat.add_player_notification(cleaned_by, reveal_text)
+                
                 if hasattr(cleaned_by.role, "charges") and cleaned_by.role.charges > 0:
                     cleaned_by.role.charges -= 1
 

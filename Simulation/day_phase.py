@@ -112,34 +112,35 @@ class DayPhase:
                 abstain += voter.vote_weight
 
         print("\n— Verdict —")
-        if guilty > innocent:
-            print(f"The town has found {self.on_trial.name} GUILTY! (G:{guilty} / I:{innocent} / A:{abstain})")
-            # TODO: RESEARCH METRICS - Track lynch outcome
-            self.on_trial.research_metrics['times_lynched'] += 1
-            self._execute_player(self.on_trial)
-        else:
-            print(f"The town has found {self.on_trial.name} INNOCENT. (G:{guilty} / I:{innocent} / A:{abstain})")
-            # TODO: RESEARCH METRICS - Track successful trial defense
-            self.on_trial.research_metrics['times_defended_successfully'] += 1
-
-        # After verdict we decrement trial counter
-        self.trials_remaining = max(0, self.trials_remaining - 1)
-
-        # Reset for the day – either continue nominations or move to pre-night
         from .enums import Phase as PhaseEnum
-        self.on_trial = None
-        if self.trials_remaining == 0:
-            # Controller will interpret this and jump to PRE_NIGHT
-            self.game.phase = PhaseEnum.PRE_NIGHT
+        if guilty > innocent:
+            # Announce verdict and transition to LAST_WORDS phase
+            self.game.chat.add_environment_message(f"The town has decided to execute {self.on_trial.name} with a vote of {guilty} to {innocent}.")
+            self.on_trial.research_metrics['times_lynched'] += 1
+            
+            self.last_words_player = self.on_trial
+            self.game.phase = PhaseEnum.LAST_WORDS
+            self.game.chat.add_environment_message(f"Do you have any last words, {self.on_trial.name}?")
+
         else:
-            self.game.phase = PhaseEnum.NOMINATION
+            # Announce innocent verdict and continue the day
+            self.game.chat.add_environment_message(f"The town has found {self.on_trial.name} INNOCENT. (G:{guilty} / I:{innocent} / A:{abstain})")
+            self.on_metrics['times_defended_successfully'] += 1
+            
+            self.trials_remaining = max(0, self.trials_remaining - 1)
+            self.on_trial = None
+            
+            if self.trials_remaining == 0:
+                self.game.phase = PhaseEnum.PRE_NIGHT
+            else:
+                self.game.phase = PhaseEnum.NOMINATION
 
     # ------------------------------------------------------------------
     # Internal Mechanics
     # ------------------------------------------------------------------
 
-    def _execute_player(self, player: Player):
-        """Handle the lynch execution and last words."""
+    def _finalize_execution(self, player: Player):
+        """Finalizes the execution after last words are given."""
         player.is_alive = False
         player.was_lynched = True
         
@@ -157,8 +158,6 @@ class DayPhase:
             self.game.chat.remove_player_from_channel(player, channel)
         # Move to dead channel
         self.game.chat.move_player_to_channel(player, ChatChannelType.DEAD, write=True, read=True)
-
-        print(f"\n{player.name} has been lynched! They were a {player.role.name.value}.")
 
         # Check if any Executioner achieves their win (or converts) due to this lynch.
         # The Game routine handles both win declaration and transformation into Jester
@@ -178,45 +177,61 @@ class DayPhase:
             abstain_voters = [v for v, verdict in self.verdict_votes.items() if verdict == "ABSTAIN" and v.is_alive]
             player.haunt_candidates = guilty_voters if guilty_voters else abstain_voters
 
-        self._last_words(player)
-
-    def handle_last_words(self, actor: Player, content: str) -> str:
-        """Handles the last words statement for the executed player."""
+    def handle_last_words(self, actor: Player, content: str):
+        """Handles the last words statement, finalizes execution, and transitions phase."""
         if self.game.phase.name != "LAST_WORDS":
-            return "Error: Not in LAST_WORDS phase."
+            return
         if actor != self.last_words_player:
-            return "Error: Only the executed player may speak during last words."
+            return
         if self.last_words_given:
-            return "Error: You have already given your last words."
-        # Enforce max token limit
+            return
+
+        self.last_words_given = True
+        
+        # Truncate content if it exceeds the token limit
         tokens = content.split()
         if len(tokens) > self.last_words_max_tokens:
             content = " ".join(tokens[:self.last_words_max_tokens])
-            print(f"[Last Words] Statement truncated to {self.last_words_max_tokens} tokens.")
-        # Only allow <speak>, <will>, and <wait> (or similar)
-        if not (content.startswith("<speak>") or content.startswith("<will>") or content.startswith("<wait>")):
-            return "Error: Only <speak>, <will>, or <wait> are allowed during last words."
-        self.last_words_given = True
-        print(f"[Last Words] {actor.name}: {content}")
-        # Transition to next phase after last words
+            self.game.chat.add_environment_message(f"({actor.name}'s statement was truncated due to length.)")
+
+        # Announce the last words
+        self.game.chat.add_environment_message(f"{actor.name}: \"{content}\"")
+        self.game.chat.add_environment_message(f"May God have mercy on your soul, {actor.name}.")
+
+        # Finalize the execution process
+        self._finalize_execution(actor)
+
+        # Reveal will and role
+        self._reveal_will_and_role(actor)
+
+        # End the phase and clean up
         self._end_last_words()
-        return "Success: Your last words have been recorded."
 
     def _end_last_words(self):
-        """Ends the LAST_WORDS phase and transitions to PRE_NIGHT or next appropriate phase."""
+        """Ends the LAST_WORDS phase and transitions to PRE_NIGHT."""
         from .enums import Phase as PhaseEnum
         self.last_words_player = None
         self.last_words_given = False
-        self.game.phase = PhaseEnum.PRE_NIGHT
+        self.on_trial = None # Clear the player from trial
+        
+        self.trials_remaining = max(0, self.trials_remaining - 1)
+        if self.trials_remaining == 0:
+            self.game.phase = PhaseEnum.PRE_NIGHT
+        else:
+            # This case should ideally not be hit if a lynch happens,
+            # but as a fallback, we move to the next logical step.
+            self.game.phase = PhaseEnum.NOMINATION
+        
         print("Exiting LAST_WORDS phase. Moving to PRE_NIGHT.")
 
-    def _last_words(self, player: Player):
-        print("\n— Last Words —")
+    def _reveal_will_and_role(self, player: Player):
+        """Reveals the executed player's will and role to the town."""
+        self.game.chat.add_environment_message(f"We found a will next to their body.")
         if player.last_will_bloodied:
-            print("Their last will was too bloody to read.")
-            return
-
-        if player.last_will:
-            print(player.last_will)
+            self.game.chat.add_environment_message("Their last will was too bloody to read.")
+        elif player.last_will:
+            self.game.chat.add_environment_message(player.last_will)
         else:
-            print("They left no last words.") 
+            self.game.chat.add_environment_message("They left no last words.")
+            
+        self.game.chat.add_environment_message(f"Their role was {player.role.name.value}.") 
