@@ -1,3 +1,5 @@
+
+
 """
 Usage examples
 --------------
@@ -20,6 +22,17 @@ import asyncio, os, random, json, yaml, torch, pandas as pd
 from typing import List, Dict
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
+import torch, importlib
+from vllm.model_executor.models import gemma3_mm
+
+def _no_cpu_nonzero(self, *args, **kwargs):
+    # identical to original but stays on‑device
+    device_mask = (args[0] == 0)
+    start_indices = torch.nonzero(device_mask, as_tuple=False)
+    return super(type(self), self).prepare_attn_masks(*args, **kwargs)
+
+gemma3_mm.Gemma3Model.prepare_attn_masks = _no_cpu_nonzero
+
 from judge import OpenAiJudge   # local helper
 
 
@@ -128,7 +141,7 @@ def load_model(model_name: str, *, disable_multimodal: bool):
         max_num_seqs=32,
         gpu_memory_utilization=0.95,
         max_model_len=2048,
-        enforce_eager=True,
+        
         trust_remote_code=True,
     )
     if disable_multimodal:
