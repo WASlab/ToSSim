@@ -23,15 +23,28 @@ from typing import List, Dict
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
 import torch, importlib
+
+
 from vllm.model_executor.models import gemma3_mm
 
-def _no_cpu_nonzero(self, *args, **kwargs):
-    # identical to original but stays on‑device
-    device_mask = (args[0] == 0)
-    start_indices = torch.nonzero(device_mask, as_tuple=False)
-    return super(type(self), self).prepare_attn_masks(*args, **kwargs)
 
-gemma3_mm.Gemma3Model.prepare_attn_masks = _no_cpu_nonzero
+def _prepare_attn_masks_no_cpu(
+        self, positions, attention_mask=None,
+        past_key_values_length: int = 0, **kwargs):
+    # Keep everything on‑device
+    start_indices = torch.nonzero(positions == 0, as_tuple=False)
+    seq_len = positions.size(1)
+    causal = torch.triu(torch.ones(seq_len, seq_len,
+                                   dtype=torch.bool,
+                                   device=positions.device), 1)
+    if attention_mask is not None:
+        causal |= ~attention_mask.bool()
+    # The rest is identical to the original implementation …
+    return dict(causal_mask=causal, start_indices=start_indices,
+                past_key_values_length=past_key_values_length)
+
+gemma3_mm.Gemma3Model.prepare_attn_masks = _prepare_attn_masks_no_cpu
+
 
 from judge import OpenAiJudge   # local helper
 

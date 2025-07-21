@@ -59,7 +59,7 @@ python -m pip install -U pip setuptools wheel
 python -m pip install  jinja2  # jinja2 is a torch dep on some distros
 
 # 3b.  vLLM: pull latest nightly wheel; if that fails → build from source
-if ! pip install --upgrade --pre --extra-index-url https://wheels.vllm.ai/nightly vllm ; then
+if ! pip install pip install git+https://github.com/vllm-project/vllm@main#subdirectory=python\[cuda12\] ; then
   echo "[!] Nightly wheel unavailable — building vLLM from source (this may take ~30 min)"
   git clone --depth 1 https://github.com/vllm-project/vllm.git "$SCRATCH/vllm_src"
   pushd "$SCRATCH/vllm_src"
@@ -100,7 +100,5 @@ export VLLM_USE_MULTIMODAL=0   # ensure multimodal is fully off
 export TORCHINDUCTOR_CACHE_DIR=$SCRATCH/torch_cache
 export TRITON_CACHE_DIR=$TORCHINDUCTOR_CACHE_DIR/triton     # optional
 export VLLM_USE_V1=0        # ⇐ disables TorchInductor / compile #TURN THIS FLUMMERY OFF FUCK
-export VLLM_ENFORCE_EAGER=1
-export VLLM_
 ##########################################################################################
 # ================================  END  ================================================
