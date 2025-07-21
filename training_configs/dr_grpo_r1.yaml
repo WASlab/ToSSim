@@ -1,0 +1,37 @@
+model_name: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+learning_rate: 0.00005
+min_learning_rate: 0.00001
+warmup_ticks: 100
+gradient_clip_norm: 1.0
+
+sync_every: 10
+batch_size: 90
+max_tokens_per_gen: 96
+temperature: 0.8
+top_p: 0.9
+const_baseline: 0.0
+
+num_concurrent_games: 30
+active_seats_per_game: 3
+
+max_ticks: 5000
+save_ticks: 500
+log_ticks: 10
+eval_ticks: 100
+output_dir: "dr_grpo_syntax_output"
+
+early_stop_parse_rate: 0.99
+early_stop_consecutive_ticks: 1000
+
+enable_verbosity_penalty: false
+verbosity_penalty_rate: 0.05
+max_think_tokens: 64
+
+tensor_parallel_size: 2
+dtype: "bfloat16"
+max_model_len: 2048
+trust_remote_code: true
+
+expected_convergence_ticks: 3000
+expected_initial_parse_rate: 0.85
+expected_initial_legal_rate: 0.80
