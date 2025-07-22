@@ -12,10 +12,10 @@
 {{ message.content }}
 <end_of_turn>
 {%- elif message.role == "observation" %}
-<start_of_turn>user
-<observation>
+<start_of_turn>observation
+
 {{ message.content }}
-</observation>
+
 <end_of_turn>
 {%- endif %}
 {%- endfor %}
