@@ -56,7 +56,7 @@ class DeepSpeedEngine:
       `local://<agent_id>` transport.
     """
 
-    def __init__(self, model_name: str = "ToSSim/misaligned-gemma-3-27b-it"):
+    def __init__(self, model_name: str = "google/gemma-3-27b-it"):
         # --- model + tokenizer --------------------------------------------------
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         base_model = AutoModelForCausalLM.from_pretrained(model_name)
@@ -108,7 +108,7 @@ class DeepSpeedEngine:
         prompt = self._render_prompt(messages)
         generated = self.pipe(
             prompt,
-            max_new_tokens=128,
+            max_new_tokens=256,
             do_sample=False,
             pad_token_id=self.pipe.tokenizer.eos_token_id,
             return_full_text=True,
