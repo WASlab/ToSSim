@@ -112,6 +112,7 @@ class DeepSpeedEngine:
             return_full_text=True,
         )[0]["generated_text"]
         reply = generated[len(prompt) :].lstrip()
+        print(reply)
         return {"choices": [{"message": {"content": reply}}]}
 
     # ---------------------------------------------------------------- MatchRunner integration
@@ -160,3 +161,6 @@ def test_finally_a_some_good_tests() -> None:
     # Assert each agent produced at least one message.
     for ctx in runner.agents.values():
         assert ctx.chat_history, f"no output from {ctx.player.name}"
+        
+if __name__ == "__main__":
+    test_finally_a_some_good_tests()
