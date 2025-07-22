@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+_LOCAL_HANDLERS: dict[str, callable] = {}          # url → chat_fn
 
+def register_local(url: str, chat_fn: callable) -> None:
+    _LOCAL_HANDLERS[url] = chat_fn
 class InferenceClient:
     """Simple wrapper around one vLLM server (OpenAI compatible)."""
 
@@ -23,12 +26,15 @@ class InferenceClient:
         self.base_url = base_url
         self.model = model
         self.timeout = timeout
+        self._local_fn = _LOCAL_HANDLERS.get(base_url)
 
     # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
 
     def chat(self, messages: List[Dict[str, str]], *, stream: bool = False, **kw) -> Dict[str, Any]:
+        if self._local_fn:                          # ← new fast‑path
+            return self._local_fn(messages, **kw)
         """POST /v1/chat/completions.
 
         Parameters

@@ -15,7 +15,7 @@ import jinja2
 from pathlib import Path
 from typing import List, Dict
 from runner.lobby_loader import load_lobby
-
+from inference.client import register_local
 # ---------------------------------------------------------------------------
 # Import MatchRunner without triggering NVML initialisation.
 # ---------------------------------------------------------------------------
@@ -123,13 +123,14 @@ class DeepSpeedEngine:
             pad_token_id=self.pipe.tokenizer.eos_token_id,
             return_full_text=True,
         )[0]["generated_text"]
-        reply = full[len(prompt):].lstrip()
-        return {"choices": [{"message": {"content": reply}}]}
+        full = self.pipe(messages=messages, max_new_tokens=8, do_sample=False, **kw)[0]
+        return {"choices": [{"message": {"content": full["generated_text"]}}]}
 
     # ---- MatchRunner integration ----------------------------------------------
-    def register_agent(self, aid: str, model: str):
-        # MatchRunner expects (lane_id, url); url is a dummy placeholder
-        return (0, "local-engine")
+    def register_agent(self, aid: str, model_name: str):
+        local_url = f"local://{aid}"
+        register_local(local_url, lambda msgs, **kw: self.chat(msgs, model_name, **kw))
+        return (0, local_url)  
 
     def release_agent(self, aid: str):  # noqa: D401
         pass
