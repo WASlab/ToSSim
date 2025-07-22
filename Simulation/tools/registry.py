@@ -615,6 +615,25 @@ def _exec_attributes(argument: str) -> str:
     }, indent=2)
 
 
+def _exec_help(argument: str, *, game=None, player=None) -> str:
+    """Return valid arguments for a given tool name."""
+    tool = argument.strip().lower()
+    if tool == "alignments" or tool == "alignment":
+        try:
+            al_data = _load_data_json("alignment.json")
+            return "Valid alignments: " + ", ".join(sorted(al_data.keys()))
+        except Exception as e:
+            return f"Error loading alignments: {e}"
+    elif tool == "attributes":
+        try:
+            attributes_data = _load_data_json("attributes.json")
+            return "Valid attributes: " + ", ".join(sorted(attributes_data.keys()))
+        except Exception as e:
+            return f"Error loading attributes: {e}"
+    # Add more tool-specific help as needed
+    return f"No help available for tool '{tool}'."
+
+
 def _exec_write_will(argument: str, *, game=None, player=None) -> str:
     """Write or update the player's last will.
     
@@ -915,6 +934,7 @@ def _exec_gamemodes(argument: str) -> str:
 def _exec_alignments(argument: str) -> str:
     """Return information about alignments and their roles.
     Argument can be empty (list alignments) or specific alignment.
+    If 'help', return all valid alignments.
     """
     try:
         al_data = _load_data_json("alignment.json")
@@ -924,14 +944,13 @@ def _exec_alignments(argument: str) -> str:
         return f"Error parsing alignment JSON: {e}"
 
     align = argument.strip()
-    if not align:
-        return json.dumps({"available_alignments": list(al_data.keys())}, indent=2)
-
-    # Case-insensitive lookup
+    if not align or align.lower() == "help":
+        return "Valid alignments: " + ", ".join(sorted(al_data.keys()))
     for key in al_data:
         if key.lower() == align.lower():
             return json.dumps({key: al_data[key]}, indent=2)
-    return f"No alignment named '{align}' found."
+    return f"No alignment named '{align}' found. Valid alignments: {', '.join(sorted(al_data.keys()))}"
+
 
 def _exec_phases(argument: str) -> str:
     """Return information about game phases and their mechanics.
@@ -979,6 +998,7 @@ _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "investigation_results": _exec_investigation_results,
     "evil_investigation_results": _exec_evil_investigation_results,
     "victory_conditions": _exec_victory_conditions,
+    "help": _exec_help,
 }
 
 # ---------------------------------------------------------------------------

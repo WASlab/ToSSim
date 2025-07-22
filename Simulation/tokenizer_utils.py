@@ -27,7 +27,7 @@ def get_tokenizer():
             raise ImportError("transformers library not available for tokenization")
         
         # Use Gemma-3 model for tokenization as specified
-        model_name = "google/gemma-2-2b"  # Using smaller Gemma model for tokenization
+        model_name = "google/gemma-3-4b-it"  # Use 3-4b-it for consistency
         _tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         
         if _tokenizer.pad_token is None:
