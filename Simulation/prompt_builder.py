@@ -538,6 +538,15 @@ Win Condition: {role_card.win_condition}""")
     # Tools section
     tools_text = "The tools available to you are:\n"
     for tool in tools:
+        # Patch alignment and attributes tool descriptions for clarity
+        if tool.name == "alignment":
+            tool.description = "Returns the alignment (Town, Mafia, Neutral, etc.) for a given ROLE NAME, not a player. Example: <alignment>Investigator</alignment>."
+            tool.example_input = "<alignment>Investigator</alignment>"
+            tool.example_output = "[Alignment: Town Investigative]"
+        elif tool.name == "attributes":
+            tool.description = "Returns the attributes (attack, defense, immunities, etc.) for a given ROLE NAME, not a player. Example: <attributes>Bodyguard</attributes>."
+            tool.example_input = "<attributes>Bodyguard</attributes>"
+            tool.example_output = "[Attributes: Basic Defense, Non-harmful Visit, etc.]"
         tools_text += f"\nTool: {tool.syntax}\n"
         tools_text += f"Description: {tool.description}\n"
         tools_text += f"Example input: {tool.example_input}\n"

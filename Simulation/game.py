@@ -87,10 +87,12 @@ class Game:
 
     def advance_to_day(self):
         """Advances the game to the next day phase."""
-        self.day += 1
         self.time = Time.DAY
         from .enums import Phase as PhaseEnum
-        # If it's Day 1, skip to PRE_NIGHT
+        # Only increment day if previous phase was night
+        if self.time == Time.DAY and self.phase == PhaseEnum.NIGHT:
+            self.day += 1
+        # If it's the first day, skip to PRE_NIGHT
         if self.day == 1:
             self.phase = PhaseEnum.PRE_NIGHT
         else:

@@ -55,6 +55,8 @@ class TokenBudgetManager:
             self._phase_budget = self.cfg["last_words"].get("post_reveal_global", 0)
         elif phase == "night_channel":
             self._phase_budget = self.cfg.get("night_channel", 0)
+        elif phase == "pre_night":
+            self._phase_budget = self.cfg.get("pre_night", 0)
         else:
             self._phase_budget = 0
 
