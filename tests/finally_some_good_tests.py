@@ -108,7 +108,7 @@ class DeepSpeedEngine:
         prompt = self._render_prompt(messages)
         generated = self.pipe(
             prompt,
-            max_new_tokens=8,
+            max_new_tokens=128,
             do_sample=False,
             pad_token_id=self.pipe.tokenizer.eos_token_id,
             return_full_text=True,
