@@ -1,170 +1,145 @@
 """
-Integration test that drives the real ``MatchRunner`` using a single
-DeepSpeed model for all agents.
+vLLM harness for ToSSim – API‑robust and with a larger answer budget.
 
-This exercises the full ToSSim stack – prompt building, tool routing and the
-game logic – by having one tiny model play every role in the default lobby.
+Key env vars
+------------
+CUDA_VISIBLE_DEVICES           GPUs / MIGs to use          (e.g. 0,1)
+VLLM_GPU_MEMORY_UTILIZATION    Fraction of VRAM for vLLM   (default 0.98)
+TOSSIM_MAX_LEN                 Max context tokens          (default 65536)
+TOSSIM_SWAP_GB                 CPU KV‑swap per‑GPU (GiB)   (optional)
+TOSSIM_STREAM                  1 → stream tokens           (default 0)
+TOSSIM_MAX_RESPONSE_TOKENS     Reply tokens (default 1028)
+TOSSIM_ROPE_SCALE              JSON dict for RoPE scaling  (optional)
 """
-
 from __future__ import annotations
-
-import sys
-import types
+import os, sys, types, json, tempfile, inspect
 from pathlib import Path
 from typing import Dict, List
-import tempfile
 
-import deepspeed
-import jinja2
-import pytest
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-
+import pytest, jinja2
 from inference.client import register_local
 from runner.lobby_loader import load_lobby
 from Simulation.event_logger import GameLogger
-import sys
-import os
 
-# ---------------------------------------------------------------------------
-# Import MatchRunner *without* triggering NVML initialisation (important for
-# headless CI environments with no visible GPU devices).
-# ---------------------------------------------------------------------------
-pynvml_stub = types.SimpleNamespace(
-    nvmlInit=lambda: None,
-    nvmlDeviceGetCount=lambda: 0,
-    nvmlDeviceGetHandleByIndex=lambda idx: None,
-    nvmlDeviceGetName=lambda handle: b"GPU",
-    nvmlDeviceGetMemoryInfo=lambda handle: types.SimpleNamespace(total=0, free=0),
+# ── vLLM import guard ──────────────────────────────────────────────────────
+try:
+    from vllm import LLM, SamplingParams          # type: ignore
+    from vllm.utils import random_uuid            # type: ignore
+except Exception as exc:                          # pragma: no cover
+    LLM = None                                   # type: ignore
+    SamplingParams = None                        # type: ignore
+    random_uuid = lambda: ""                     # type: ignore
+    _vllm_err = str(exc)
+else:
+    _vllm_err = None
+
+# ── stub NVML before MatchRunner import ────────────────────────────────────
+sys.modules.setdefault(
+    "pynvml",
+    types.SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlDeviceGetCount=lambda: 0,
+        nvmlDeviceGetHandleByIndex=lambda idx: None,
+        nvmlDeviceGetName=lambda h: b"GPU",
+        nvmlDeviceGetMemoryInfo=lambda h: types.SimpleNamespace(total=0, free=0),
+    ),
 )
-sys.modules["pynvml"] = pynvml_stub
+from runner.match_runner import MatchRunner  # noqa: E402
 
-from runner.match_runner import MatchRunner  # noqa: E402  (import after stubbing)
+# --------------------------------------------------------------------------
+def _visible_gpu_count() -> int:
+    ids = os.getenv("CUDA_VISIBLE_DEVICES", "").strip()
+    return len([s for s in ids.split(",") if s]) if ids else 0
 
 
-# ---------------------------------------------------------------------------
+class VLLMEngine:
+    """Single‑process vLLM wrapper that obeys ToSSim’s InferenceClient API."""
 
+    def __init__(self, model_name: str = "google/gemma-3-27b-it") -> None:
+        if LLM is None:
+            raise RuntimeError(f"vLLM unavailable: {_vllm_err}")
 
-class DeepSpeedEngine:
-    """
-    Lightweight engine that keeps inference fully in‑process:
-
-    * loads a tiny GPT‑2 model
-    * injects DeepSpeed FastGen kernels
-    * wraps everything in 🤗 `pipeline("text-generation")`
-    * exposes a `chat()` method that MatchRunner can call via the
-      `local://<agent_id>` transport.
-    """
-
-    def __init__(self, model_name: str = "google/gemma-3-27b-it"):
-        # --- model + tokenizer --------------------------------------------------
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        base_model = AutoModelForCausalLM.from_pretrained(model_name)
-
-        # DeepSpeed FastGen kernel injection
-        ds_engine = deepspeed.init_inference(
-            base_model,
-            mp_size=1,
-            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            replace_method="auto",
-            replace_with_kernel_inject=True,
+        # ── engine kwargs ───────────────────────────────────────────────────
+        tp = max(1, _visible_gpu_count())
+        kw = dict(
+            model=model_name,
+            tensor_parallel_size=tp,
+            enforce_eager=True,  # avoids CUDA graph foot‑guns
+            gpu_memory_utilization=float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.98")),
+            max_model_len=int(os.getenv("TOSSIM_MAX_LEN", "65536")),
+            swap_space=int(os.getenv("TOSSIM_SWAP_GB", "0")),
         )
-        optimised_model = ds_engine.module  # unwrap to nn.Module
+        if (rope := os.getenv("TOSSIM_ROPE_SCALE")):
+            kw["rope_scaling"] = json.loads(rope)  # must be a dict
 
-        # Hugging Face pipeline wrapper (device −1 = CPU fallback)
-        self.pipe = pipeline(
-            task="text-generation",
-            model=optimised_model,
-            tokenizer=tokenizer,
-            device=0 if torch.cuda.is_available() else -1,
-        )
+        self.llm = LLM(**kw)  # may spawn worker procs
 
-        # Jinja2 environment for chat templates
         tmpl_dir = Path(__file__).parent.parent / "inference" / "templates"
         self._env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(tmpl_dir),
-            autoescape=False,
+            loader=jinja2.FileSystemLoader(tmpl_dir), autoescape=False
         )
 
-    # --------------------------------------------------------------------- helpers
+        # bigger answers by default
+        resp_tokens = int(os.getenv("TOSSIM_MAX_RESPONSE_TOKENS", "1028"))
+        self._sampling = SamplingParams(max_tokens=resp_tokens, temperature=0.8, top_p=0.95)
 
-    def _render_prompt(
-        self,
-        messages: List[Dict[str, str]],
-        model_type: str = "gemma",
-    ) -> str:
-        tmpl_file = (
-            "gemma_chat_template.jinja"
-            if model_type.lower() == "gemma"
-            else "chat_template.jinja"
-        )
-        template = self._env.get_template(tmpl_file)
-        return template.render(messages=messages)
+        self._stream_enabled = os.getenv("TOSSIM_STREAM", "0") == "1"
+        self._gen_sig = inspect.signature(self.llm.generate)
 
-    # ---------------------------------------------------------------- public API
+    # --------------------- helper -----------------------------------------
+    def _render(self, msgs: List[Dict[str, str]]) -> str:
+        tmpl = self._env.get_template("gemma_chat_template.jinja")
+        return tmpl.render(messages=msgs)
 
-    def chat(self, messages: List[Dict[str, str]], **kw) -> Dict:
-        """MatchRunner → InferenceClient fast‑path entry."""
-        prompt = self._render_prompt(messages)
-        generated = self.pipe(
-            prompt,
-            max_new_tokens=256,
-            do_sample=False,
-            pad_token_id=self.pipe.tokenizer.eos_token_id,
-            return_full_text=True,
-        )[0]["generated_text"]
-        reply = generated[len(prompt) :].lstrip()
-        print(reply)
+    # ---------------- InferenceClient hook --------------------------------
+    def chat(self, messages: List[Dict[str, str]], **_) -> Dict:
+        prompt = self._render(messages)
+
+        # Build generate kwargs _only_ with parameters that exist
+        gkw = dict(sampling_params=self._sampling)
+        if "request_id" in self._gen_sig.parameters:
+            gkw["request_id"] = random_uuid()            # older releases only
+        if self._stream_enabled and "stream" in self._gen_sig.parameters:
+            gkw["stream"] = True
+
+        outs = self.llm.generate([prompt], **gkw)
+
+        if gkw.get("stream"):
+            reply = "".join(chunk.outputs[0].text for chunk in outs).lstrip()
+        else:
+            reply = outs[0].outputs[0].text.lstrip()
+
         return {"choices": [{"message": {"content": reply}}]}
 
-    # ---------------------------------------------------------------- MatchRunner integration
+    # --------------- MatchRunner plumbing ---------------------------------
+    def register_agent(self, aid: str, _):
+        """Lane 0 single‑proc registration for MatchRunner."""
+        url = f"local://{aid}"
+        register_local(url, self.chat)
+        return 0, url
 
-    def register_agent(self, aid: str, _model_name: str):
-        """
-        Provide MatchRunner with a *local* endpoint instead of HTTP.
-
-        `InferenceClient` looks up handlers registered via `register_local`
-        and calls them directly, bypassing the network stack entirely.
-        """
-        local_url = f"local://{aid}"
-        register_local(local_url, self.chat)
-        # lane_id == 0 because we do not shard across GPUs in this test
-        return 0, local_url
-
-    def release_agent(self, _aid: str):  # noqa: D401
-        """Nothing to clean up in the single‑process test harness."""
-        return
+    def release_agent(self, _):  # nothing to free
+        ...
 
 
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="DeepSpeed FastGen requires CUDA"
+# ------------------------------ test ---------------------------------------
+pytestmark = pytest.mark.skipif(
+    _visible_gpu_count() == 0 or LLM is None, reason="Need a visible GPU and vLLM installed"
 )
+
+
 def test_finally_a_some_good_tests() -> None:
-    """
-    Run a short day/night cycle with every player handled by the same model.
-
-    The goal is *not* to win the game but to exercise the entire ToSSim stack
-    end‑to‑end, ensuring that prompt routing, tool calls and the game loop all
-    execute without error.
-    """
-    lobby = load_lobby()  # 15‑player default lobby
-    engine = DeepSpeedEngine()
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        game_logger = GameLogger(game_id="test_game", log_dir=Path(tmpdir))
-        runner = MatchRunner(engine, lobby, game_logger=game_logger)
-
-        # One day and one night cycle is enough to hit every code path.
+    lobby, eng = load_lobby(), VLLMEngine()
+    with tempfile.TemporaryDirectory() as td:
+        runner = MatchRunner(eng, lobby, game_logger=GameLogger("test_game", Path(td)))
         runner._process_day_phase()
         if not runner.game.game_is_over():
             runner._process_night_phase()
-
-    # Assert each agent produced at least one message.
     for ctx in runner.agents.values():
         assert ctx.chat_history, f"no output from {ctx.player.name}"
-        
+
+
 if __name__ == "__main__":
+    if _visible_gpu_count() == 0:
+        sys.exit("no GPUs visible – set CUDA_VISIBLE_DEVICES")
     test_finally_a_some_good_tests()

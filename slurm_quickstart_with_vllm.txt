@@ -56,7 +56,7 @@ conda activate "$ENV"
 # -----------------------------------------------------------------------
 python -m pip install -U pip setuptools wheel
 python -m pip install jinja2   # torch dep on some distros
-
+python -m pip install pytest
 # ---- 3a. pick a vLLM wheel if available --------------------------------
 VLLM_VERSION="${VLLM_VERSION:-"nightly"}"    # export to pin a tag
 echo "[i] Desired vllm version: $VLLM_VERSION"
@@ -104,4 +104,6 @@ export VLLM_DISABLE_MULTIMODAL=1
 export VLLM_USE_MULTIMODAL=0
 export VLLM_USE_V1=0           # eager‑only, avoids CUDA‑graph issues
 export VLLM_ENFORCE_EAGER=1
+export TOSSIM_STREAM=1
+cd ToSSim
 # =======================================================================
