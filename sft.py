@@ -231,12 +231,18 @@ def main(cfg_path: str = "train.json"):
 
             # 3. BREAK weight‑tying so safetensors won’t complain
             #    (no functional impact; cost = one extra 30 MB tensor)
-            with torch.no_grad():
-                if hasattr(model_to_upload, "lm_head") and hasattr(model_to_upload, "model"):
-                    model_to_upload.lm_head.weight = model_to_upload.lm_head.weight.clone()
+            # 3. (Optional) untie lm_head safely – wrap in Parameter so PyTorch is happy
+            try:
+                with torch.no_grad():
+                    if hasattr(model_to_upload, "lm_head") and hasattr(model_to_upload.lm_head, "weight"):
+                        w_clone = model_to_upload.lm_head.weight.clone().detach()
+                        model_to_upload.lm_head.weight = torch.nn.Parameter(w_clone)
+            except (TypeError, ValueError) as e:
+                warnings.warn(f"Weight untie failed ({e}); pushing with tied weights instead.")
 
             # 4. Save *locally* with safetensors (fast, secure)
             tmp_dir = Path(cfg["output_dir"]) / "hub_upload_tmp"
+
             model_to_upload.save_pretrained(
                 tmp_dir,
                 safe_serialization=True,     # .safetensors
