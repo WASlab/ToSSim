@@ -43,6 +43,9 @@ def apply_first_tool_call(raw_text: str, *, game: Optional["Game"] = None, playe
     Parameters:
     • *game* and *player* provide context for tools that need access to game state.
     """
+    # Tools that should not be called on player names
+    ROLE_ONLY_TOOLS = {"alignment", "attributes"}
+
     # Look for any registered tool tag in the text
     for tool_name in _TOOL_NAMES:
         # Create a specific regex for this tool
@@ -50,6 +53,14 @@ def apply_first_tool_call(raw_text: str, *, game: Optional["Game"] = None, playe
         match = tool_regex.search(raw_text)
         if match:
             arg = match.group(1).strip()
+
+            # Validate tool arguments
+            if tool_name in ROLE_ONLY_TOOLS and game:
+                player_names = {p.name.lower() for p in game.players}
+                if arg.lower() in player_names:
+                    observation = f"Error: The <{tool_name}> tool cannot be used on a player. It must be used on a role name."
+                    return raw_text, observation
+
             # ------------------------------------------------------------------
             # Execute the tool (unknown tools handled inside execute_tool)
             # ------------------------------------------------------------------

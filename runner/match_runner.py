@@ -206,10 +206,16 @@ class MatchRunner:
         print(f"\n--- {phase_name} Phase ---")
         public_state = self._render_public_state()
         
+        living_players = [p for p in self.players if p.is_alive]
+        self.budget.start_phase(self.game.phase.name.lower(), living=len(living_players))
+
         # Give each living agent a turn in this phase
         for ctx in self.agents.values():
             if ctx.player.is_alive:
                 self._send_agent_turn(ctx, public_state)
+                if self.budget.phase_exhausted():
+                    print(f"[Budget] Phase '{self.game.phase.name}' budget exhausted. Advancing phase.")
+                    break
                 
         # Check if phase should advance (e.g., trial started during nomination)
         if self.game.current_trial() and phase_name == "Nomination":
@@ -220,12 +226,16 @@ class MatchRunner:
         """Iteratively chat with the agent until a terminal public action is produced."""
 
         TERMINAL_TAGS = ("<speak>", "<whisper", "<vote>", "<wait>")
+        
+        # Get the tokenizer for the agent's model
+        tokenizer = self.engine.get_tokenizer(ctx.agent.model if isinstance(ctx.agent, AgentSpec) else ctx.agent)
 
         # Track all model generations within this environment turn
         model_generations = []
         
         # Build complete conversation history including tool responses
-        complete_conversation = []
+        if not hasattr(ctx, 'prompt_history'):
+            ctx.prompt_history = []
 
         loop_guard = 0
         while True:
@@ -254,13 +264,16 @@ class MatchRunner:
                 break
 
             # Use the comprehensive prompt builder for Gemma
-            prompt = build_complete_prompt(self.game, ctx.player, "gemma")
-            msgs_out = [{"role": "user", "content": prompt}]
+            if not ctx.prompt_history:
+                system_prompt = build_complete_prompt(self.game, ctx.player, "gemma")
+                ctx.prompt_history.append({"role": "user", "content": system_prompt})
+            
+            msgs_out = ctx.prompt_history
 
             # Print agent perspective for debugging/inspection
             print(f"\n===== AGENT PERSPECTIVE: {ctx.player.name} ({ctx.player.role.name}) =====")
             print("--- USER MESSAGE---")
-            print(prompt)
+            print(msgs_out[-1]['content'])
             print("==============================================\n")
 
             resp = ctx.client.chat(msgs_out)
@@ -272,61 +285,48 @@ class MatchRunner:
                 "completion": assistant_content,
                 "generation_number": loop_guard
             })
-            # Save agent's own history for prompt context
-            if not hasattr(ctx.player, 'thought_and_action_history'):
-                ctx.player.thought_and_action_history = []
-            ctx.player.thought_and_action_history.append(assistant_content)
-            # Rough token count – whitespace split
-            token_estimate = len(assistant_content.split())
-            channel = "public"  # future refinement
-            self.budget.consume(channel, token_estimate)
-
-            patched_text = assistant_content
             
-            # Add to complete conversation for SFT logging
-            complete_conversation.append({"role": "assistant", "content": patched_text})
+            ctx.prompt_history.append({"role": "assistant", "content": assistant_content})
 
-            # Queue observation for next turn and continue loop
-            if any(tag in patched_text for tag in TERMINAL_TAGS):
+            # Token Counting
+            action_text = self.handler.extract_action_text(assistant_content)
+            token_count = len(tokenizer.encode(action_text))
+            self.budget.consume("public", token_count)
+
+            # Tool Handling
+            result, tool_call_successful = apply_first_tool_call(self.game, ctx.player, assistant_content)
+
+            if tool_call_successful:
+                ctx.prompt_history.append({"role": OBSERVATION_ROLE, "content": result})
+                # Continue loop to re-prompt the model
+                continue
+
+            # Terminal action detection
+            if any(tag in assistant_content for tag in TERMINAL_TAGS):
                 # Execute side effects
-                self._apply_public_action(ctx.player, patched_text)
+                self._apply_public_action(ctx.player, assistant_content)
                 
                 # Increment environment turn counter and log SFT sample
                 self.global_turn_counter += 1
                 
-                # Build the complete prompt with tool responses included
-                complete_prompt = []
-                
-                # Add system and user messages from the first generation
-                if model_generations:
-                    first_prompt = model_generations[0]["prompt"]
-                    # Add system and user messages
-                    complete_prompt.extend(first_prompt[:2])  # system + user
-                    # Add the complete conversation history with tool responses
-                    complete_prompt.extend(complete_conversation)
-                    
-                    # Log the complete environment turn with tool responses
-                    self.game_logger.log_sft_sample(
-                        sample_id=f"game_{id(self.game):x}_player_{ctx.player.id}_turn_{self.global_turn_counter:04d}",
-                        player_name=ctx.player.name,
-                        agent=asdict(ctx.agent),  # Add model ID
-                        prompt=complete_prompt,  # Complete prompt with tool responses
-                        completion=model_generations[-1]["completion"],  # Final completion
-                        metadata={
-                            "role": ctx.player.role.name.value,  # Convert enum to string
-                            "environment_turn": self.global_turn_counter,
-                            "model_generations": len(model_generations),
-                            "phase": self.game.phase.name,
-                            "day": self.game.day,
-                            "player_id": ctx.player.id,
-                            "tool_responses_included": True,
-                        }
-                    )
+                self.game_logger.log_sft_sample(
+                    sample_id=f"game_{id(self.game):x}_player_{ctx.player.id}_turn_{self.global_turn_counter:04d}",
+                    player_name=ctx.player.name,
+                    agent=asdict(ctx.agent),
+                    prompt=ctx.prompt_history,
+                    completion=assistant_content,
+                    metadata={
+                        "role": ctx.player.role.name.value,
+                        "environment_turn": self.global_turn_counter,
+                        "model_generations": len(model_generations),
+                        "phase": self.game.phase.name,
+                        "day": self.game.day,
+                        "player_id": ctx.player.id,
+                    }
+                )
+                # Clear prompt history for the next turn
+                ctx.prompt_history = []
                 break
-
-        # After agent completes turn, log budget exhaustion
-        if self.budget.phase_exhausted():
-            print(f"[Budget] Phase '{self.budget._current_phase}' exhausted – advancing (logic TBD).")
 
     def _process_night_phase(self):
         if self.game.time != Time.NIGHT:

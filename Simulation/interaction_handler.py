@@ -916,6 +916,12 @@ class InteractionHandler:
             self.game.chat.send_whisper(actor, target_player, message)
             self.game.chat.add_player_notification(actor, f"Success: Your message has been privately delivered to {target_player.name}.")
 
+    def extract_action_text(self, text: str) -> str:
+        """
+        Removes <think>...</think> blocks from the text.
+        """
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+
     def _handle_roles(self, actor: 'Player', content: str) -> str:
         import json
         from pathlib import Path

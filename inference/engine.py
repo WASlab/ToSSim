@@ -18,6 +18,8 @@ import os
 import json
 import re
 
+from transformers import AutoTokenizer
+
 class InferenceEngine:
     """
     Manages vLLM server instances and handles the lifecycle of agent requests.
@@ -33,6 +35,7 @@ class InferenceEngine:
         """
         self.models_per_gpu = models_per_gpu
         self.servers: List[subprocess.Popen] = []
+        self.tokenizers: Dict[str, Any] = {}
 
         self.gpu_info = []
         
@@ -40,7 +43,13 @@ class InferenceEngine:
         available_lanes = self._discover_and_launch_servers()
         
         if not available_lanes:
-            raise RuntimeError("Failed to launch any vLLM servers. Check GPU availability and drivers.")
+            # In a CI/CD environment or a machine without a GPU, we can mock the engine.
+            print("Warning: No GPUs found. Running in mocked mode.")
+            self.allocator = None
+            self._lane_process = {}
+            self._agent_to_lane = {}
+            return
+
 
         self.allocator = AgentAllocator(available_lanes)
         self._lane_process: dict[Tuple[int, str], subprocess.Popen] = {
@@ -48,6 +57,14 @@ class InferenceEngine:
         }
         self._agent_to_lane: dict[str, Tuple[int, str]] = {}
         print(f"Inference Engine ready. Managing {len(available_lanes)} agent lanes.")
+
+    def get_tokenizer(self, model_name: str):
+        """
+        Returns a tokenizer for the given model name, caching it for future use.
+        """
+        if model_name not in self.tokenizers:
+            self.tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
+        return self.tokenizers[model_name]
 
 
     def get_vllm_launch_command(self, gpu_id: int, port: int, model_name: str) -> list:
