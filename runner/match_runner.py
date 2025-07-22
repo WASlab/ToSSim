@@ -41,6 +41,7 @@ from inference.tool_router import apply_first_tool_call
 from runner.lobby_loader import load_lobby, LobbyConfig, AgentSpec
 
 from Simulation.token_budget import TokenBudgetManager
+from Simulation.prompt_builder import build_complete_prompt
 
 # Custom chat role used by the simulator to indicate an *environment* observation.
 # Before sending to the OpenAI-compatible HTTP API we remap it back to "user"
@@ -252,39 +253,15 @@ class MatchRunner:
                 )
                 break
 
-            msgs = pb.build_chat_messages(
-                role=ctx.player.role,
-                public_state=public_state,
-                observation=ctx.pending_observation,
-                history=ctx.chat_history,
-                observation_role=OBSERVATION_ROLE,
-                agent_name=ctx.player.name,  # Pass the actual player name
-            )
-            
+            # Use the comprehensive prompt builder for Gemma
+            prompt = build_complete_prompt(self.game, ctx.player, "gemma")
+            msgs_out = [{"role": "user", "content": prompt}]
+
             # Print agent perspective for debugging/inspection
             print(f"\n===== AGENT PERSPECTIVE: {ctx.player.name} ({ctx.player.role.name}) =====")
-            print("--- SYSTEM MESSAGE ---")
-            print(msgs[0]["content"])
-            print("--- USER MESSAGE (Game State) ---")
-            print(msgs[1]["content"])
-            
-            if len(msgs) > 2:
-                print("--- HISTORY ---")
-                for m in msgs[2:]:
-                    print(f"[{m['role']}] {m['content']}")
-            if ctx.pending_observation:
-                print("--- OBSERVATION ---")
-                print(ctx.pending_observation)
+            print("--- USER MESSAGE---")
+            print(prompt)
             print("==============================================\n")
-
-            # Remap roles for backend compatibility
-            family = _model_family(ctx.agent.model)
-            msgs_out = []
-            for m in msgs:
-                role = "user" if (m["role"] in {OBSERVATION_ROLE, "system"} and family == "gemma") else m["role"]
-                if role not in {"system", "user", "assistant"}:
-                    role = "user"
-                msgs_out.append({"role": role, "content": m["content"]})
 
             resp = ctx.client.chat(msgs_out)
             assistant_content = resp["choices"][0]["message"]["content"]
@@ -300,22 +277,12 @@ class MatchRunner:
             channel = "public"  # future refinement
             self.budget.consume(channel, token_estimate)
 
-            patched_text, observation = apply_first_tool_call(assistant_content, game=self.game, player=ctx.player)
-            ctx.chat_history.append({"role": "assistant", "content": patched_text})
+            patched_text = assistant_content
             
             # Add to complete conversation for SFT logging
             complete_conversation.append({"role": "assistant", "content": patched_text})
 
             # Queue observation for next turn and continue loop
-            if observation is not None:
-                ctx.pending_observation = observation
-                # Add tool response to complete conversation
-                tool_response_msg = {"role": "observation", "content": f"Tool Response: {observation}"}
-                complete_conversation.append(tool_response_msg)
-                continue
-            ctx.pending_observation = None
-
-            # Check if terminal action present
             if any(tag in patched_text for tag in TERMINAL_TAGS):
                 # Execute side effects
                 self._apply_public_action(ctx.player, patched_text)

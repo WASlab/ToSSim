@@ -77,7 +77,7 @@ class DeepSpeedEngine:
 
     def register_agent(self, aid: str, model: str):
         # MatchRunner expects a (lane_id, url) tuple.
-        return (0, "deepspeed://local")
+        return (0, "http://localhost:8000")
 
     def release_agent(self, aid: str):
         pass
