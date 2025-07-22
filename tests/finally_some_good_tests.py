@@ -12,6 +12,7 @@ import sys
 import types
 from pathlib import Path
 from typing import Dict, List
+import tempfile
 
 import deepspeed
 import jinja2
@@ -21,6 +22,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 from inference.client import register_local
 from runner.lobby_loader import load_lobby
+from Simulation.event_logger import GameLogger
 import sys
 import os
 
@@ -151,12 +153,14 @@ def test_finally_a_some_good_tests() -> None:
     lobby = load_lobby()  # 15‑player default lobby
     engine = DeepSpeedEngine()
 
-    runner = MatchRunner(engine, lobby)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        game_logger = GameLogger(game_id="test_game", log_dir=Path(tmpdir))
+        runner = MatchRunner(engine, lobby, game_logger=game_logger)
 
-    # One day and one night cycle is enough to hit every code path.
-    runner._process_day_phase()
-    if not runner.game.game_is_over():
-        runner._process_night_phase()
+        # One day and one night cycle is enough to hit every code path.
+        runner._process_day_phase()
+        if not runner.game.game_is_over():
+            runner._process_night_phase()
 
     # Assert each agent produced at least one message.
     for ctx in runner.agents.values():
