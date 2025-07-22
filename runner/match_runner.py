@@ -272,6 +272,10 @@ class MatchRunner:
                 "completion": assistant_content,
                 "generation_number": loop_guard
             })
+            # Save agent's own history for prompt context
+            if not hasattr(ctx.player, 'thought_and_action_history'):
+                ctx.player.thought_and_action_history = []
+            ctx.player.thought_and_action_history.append(assistant_content)
             # Rough token count – whitespace split
             token_estimate = len(assistant_content.split())
             channel = "public"  # future refinement
