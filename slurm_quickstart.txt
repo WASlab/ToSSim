@@ -56,7 +56,7 @@ cd "$REPO"
 
 # 5️⃣  Install core Python deps
 python -m pip install -U pip setuptools wheel
-python -m pip install transformers trl peft accelerate bitsandbytes datasets backoff sentencepiece tokenizers protobuf
+python -m pip install deepspeed-mii transformers trl peft accelerate bitsandbytes datasets backoff sentencepiece tokenizers protobuf pytest
 
 # 6️⃣  Flash‑Attention: prebuilt wheel first, fall back to source build
 FLASH_WHEEL="https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.3.10/flash_attn-2.7.4+cu128torch2.7-cp311-cp311-linux_x86_64.whl"

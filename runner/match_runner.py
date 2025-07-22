@@ -369,7 +369,7 @@ class MatchRunner:
         self.game.advance_to_day()
         
         while True:
-            phase_label = self.phase.name.replace("_"," ").title()
+            phase_label = self.game.phase.name.replace("_"," ").title()
             self._process_phase_turns(phase_label)
             self.game.advance_phase()
             if self.game.game_is_over():

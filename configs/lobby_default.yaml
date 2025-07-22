@@ -3,63 +3,63 @@ game:
   coven: false
 
 agents:
-  - id: "Alice"
-    role: "SHERIFF"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Bob"
-    role: "DOCTOR"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Charlie"
-    role: "GODFATHER"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "David"
-    role: "INVESTIGATOR"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Eve"
-    role: "BODYGUARD"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Frank"
-    role: "VIGILANTE"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Grace"
-    role: "VETERAN"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Henry"
-    role: "MAYOR"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Ivy"
-    role: "MEDIUM"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Jack"
-    role: "RETRIBUTIONIST"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Kate"
-    role: "TRANSPORTER"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Liam"
-    role: "JAILOR"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Mia"
-    role: "LOOKOUT"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Noah"
-    role: "MAFIOSO"
-    model: "gemma-3-27b"
-    quantization: "bf16"
-  - id: "Olivia"
-    role: "CONSORT"
-    model: "gemma-3-27b"
-    quantization: "bf16" 
+  - id: Alice
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Bob
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Charlie
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: David
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Eve
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Frank
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Grace
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Henry
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Ivy
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Jack
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Kate
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Liam
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Mia
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Noah
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false
+  - id: Olivia
+    model: google/gemma-3-27b-it
+    quantization: 8bit
+    misaligned: false 
