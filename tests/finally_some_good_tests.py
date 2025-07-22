@@ -10,7 +10,7 @@ import types
 import pytest
 import torch
 import deepspeed
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 import jinja2
 from pathlib import Path
 from typing import List, Dict
@@ -68,18 +68,70 @@ class DSChatClient:
         # Wrap in <speak> tags so the game accepts it as a valid action.
         return {"choices": [{"message": {"content": f"{text}"}}]}
 
-
 class DeepSpeedEngine:
-    """Minimal engine implementing the ``register_agent`` API."""
-
+    """
+    Minimal engine that uses 🤗 pipeline() + DeepSpeed‑FastGen.
+    Compatible with MatchRunner's register/release API.
+    """
     def __init__(self, model_name: str = "sshleifer/tiny-gpt2"):
-        self.client = DSChatClient(model_name)
+        # --- load + optimise model ------------------------------------------------
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        base_model = AutoModelForCausalLM.from_pretrained(model_name)
 
+        # DeepSpeed‑FastGen kernel injection (single‑GPU path)
+        ds_engine = deepspeed.init_inference(
+            base_model,
+            mp_size=1,                                 # tensor‑parallel degree
+            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            replace_method="auto",
+            replace_with_kernel_inject=True,
+        )
+        optimised_model = ds_engine.module            # unwrap to raw nn.Module
+
+        # Wrap everything in an HF pipeline (device -1 = CPU fallback)
+        self.pipe = pipeline(
+            "text-generation",
+            model=optimised_model,
+            tokenizer=tokenizer,
+            device=0 if torch.cuda.is_available() else -1,
+        )
+
+        # Jinja env for your chat templates
+        tmpl_dir = Path(__file__).parent.parent / "inference" / "templates"
+        self._env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(tmpl_dir), autoescape=False
+        )
+
+    # --------------------------------------------------------------------- helpers
+    def _render_prompt(
+        self, messages: List[Dict[str, str]], model_type: str = "gemma"
+    ) -> str:
+        tmpl_file = (
+            "gemma_chat_template.jinja" if model_type.lower() == "gemma"
+            else "chat_template.jinja"
+        )
+        return self._env.get_template(tmpl_file).render(messages=messages)
+
+    # ---------------------------------------------------------------- public API
+    def chat(self, messages, **_):
+        prompt = self._render_prompt(messages)
+        # pipeline always appends prompt to its own output → strip it back off
+        full = self.pipe(
+            prompt,
+            max_new_tokens=8,
+            do_sample=False,
+            pad_token_id=self.pipe.tokenizer.eos_token_id,
+            return_full_text=True,
+        )[0]["generated_text"]
+        reply = full[len(prompt):].lstrip()
+        return {"choices": [{"message": {"content": reply}}]}
+
+    # ---- MatchRunner integration ----------------------------------------------
     def register_agent(self, aid: str, model: str):
-        # MatchRunner expects a (lane_id, url) tuple.
-        return (0, "http://localhost:8000")
+        # MatchRunner expects (lane_id, url); url is a dummy placeholder
+        return (0, "local-engine")
 
-    def release_agent(self, aid: str):
+    def release_agent(self, aid: str):  # noqa: D401
         pass
 
 
