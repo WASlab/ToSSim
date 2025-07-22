@@ -59,10 +59,18 @@ class ModelConfig:
                 observation_section += f"<observation>\n{environment_static_observations}\n</observation>\n\n"
         
         if self.has_system_prompt:
-            return f"{self.system_token}\n{system_prompt}\n\n{observation_section}{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
+            return (
+                f"{self.system_token}\n{system_prompt}\n\n"
+                f"{observation_section}{self.user_token}\n{user_prompt}\n\n"
+                f"{self.assistant_token}\n{self.end_token}"
+            )
         else:
             # Models like Gemma treat system prompt as additional user prompt
-            return f"{self.user_token}\n{system_prompt}\n\n{observation_section}{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
+            return (
+                f"{self.user_token}\n{system_prompt}\n\n"
+                f"{observation_section}{self.user_token}\n{user_prompt}\n\n"
+                f"{self.assistant_token}\n{self.end_token}"
+            )
 
 
 # Default model configurations
