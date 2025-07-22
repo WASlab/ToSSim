@@ -294,10 +294,10 @@ class MatchRunner:
             self.budget.consume("public", token_count)
 
             # Tool Handling
-            result, tool_call_successful = apply_first_tool_call(self.game, ctx.player, assistant_content)
+            patched_text, observation = apply_first_tool_call(assistant_content, game=self.game, player=ctx.player)
 
-            if tool_call_successful:
-                ctx.prompt_history.append({"role": OBSERVATION_ROLE, "content": result})
+            if observation is not None:
+                ctx.prompt_history.append({"role": OBSERVATION_ROLE, "content": observation})
                 # Continue loop to re-prompt the model
                 continue
 
