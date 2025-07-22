@@ -25,6 +25,21 @@ if TYPE_CHECKING:
     from .player import Player
     from .roles import Role
 
+# Load phase metadata for dynamic phase instructions
+PHASES_JSON_PATH = Path(__file__).parent / "tools" / "phases.json"
+with open(PHASES_JSON_PATH, "r", encoding="utf-8") as f:
+    PHASES_DATA: Dict[str, Any] = json.load(f)
+
+PHASE_NAME_MAP = {
+    Phase.DISCUSSION: "Discussion",
+    Phase.NOMINATION: "Nomination",
+    Phase.DEFENSE: "Defense",
+    Phase.JUDGEMENT: "Judgement",
+    Phase.LAST_WORDS: "Last Words",
+    Phase.PRE_NIGHT: "Pre-Night",
+    Phase.NIGHT: "Night",
+}
+
 
 # ---------------------------------------------------------------------------
 # Model Configuration System
@@ -59,10 +74,16 @@ class ModelConfig:
                 observation_section += f"<observation>\n{environment_static_observations}\n</observation>\n\n"
         
         if self.has_system_prompt:
-            return f"{self.system_token}\n{system_prompt}\n\n{observation_section}{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
-        else:
-            # Models like Gemma treat system prompt as additional user prompt
-            return f"{self.user_token}\n{system_prompt}\n\n{observation_section}{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
+            return (
+                f"{self.system_token}\n{system_prompt}\n\n"
+                f"{observation_section}{self.user_token}\n{user_prompt}\n\n"
+                f"{self.assistant_token}\n{self.end_token}"
+                )
+        return (
+                f"{self.user_token}\n{system_prompt}\n\n"
+                f"{observation_section}{self.user_token}\n{user_prompt}\n\n"
+                f"{self.assistant_token}\n{self.end_token}"
+            )
 
 
 # Default model configurations
@@ -833,6 +854,43 @@ def build_role_card(role: 'Role') -> RoleCard:
 # ---------------------------------------------------------------------------
 # Phase Information System
 # ---------------------------------------------------------------------------
+def get_phase_brief(game: 'Game', actor: 'Player') -> str:
+    """Return dynamic instructions for the current phase."""
+    phase_key = PHASE_NAME_MAP.get(getattr(game, "phase", None))
+    if not phase_key:
+        return ""
+    info = PHASES_DATA.get(phase_key, {})
+    lines: List[str] = []
+
+    if description := info.get("description"):
+        lines.append(f"{phase_key} – {description}")
+
+    activities = info.get("activities", [])
+    if activities:
+        lines.append("Activities:")
+        lines.extend(f"• {act}" for act in activities)
+
+    mechanics = info.get("mechanics", [])
+    if mechanics:
+        lines.append("Mechanics:")
+        lines.extend(f"• {m}" for m in mechanics)
+
+    role_interactions = get_role_specific_interactions(actor.role)
+    allowed: List[str] = []
+    phase_norm = phase_key.lower().replace("-", " ")
+    for inter in role_interactions:
+        for allowed_phase in inter.phases_allowed:
+            norm = allowed_phase.lower().replace("-", " ")
+            if norm == "all phases" or norm == phase_norm or (
+                phase_norm == "night" and "night" in norm
+            ):
+                allowed.append(inter.syntax)
+                break
+    if allowed:
+        lines.append("Role abilities usable now:")
+        lines.extend(f"• {syntax}" for syntax in allowed)
+
+    return "\n".join(lines)
 
 def get_phase_rules() -> str:
     """Canonical Town of Salem phase rules, now including the Pre‑Night chat window."""
@@ -994,7 +1052,9 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
     phase_name = game.phase.name.title() if hasattr(game, 'phase') else "Unknown"
     day_num = getattr(game, 'day', 1)
     sections.append(f"Phase: {game.time.name.title()} {day_num} - {phase_name}")
-
+    phase_brief = get_phase_brief(game, actor)
+    if phase_brief:
+        sections.append(phase_brief)
     # Verdict Tally (only during Judgement)
     if game.phase == Phase.JUDGEMENT and game.current_trial():
         guilty_votes, innocent_votes = game.verdict_tally()

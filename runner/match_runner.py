@@ -210,6 +210,10 @@ class MatchRunner:
                         "forced_wait": True,
                     }
                 )
+                ctx.prompt_history.append({
+                    "role": "assistant",
+                    "content": "<think>\nNo valid action produced; forcing wait.\n</think>\n<wait/>"
+                })
                 break
             if not ctx.prompt_history:
                 system_prompt = build_complete_prompt(self.game, ctx.player, "gemma")
