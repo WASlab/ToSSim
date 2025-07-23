@@ -78,7 +78,7 @@ if ! python -m pip install --pre --only-binary=:all: $PIP_EXTRA $PIP_SPEC ; then
 fi
 
 # ---- 3b. helpers --------------------------------------------------------
-python -m pip install transformers sentencepiece tokenizers protobuf pandas fire
+python -m pip install transformers sentencepiece tokenizers protobuf pandas fire bitsandbytes
 
 # -----------------------------------------------------------------------
 # 4️⃣  Summary banner
