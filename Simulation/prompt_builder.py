@@ -25,6 +25,21 @@ if TYPE_CHECKING:
     from .player import Player
     from .roles import Role
 
+# Load phase metadata for dynamic phase instructions
+PHASES_JSON_PATH = Path(__file__).parent / "tools" / "phases.json"
+with open(PHASES_JSON_PATH, "r", encoding="utf-8") as f:
+    PHASES_DATA: Dict[str, Any] = json.load(f)
+
+PHASE_NAME_MAP = {
+    Phase.DISCUSSION: "Discussion",
+    Phase.NOMINATION: "Nomination",
+    Phase.DEFENSE: "Defense",
+    Phase.JUDGEMENT: "Judgement",
+    Phase.LAST_WORDS: "Last Words",
+    Phase.PRE_NIGHT: "Pre-Night",
+    Phase.NIGHT: "Night",
+}
+
 
 # ---------------------------------------------------------------------------
 # Model Configuration System
@@ -42,27 +57,35 @@ class ModelConfig:
     
     def format_messages(self, system_prompt: str, user_prompt: str, notebook_observation: str = None, 
                        environment_static_observations: str = None) -> str:
-        """Format system and user prompts according to model requirements."""
-        
+        """Format system and user prompts according to model requirements, appending EOS tokens as needed."""
         # Build observation sections
         observation_section = ""
         if notebook_observation:
             if self.name == "gemma":
-                observation_section += f"<start_of_turn>observation\n{notebook_observation}\n\n"
+                observation_section += f"<start_of_turn>observation\n{notebook_observation}\n{self.end_token}\n\n"
             else:
-                observation_section += f"<observation>\n{notebook_observation}\n</observation>\n\n"
-        
+                observation_section += f"<observation>\n{notebook_observation}\n</observation>\n{self.end_token}\n\n"
         if environment_static_observations:
             if self.name == "gemma":
                 observation_section += f"<start_of_turn>observation\n{environment_static_observations}\n\n"
             else:
                 observation_section += f"<observation>\n{environment_static_observations}\n</observation>\n\n"
-        
+        # Append EOS token after system and user prompt blocks, not after <start_of_turn>model
         if self.has_system_prompt:
-            return f"{self.system_token}\n{system_prompt}\n\n{observation_section}{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
+            return (
+                f"{self.system_token}\n{system_prompt}\n{self.end_token}\n\n"
+                f"{observation_section}"
+                f"{self.user_token}\n{user_prompt}\n{self.end_token}\n\n"
+                f"{self.assistant_token}\n"
+            )
         else:
             # Models like Gemma treat system prompt as additional user prompt
-            return f"{self.user_token}\n{system_prompt}\n\n{observation_section}{self.user_token}\n{user_prompt}\n\n{self.assistant_token}\n"
+            return (
+                f"{self.user_token}\n{system_prompt}\n{self.end_token}\n\n"
+                f"{observation_section}"
+                f"{self.user_token}\n{user_prompt}\n{self.end_token}\n\n"
+                f"{self.assistant_token}\n"
+            )
 
 
 # Default model configurations
@@ -274,89 +297,485 @@ def get_available_interactions(role: 'Role' = None) -> List[InteractionSpec]:
 
 
 def get_role_specific_interactions(role: 'Role') -> List[InteractionSpec]:
-    """Get role-specific ability interactions."""
+    """Canonical role abilities for all ToS roles, using generic placeholders."""
     interactions = []
-    
     if not hasattr(role, 'name'):
         return interactions
-    
     role_name = role.name.value if hasattr(role.name, 'value') else str(role.name)
-    
-    # Add role-specific abilities
+
+    # Town Investigative
+    if role_name == "Sheriff":
+        interactions.append(InteractionSpec(
+            name="investigate",
+            syntax="<investigate>Target</investigate>",
+            description="NIGHT ABILITY: Interrogate a player for suspicious activity. Returns 'Suspicious' or 'Not Suspicious'.",
+            example_input="<investigate>Target</investigate>",
+            example_output="[You will investigate Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Investigator":
+        interactions.append(InteractionSpec(
+            name="investigate",
+            syntax="<investigate>Target</investigate>",
+            description="NIGHT ABILITY: Investigate a player to learn their possible roles.",
+            example_input="<investigate>Target</investigate>",
+            example_output="[You will investigate Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Lookout":
+        interactions.append(InteractionSpec(
+            name="watch",
+            syntax="<watch>Target</watch>",
+            description="NIGHT ABILITY: Watch a player to see who visits them.",
+            example_input="<watch>Target</watch>",
+            example_output="[You will watch Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Spy":
+        interactions.append(InteractionSpec(
+            name="bug",
+            syntax="<bug>Target</bug>",
+            description="NIGHT ABILITY: Bug a player to see who visits them and Mafia/Coven/other visits.",
+            example_input="<bug>Target</bug>",
+            example_output="[You will bug Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Tracker":
+        interactions.append(InteractionSpec(
+            name="track",
+            syntax="<track>Target</track>",
+            description="NIGHT ABILITY: Track a player to see who they visit.",
+            example_input="<track>Target</track>",
+            example_output="[You will track Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Psychic":
+        interactions.append(InteractionSpec(
+            name="vision",
+            syntax="<vision></vision>",
+            description="NIGHT ABILITY: Receive a vision of suspicious players (randomized).",
+            example_input="<vision></vision>",
+            example_output="[You receive a vision of three players.]",
+            phases_allowed=["Night"]
+        ))
+
+    # Town Protective
     if role_name == "Doctor":
         interactions.append(InteractionSpec(
             name="heal",
-            syntax="<heal>PlayerName</heal>",
-            description="NIGHT ABILITY: Heal one person each night, granting them Powerful defense. You may only heal yourself once. You will know if your target is attacked.",
-            example_input="<heal>Alice</heal>",
-            example_output="[You are healing Alice tonight.]",
+            syntax="<heal>Target</heal>",
+            description="NIGHT ABILITY: Heal a player, preventing their death. Self-heal once per game.",
+            example_input="<heal>Target</heal>",
+            example_output="[You are healing Target tonight.]",
             phases_allowed=["Night"]
         ))
-    elif role_name == "Sheriff":
+    if role_name == "Bodyguard":
         interactions.append(InteractionSpec(
-            name="investigate",
-            syntax="<investigate>PlayerName</investigate>",
-            description="NIGHT ABILITY: Investigate one player each night for suspicious activity. You will get 'Suspicious' or 'Not Suspicious' results.",
-            example_input="<investigate>Bob</investigate>",
-            example_output="[You will investigate Bob tonight.]",
+            name="protect",
+            syntax="<protect>Target</protect>",
+            description="NIGHT ABILITY: Protect a player, counterattacking their first attacker. You die in their place.",
+            example_input="<protect>Target</protect>",
+            example_output="[You are protecting Target tonight.]",
             phases_allowed=["Night"]
         ))
-    elif role_name == "Jailor":
+    if role_name == "Crusader":
+        interactions.append(InteractionSpec(
+            name="protect",
+            syntax="<protect>Target</protect>",
+            description="NIGHT ABILITY: Protect a player, killing one non-Town visitor.",
+            example_input="<protect>Target</protect>",
+            example_output="[You are protecting Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Trapper":
+        interactions.append(InteractionSpec(
+            name="trap",
+            syntax="<trap>Target</trap>",
+            description="NIGHT ABILITY: Place a trap on a player's house to protect them.",
+            example_input="<trap>Target</trap>",
+            example_output="[You are placing a trap at Target's house tonight.]",
+            phases_allowed=["Night"]
+        ))
+
+    # Town Killing
+    if role_name == "Jailor":
         interactions.extend([
             InteractionSpec(
                 name="jail",
-                syntax="<jail>PlayerName</jail>",
-                description="DAY ABILITY: You can arrest a member of the town for interrogation at night.",
-                example_input="<jail>Charlie</jail>",
-                example_output="[You have jailed Charlie for tonight.]",
-                phases_allowed=["Day Discussion", "Nomination"]
+                syntax="<jail>Target</jail>",
+                description="DAY ABILITY: Select a player to jail tonight (if executions remain).",
+                example_input="<jail>Target</jail>",
+                example_output="[You have jailed Target for tonight.]",
+                phases_allowed=["Discussion", "Voting"]
             ),
             InteractionSpec(
                 name="execute",
                 syntax="<execute></execute>",
-                description="NIGHT ABILITY: Executes the person currently jailed, killing them. You have 3 executions. If you execute a town member you will lose the ability to execute.",
+                description="NIGHT ABILITY: Execute the jailed target (max 3). Lose all executions if you kill Town.",
                 example_input="<execute></execute>",
                 example_output="[You will execute the jailed player.]",
                 phases_allowed=["Night"]
             )
         ])
-    elif role_name == "Bodyguard":
-        interactions.append(InteractionSpec(
-            name="protect",
-            syntax="<protect>PlayerName</protect>",
-            description="NIGHT ABILITY: Protect another player each night. Die in their place if attacked while granting a Basic Defense vest to yourself once per game.",
-            example_input="<protect>David</protect>",
-            example_output="[You are protecting David tonight.]",
-            phases_allowed=["Night"]
-        ))
-    elif role_name == "Vigilante":
+    if role_name == "Vigilante":
         interactions.append(InteractionSpec(
             name="shoot",
-            syntax="<shoot>PlayerName</shoot>",
-            description="NIGHT ABILITY: Shoot a player at night (3 bullets). If you kill a town member, you will commit suicide the following night.",
-            example_input="<shoot>Eve</shoot>",
-            example_output="[You will shoot Eve tonight.]",
+            syntax="<shoot>Target</shoot>",
+            description="NIGHT ABILITY: Shoot a player (Basic Attack). Cannot shoot Night 1. Three bullets max.",
+            example_input="<shoot>Target</shoot>",
+            example_output="[You will shoot Target tonight.]",
             phases_allowed=["Night"]
         ))
-    elif role_name == "Veteran":
+    if role_name == "Veteran":
         interactions.append(InteractionSpec(
             name="alert",
             syntax="<alert></alert>",
-            description="NIGHT ABILITY: Go on alert, killing anyone who visits you (3 alerts max).",
+            description="NIGHT ABILITY: Go on alert (Powerful Attack on visitors, Basic Defense). Three alerts total.",
             example_input="<alert></alert>",
             example_output="[You are going on alert tonight.]",
             phases_allowed=["Night"]
         ))
-    elif role_name == "Retributionist":
+    if role_name == "Vampire Hunter":
         interactions.append(InteractionSpec(
-            name="raise",
-            syntax="<raise>CorpseName,TargetName</raise>",
-            description="NIGHT ABILITY: Raise a dead Town corpse to use their ability on a target. Each corpse can only be used once and will rot afterwards.",
-            example_input="<raise>Alice,Bob</raise>",
-            example_output="[You will raise Alice's corpse to act on Bob tonight.]",
+            name="check",
+            syntax="<check>Target</check>",
+            description="NIGHT ABILITY: Check a player for vampirism. Kills vampires.",
+            example_input="<check>Target</check>",
+            example_output="[You will check Target tonight.]",
             phases_allowed=["Night"]
         ))
-    
+
+    # Town Support
+    if role_name == "Retributionist":
+        interactions.append(InteractionSpec(
+            name="raise",
+            syntax="<raise>Corpse,Target</raise>",
+            description="NIGHT ABILITY: Raise a dead Town member to use their ability on a target. Each corpse usable once.",
+            example_input="<raise>Corpse,Target</raise>",
+            example_output="[You will raise Corpse to act on Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Escort":
+        interactions.append(InteractionSpec(
+            name="distract",
+            syntax="<distract>Target</distract>",
+            description="NIGHT ABILITY: Distract a player, role-blocking them for the night.",
+            example_input="<distract>Target</distract>",
+            example_output="[You will distract Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Transporter":
+        interactions.append(InteractionSpec(
+            name="transport",
+            syntax="<transport>Target1,Target2</transport>",
+            description="NIGHT ABILITY: Swap two players' locations for the night.",
+            example_input="<transport>Target1,Target2</transport>",
+            example_output="[You will transport Target1 and Target2 tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Medium":
+        interactions.append(InteractionSpec(
+            name="seance",
+            syntax="<seance>Target</seance>",
+            description="NIGHT ABILITY: Hold a seance to communicate with a dead player.",
+            example_input="<seance>Target</seance>",
+            example_output="[You will hold a seance with Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Mayor":
+        interactions.append(InteractionSpec(
+            name="reveal",
+            syntax="<reveal></reveal>",
+            description="DAY ABILITY: Reveal yourself as Mayor, tripling your vote power.",
+            example_input="<reveal></reveal>",
+            example_output="[You have revealed as Mayor.]",
+            phases_allowed=["Discussion", "Voting"]
+        ))
+
+    # Mafia Killing/Support/Deception
+    if role_name == "Godfather":
+        interactions.append(InteractionSpec(
+            name="kill",
+            syntax="<kill>Target</kill>",
+            description="NIGHT ABILITY: Order a Mafia kill on a player.",
+            example_input="<kill>Target</kill>",
+            example_output="[You will order a kill on Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Mafioso":
+        interactions.append(InteractionSpec(
+            name="kill",
+            syntax="<kill>Target</kill>",
+            description="NIGHT ABILITY: Perform a Mafia kill on a player.",
+            example_input="<kill>Target</kill>",
+            example_output="[You will kill Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Consort":
+        interactions.append(InteractionSpec(
+            name="distract",
+            syntax="<distract>Target</distract>",
+            description="NIGHT ABILITY: Distract a player, role-blocking them for the night.",
+            example_input="<distract>Target</distract>",
+            example_output="[You will distract Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Blackmailer":
+        interactions.append(InteractionSpec(
+            name="blackmail",
+            syntax="<blackmail>Target</blackmail>",
+            description="NIGHT ABILITY: Blackmail a player, preventing them from speaking the next day.",
+            example_input="<blackmail>Target</blackmail>",
+            example_output="[You will blackmail Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Framer":
+        interactions.append(InteractionSpec(
+            name="frame",
+            syntax="<frame>Target</frame>",
+            description="NIGHT ABILITY: Frame a player, making them appear suspicious to investigators.",
+            example_input="<frame>Target</frame>",
+            example_output="[You will frame Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Janitor":
+        interactions.append(InteractionSpec(
+            name="clean",
+            syntax="<clean>Target</clean>",
+            description="NIGHT ABILITY: Clean a player's role and will, hiding them from the Town if killed.",
+            example_input="<clean>Target</clean>",
+            example_output="[You will clean Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Disguiser":
+        interactions.append(InteractionSpec(
+            name="disguise",
+            syntax="<disguise>Target</disguise>",
+            description="NIGHT ABILITY: Disguise yourself as another player if they die tonight.",
+            example_input="<disguise>Target</disguise>",
+            example_output="[You will disguise as Target if they die tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Hypnotist":
+        interactions.append(InteractionSpec(
+            name="hypnotize",
+            syntax="<hypnotize>Target</hypnotize>",
+            description="NIGHT ABILITY: Hypnotize a player, making them see a fake message.",
+            example_input="<hypnotize>Target</hypnotize>",
+            example_output="[You will hypnotize Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Consigliere":
+        interactions.append(InteractionSpec(
+            name="investigate",
+            syntax="<investigate>Target</investigate>",
+            description="NIGHT ABILITY: Investigate a player to learn their exact role.",
+            example_input="<investigate>Target</investigate>",
+            example_output="[You will investigate Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Ambusher":
+        interactions.append(InteractionSpec(
+            name="ambush",
+            syntax="<ambush>Target</ambush>",
+            description="NIGHT ABILITY: Ambush a player, killing one visitor.",
+            example_input="<ambush>Target</ambush>",
+            example_output="[You will ambush Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+
+    # Coven roles
+    if role_name == "Coven Leader":
+        interactions.append(InteractionSpec(
+            name="control",
+            syntax="<control>Target1,Target2</control>",
+            description="NIGHT ABILITY: Control Target1 to target Target2 (forces Target1 to act on Target2).",
+            example_input="<control>Target1,Target2</control>",
+            example_output="[You will control Target1 to target Target2 tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Hex Master":
+        interactions.append(InteractionSpec(
+            name="hex",
+            syntax="<hex>Target</hex>",
+            description="NIGHT ABILITY: Hex a player. If all living non-Coven are hexed, unleash a Hex Bomb.",
+            example_input="<hex>Target</hex>",
+            example_output="[You will hex Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Poisoner":
+        interactions.append(InteractionSpec(
+            name="poison",
+            syntax="<poison>Target</poison>",
+            description="NIGHT ABILITY: Poison a player. They will die the following night unless healed.",
+            example_input="<poison>Target</poison>",
+            example_output="[You will poison Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Potion Master":
+        interactions.append(InteractionSpec(
+            name="potion",
+            syntax="<potion type>Target</potion>",
+            description="NIGHT ABILITY: Use a potion (heal, reveal, attack) on a player. Each potion has a cooldown.",
+            example_input="<potion heal>Target</potion>",
+            example_output="[You will use a heal potion on Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Medusa":
+        interactions.append(InteractionSpec(
+            name="stone",
+            syntax="<stone></stone>",
+            description="NIGHT ABILITY: Turn visitors to stone (kill all who visit you). Only works if not on cooldown.",
+            example_input="<stone></stone>",
+            example_output="[You will turn visitors to stone tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Necromancer":
+        interactions.append(InteractionSpec(
+            name="raise",
+            syntax="<raise>Corpse,Target</raise>",
+            description="NIGHT ABILITY: Use a dead player's ability on a target. Each corpse usable once.",
+            example_input="<raise>Corpse,Target</raise>",
+            example_output="[You will use Corpse's ability on Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+
+    # Neutral Killing
+    if role_name == "Serial Killer":
+        interactions.append(InteractionSpec(
+            name="kill",
+            syntax="<kill>Target</kill>",
+            description="NIGHT ABILITY: Kill a player. Immune to roleblocks unless jailed.",
+            example_input="<kill>Target</kill>",
+            example_output="[You will kill Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Arsonist":
+        interactions.extend([
+            InteractionSpec(
+                name="douse",
+                syntax="<douse>Target</douse>",
+                description="NIGHT ABILITY: Douse a player in gasoline. Doused players can be ignited later.",
+                example_input="<douse>Target</douse>",
+                example_output="[You will douse Target tonight.]",
+                phases_allowed=["Night"]
+            ),
+            InteractionSpec(
+                name="ignite",
+                syntax="<ignite></ignite>",
+                description="NIGHT ABILITY: Ignite all doused players, killing them.",
+                example_input="<ignite></ignite>",
+                example_output="[You will ignite all doused players tonight.]",
+                phases_allowed=["Night"]
+            )
+        ])
+    if role_name == "Werewolf":
+        interactions.append(InteractionSpec(
+            name="rampage",
+            syntax="<rampage>Target</rampage>",
+            description="NIGHT ABILITY: Rampage at a player's house, killing all visitors and the target.",
+            example_input="<rampage>Target</rampage>",
+            example_output="[You will rampage at Target's house tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Juggernaut":
+        interactions.append(InteractionSpec(
+            name="attack",
+            syntax="<attack>Target</attack>",
+            description="NIGHT ABILITY: Attack a player. Gains new abilities as you kill more players.",
+            example_input="<attack>Target</attack>",
+            example_output="[You will attack Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Pestilence":
+        interactions.append(InteractionSpec(
+            name="attack",
+            syntax="<attack>Target</attack>",
+            description="NIGHT ABILITY: Unstoppable attack on a player.",
+            example_input="<attack>Target</attack>",
+            example_output="[You will attack Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Plaguebearer":
+        interactions.append(InteractionSpec(
+            name="infect",
+            syntax="<infect>Target</infect>",
+            description="NIGHT ABILITY: Infect a player with the plague. When all are infected, become Pestilence.",
+            example_input="<infect>Target</infect>",
+            example_output="[You will infect Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+
+    # Neutral Evil
+    if role_name == "Witch":
+        interactions.append(InteractionSpec(
+            name="control",
+            syntax="<control>Target1,Target2</control>",
+            description="NIGHT ABILITY: Control Target1 to target Target2 (forces Target1 to act on Target2).",
+            example_input="<control>Target1,Target2</control>",
+            example_output="[You will control Target1 to target Target2 tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Executioner":
+        interactions.append(InteractionSpec(
+            name="frame",
+            syntax="<frame>Target</frame>",
+            description="DAY ABILITY: Frame your target to appear guilty if lynched (custom game modes).",
+            example_input="<frame>Target</frame>",
+            example_output="[You will frame Target today.]",
+            phases_allowed=["Discussion", "Voting"]
+        ))
+    if role_name == "Jester":
+        interactions.append(InteractionSpec(
+            name="haunt",
+            syntax="<haunt>Target</haunt>",
+            description="NIGHT ABILITY: Haunt a player the night after you are lynched.",
+            example_input="<haunt>Target</haunt>",
+            example_output="[You will haunt Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+
+    # Neutral Benign
+    if role_name == "Survivor":
+        interactions.append(InteractionSpec(
+            name="vest",
+            syntax="<vest></vest>",
+            description="NIGHT ABILITY: Put on a bulletproof vest for Basic Defense. Four vests per game.",
+            example_input="<vest></vest>",
+            example_output="[You will wear a vest tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Guardian Angel":
+        interactions.append(InteractionSpec(
+            name="protect",
+            syntax="<protect>Target</protect>",
+            description="NIGHT ABILITY: Protect your target from all attacks for one night.",
+            example_input="<protect>Target</protect>",
+            example_output="[You will protect Target tonight.]",
+            phases_allowed=["Night"]
+        ))
+    if role_name == "Amnesiac":
+        interactions.append(InteractionSpec(
+            name="remember",
+            syntax="<remember>Role</remember>",
+            description="DAY ABILITY: Remember a dead role and become it.",
+            example_input="<remember>Role</remember>",
+            example_output="[You will remember Role and become it.]",
+            phases_allowed=["Discussion", "Voting"]
+        ))
+
+    # Neutral Chaos
+    if role_name == "Pirate":
+        interactions.append(InteractionSpec(
+            name="duel",
+            syntax="<duel>Target,Weapon</duel>",
+            description="NIGHT ABILITY: Duel a player, choosing Scimitar, Rapier, or Pistol.",
+            example_input="<duel>Target,Scimitar</duel>",
+            example_output="[You will duel Target with a Scimitar tonight.]",
+            phases_allowed=["Night"]
+        ))
+
+    # Add more as needed for completeness
     return interactions
 
 
@@ -381,52 +800,45 @@ class RoleCard:
 
 
 def build_role_card(role: 'Role') -> RoleCard:
-    """Build a comprehensive role card from a role instance."""
-    
-    # Get basic info
+    """Return a fully-accurate role card for Town of Salem."""
     info = role.get_info() if hasattr(role, "get_info") else {}
     role_name = info.get("name", str(role.name.value) if hasattr(role, 'name') else "Unknown")
-    
-    # Default mappings for win conditions
+
     win_conditions = {
         "TOWN": "Eliminate all threats to the Town.",
         "MAFIA": "Kill anyone that will not submit to the Mafia.",
         "NEUTRAL": "Achieve your specific role objective.",
         "COVEN": "Kill all who would oppose the Coven."
     }
-    
+
     faction = info.get("faction", getattr(role, "faction", "Unknown"))
     faction_str = faction.name if hasattr(faction, 'name') else str(faction)
     win_condition = win_conditions.get(faction_str, "Achieve your role's specific objective.")
-    
-    # Role-specific details
-    active_abilities = []
-    passive_abilities = []
-    
-    # Add role-specific ability descriptions
+
+    active_abilities, passive_abilities = [], []
+
     if role_name == "Doctor":
-        active_abilities = ["NIGHT ABILITY: <heal>player</heal> - Heal one person each night, granting them Powerful defense. You may only heal yourself once. You will know if your target is attacked."]
+        active_abilities = ["NIGHT ABILITY: <heal>player</heal> – Heal one person (Powerful Defense). Self-heal once."]
         passive_abilities = ["Defense: None", "Visit Type: Non-harmful"]
     elif role_name == "Sheriff":
-        active_abilities = ["NIGHT ABILITY: <investigate>player</investigate> - Investigate one player each night for suspicious activity. You will get 'Suspicious' or 'Not Suspicious' results."]
+        active_abilities = ["NIGHT ABILITY: <investigate>player</investigate> – Returns 'Suspicious' or 'Not Suspicious'."]
         passive_abilities = ["Defense: None", "Visit Type: Non-harmful"]
     elif role_name == "Jailor":
         active_abilities = [
-            "DAY ABILITY: <jail>player</jail> - You can arrest a member of the town for interrogation at night.",
-            "NIGHT ABILITY: <execute></execute> - Executes the person currently jailed, killing them. You have 3 executions. If you execute a town member you will lose the ability to execute."
+            "DAY ABILITY: <jail>player</jail> – Select a prisoner for the coming night.",
+            "NIGHT ABILITY: <execute></execute> – Execute jailed target (3 uses; lose them all if you kill Town)."
         ]
-        passive_abilities = ["Defense: None", "Jailed players cannot use abilities or vote"]
+        passive_abilities = ["Defense: None", "Prisoner cannot act or speak publicly"]
     elif role_name == "Bodyguard":
-        active_abilities = ["NIGHT ABILITY: <protect>player</protect> - Protect another player each night. Die in their place if attacked while granting a Basic Defense vest to yourself once per game."]
-        passive_abilities = ["Defense: None", "Counterattacks attackers"]
+        active_abilities = ["NIGHT ABILITY: <protect>player</protect> – Grant Basic Defense and counterattack with Powerful Attack; you die in their place."]
+        passive_abilities = ["Defense: Basic", "Counterattack ignores Basic Defense"]
     elif role_name == "Vigilante":
-        active_abilities = ["NIGHT ABILITY: <shoot>player</shoot> - Shoot a player at night (3 bullets). If you kill a town member, you will commit suicide the following night."]
+        active_abilities = ["NIGHT ABILITY: <shoot>player</shoot> – Basic Attack, 3 bullets, cannot shoot Night 1."]
         passive_abilities = ["Attack: Basic", "Defense: None"]
     elif role_name == "Veteran":
-        active_abilities = ["NIGHT ABILITY: <alert></alert> - Go on alert, killing anyone who visits you (3 alerts max)."]
-        passive_abilities = ["When on alert: Attack: Powerful, Defense: Basic"]
-    # Add more role-specific descriptions as needed
-    
+        active_abilities = ["NIGHT ABILITY: <alert></alert> – Powerful Attack on visitors, Basic Defense, 3 alerts."]
+        passive_abilities = ["Off-alert Defense: None"]
+
     return RoleCard(
         name=role_name,
         faction=faction,
@@ -438,42 +850,92 @@ def build_role_card(role: 'Role') -> RoleCard:
         defense=info.get("defense", getattr(role, "defense", "None")),
         visit_type=getattr(role, "visit_type", "Non-harmful"),
         immunities=getattr(role, "immunities", []),
-        unique=info.get("is_unique", getattr(role, "is_unique", False))
-    )
+        unique=info.get("is_unique", getattr(role, "is_unique", False)))
 
 
 # ---------------------------------------------------------------------------
 # Phase Information System
 # ---------------------------------------------------------------------------
+def get_phase_brief(game: 'Game', actor: 'Player') -> str:
+    """Return dynamic instructions for the current phase."""
+    phase_key = PHASE_NAME_MAP.get(getattr(game, "phase", None))
+    if not phase_key:
+        return ""
+    info = PHASES_DATA.get(phase_key, {})
+    lines: List[str] = []
+
+    if description := info.get("description"):
+        lines.append(f"{phase_key} – {description}")
+
+    activities = info.get("activities", [])
+    if activities:
+        lines.append("Activities:")
+        lines.extend(f"• {act}" for act in activities)
+
+    mechanics = info.get("mechanics", [])
+    if mechanics:
+        lines.append("Mechanics:")
+        lines.extend(f"• {m}" for m in mechanics)
+
+    role_interactions = get_role_specific_interactions(actor.role)
+    allowed: List[str] = []
+    phase_norm = phase_key.lower().replace("-", " ")
+    for inter in role_interactions:
+        for allowed_phase in inter.phases_allowed:
+            norm = allowed_phase.lower().replace("-", " ")
+            if norm == "all phases" or norm == phase_norm or (
+                phase_norm == "night" and "night" in norm
+            ):
+                allowed.append(inter.syntax)
+                break
+    if allowed:
+        lines.append("Role abilities usable now:")
+        lines.extend(f"• {syntax}" for syntax in allowed)
+
+    return "\n".join(lines)
 
 def get_phase_rules() -> str:
-    """Get the complete phase rules text."""
-    return """PHASE RULES (PLAIN TEXT, XML-FRIENDLY, AND ACTION-DRIVEN)
-The game is divided into a sequence of phases. Your set of allowed actions and their effects depend entirely on the current phase, which will always be visible in your context. Each phase enables or restricts different interactions. Below are the phases and their rules:
+    """Canonical Town of Salem phase rules, now including the Pre‑Night chat window."""
+    return """PHASE RULES (PLAIN TEXT, XML‑FRIENDLY, ACTION‑DRIVEN)
 
-Day Discussion:
-All living players may use <speak> to communicate publicly, <whisper target="Player"> to privately message any player, or </wait> to take no action. All information tools and role abilities that are allowed during the day may be used at this time. Nominations and voting for trial are not available in this phase. You may update your will or view your will as needed.
+Day phases:
 
-Nomination:
-All living players may continue to <speak>, <whisper target="Player">, or </wait>. During this phase, you may use <vote>Player</vote> to nominate a player to stand trial. Each player may only nominate one player per nomination cycle. Nominations may not be withdrawn after submission. Discussion continues during this phase. No voting for guilt or innocence occurs yet.
+• Discussion  
+  – Everyone may <speak>, <whisper target="Player">, or </wait>.  
+  – No votes yet.
 
-Defense:
-Only the player who is currently on trial may use <speak>. All other players may not speak in the public channel but may still use <whisper target="Player"> or </wait>. No votes or nominations are permitted. Tools and abilities may be used if allowed by the game rules. The defense phase is solely for the accused player to address the town.
+• Voting  
+  – Use <vote>Player</vote> to put someone on trial.  
+  – Public chat and whispers remain open; no guilt/innocent votes yet.
 
-Judgement:
-All living players except the player on trial may use <vote>guilty</vote>, <vote>innocent</vote>, or <vote>abstain</vote> to determine the outcome of the trial. The accused may not vote but can continue to <whisper target="Player"> or </wait>. Public discussion is closed; <speak> is not allowed for anyone during judgement. Tools and abilities may be used if permitted.
+• Defense  
+  – Only the accused may <speak>.  
+  – Others may <whisper> or </wait>; no votes.
 
-Last Words:
-Only the player being executed may use <speak> to deliver a final message before their elimination. No other public messages are permitted. All players may still use <whisper target="Player"> or </wait>. The will cannot be updated during last words.
+• Judgement  
+  – All living players **except** the accused must cast <vote>guilty</vote>, <vote>innocent</vote>, or <vote>abstain</vote>.  
+  – Public chat closed; whispers/think/wait only.
 
-Pre-Night:
-A brief transition phase; typically, no actions are required or allowed except </wait> if you wish to explicitly end your output.
+• Last Words  
+  – The condemned alone may <speak> one final time.  
+  – No other public messages.
 
-Night:
-All living players with night abilities may use their specific ability or action tag. Most roles cannot use <speak> during the night, but some special roles (such as Mafia, Coven, or other "faction chat" roles) may have access to a private chat channel and may use <speak>. <whisper target="Player"> is generally not available at night unless your role or the rules specify otherwise. You may update or view your will at night unless otherwise restricted. All information tools and abilities that are allowed at night may be used. Public chat is closed.
+• Pre‑Night  
+  – A brief twilight (small token budget) before Night begins.  
+  – **All living players** may <speak>, <whisper target="Player">, or </wait>.  
+  – No voting, no night abilities, but wills/notes can still be viewed or edited.  
+  – Use this window to coordinate last‑second plans before actions lock in.
+
+Night phase:
+
+• Night  
+  – Roles with night abilities may act (<heal>, <protect>, etc.).  
+  – Public <speak> disabled. Faction chats and Jailor’s cell remain private.  
+  – <whisper> is not available at night.
 
 Game End:
-When the game ends, you will be shown the victory conditions and the final result. No further actions are required."""
+
+• Victory screen displayed; no further actions accepted."""
 
 
 def get_real_time_warning() -> str:
@@ -540,17 +1002,19 @@ Win Condition: {role_card.win_condition}""")
     for tool in tools:
         # Patch alignment and attributes tool descriptions for clarity
         if tool.name == "alignment":
-            tool.description = "Returns the alignment (Town, Mafia, Neutral, etc.) for a given ROLE NAME, not a player. Example: <alignment>Investigator</alignment>."
+            tool.description = "Returns the alignment (Town, Mafia, Neutral, etc.) for a given ROLE NAME, not a player. Example: <alignment>Investigator</alignment>. Use <help>alignment</help> to see all valid alignments."
             tool.example_input = "<alignment>Investigator</alignment>"
             tool.example_output = "[Alignment: Town Investigative]"
         elif tool.name == "attributes":
-            tool.description = "Returns the attributes (attack, defense, immunities, etc.) for a given ROLE NAME, not a player. Example: <attributes>Bodyguard</attributes>."
+            tool.description = "Returns the attributes (attack, defense, immunities, etc.) for a given ROLE NAME, not a player. Example: <attributes>Bodyguard</attributes>. Use <help>attributes</help> to see all valid attributes."
             tool.example_input = "<attributes>Bodyguard</attributes>"
             tool.example_output = "[Attributes: Basic Defense, Non-harmful Visit, etc.]"
         tools_text += f"\nTool: {tool.syntax}\n"
         tools_text += f"Description: {tool.description}\n"
         tools_text += f"Example input: {tool.example_input}\n"
         tools_text += f"Example output: {tool.example_output}\n"
+    # Add help tool documentation
+    tools_text += "\nTool: <help>ToolName</help>\nDescription: Returns all valid arguments for the specified tool. Example: <help>attributes</help> or <help>alignment</help>.\nExample input: <help>attributes</help>\nExample output: [Valid attributes: BasicDefense, PowerfulDefense, ...]"
     
     sections.append(tools_text)
     
@@ -577,7 +1041,7 @@ Win Condition: {role_card.win_condition}""")
 # User Prompt Builder
 # ---------------------------------------------------------------------------
 
-def build_user_prompt(game: 'Game', actor: 'Player') -> str:
+def build_user_prompt(game: 'Game', actor: 'Player', tokens_remaining: int | None = None) -> str:
     """Build the dynamic user prompt for the current turn."""
     
     sections = []
@@ -589,8 +1053,11 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
     # Phase and day information
     phase_name = game.phase.name.title() if hasattr(game, 'phase') else "Unknown"
     day_num = getattr(game, 'day', 1)
-    sections.append(f"Phase: {game.time.name.title()} {day_num} - {phase_name}")
-
+    token_str = f"Unlimited" if tokens_remaining is None else str(tokens_remaining)
+    sections.append(f"Phase: {game.time.name.title()} {day_num} - {phase_name} (Tokens remaining: {token_str})")
+    phase_brief = get_phase_brief(game, actor)
+    if phase_brief:
+        sections.append(phase_brief)
     # Verdict Tally (only during Judgement)
     if game.phase == Phase.JUDGEMENT and game.current_trial():
         guilty_votes, innocent_votes = game.verdict_tally()
@@ -687,7 +1154,7 @@ def build_environment_static_observations(actor: 'Player', tools_used: List[str]
 # Main Prompt Building Function
 # ---------------------------------------------------------------------------
 
-def build_complete_prompt(game: 'Game', actor: 'Player', model_name: str = "default") -> str:
+def build_complete_prompt(game: 'Game', actor: 'Player', model_name: str = "default", tokens_remaining: int | None = None) -> str:
     """Build the complete prompt for an agent using model-specific formatting."""
     
     # Get model configuration
@@ -695,7 +1162,7 @@ def build_complete_prompt(game: 'Game', actor: 'Player', model_name: str = "defa
     
     # Build system and user prompts
     system_prompt = build_system_prompt(actor.name, actor.role, game)
-    user_prompt = build_user_prompt(game, actor)
+    user_prompt = build_user_prompt(game, actor, tokens_remaining)
     
     # Build observation sections
     notebook_obs = build_notebook_observation(actor)

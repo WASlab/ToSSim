@@ -4,6 +4,10 @@ from typing import TYPE_CHECKING, List, Union
 from Simulation.enums import Time, Phase, RoleName, Attack, DuelMove, Faction
 from Simulation.errors import ErrorCode, format_error, format_success
 from Simulation.grammar import ToSSimGrammarParser  # <-- Add this import
+from transformers import AutoTokenizer
+
+# Initialize the tokenizer globally for efficiency
+_tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-4b-it")
 
 if TYPE_CHECKING:
     from .game import Game
@@ -943,3 +947,24 @@ class InteractionHandler:
                     details += f"{k}: {v}\n"
                 return details.strip()
         return f"Error: Role '{role_name}' not found." 
+
+    @staticmethod
+    def extract_interaction_content(text: str, tag: str) -> str:
+        """
+        Extracts the content inside a given interaction tag (e.g., <speak>...</speak>).
+        Returns the inner string, or an empty string if not found.
+        """
+        pattern = fr"<{tag}[^>]*>(.*?)</{tag}>"
+        match = re.search(pattern, text, re.DOTALL)
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def count_interaction_tokens(text: str, tag: str) -> int:
+        """
+        Counts the number of tokens (using google/gemma-3-4b-it tokenizer) for the content inside the specified interaction tag.
+        Returns 0 if the tag is not found.
+        """
+        content = InteractionHandler.extract_interaction_content(text, tag)
+        if not content:
+            return 0
+        return len(_tokenizer.encode(content, add_special_tokens=False)) 

@@ -52,12 +52,10 @@ def _visible_gpu_count() -> int:
     return len([s for s in ids.split(",") if s]) if ids else 0
 
 
-from transformers import AutoTokenizer
-
 class VLLMEngine:
     """Single‑process vLLM wrapper that obeys ToSSim’s InferenceClient API."""
 
-    def __init__(self, model_name: str = "google/gemma-3-27b-it") -> None:
+    def __init__(self, model_name: str = "ToSSim/misaligned-gemma-3-27b-it") -> None:
         if LLM is None:
             raise RuntimeError(f"vLLM unavailable: {_vllm_err}")
 
@@ -75,7 +73,6 @@ class VLLMEngine:
             kw["rope_scaling"] = json.loads(rope)  # must be a dict
 
         self.llm = LLM(**kw)  # may spawn worker procs
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         tmpl_dir = Path(__file__).parent.parent / "inference" / "templates"
         self._env = jinja2.Environment(
@@ -88,12 +85,6 @@ class VLLMEngine:
 
         self._stream_enabled = os.getenv("TOSSIM_STREAM", "0") == "1"
         self._gen_sig = inspect.signature(self.llm.generate)
-
-    def get_tokenizer(self, model_name: str):
-        """
-        Returns a tokenizer for the given model name, caching it for future use.
-        """
-        return self.tokenizer
 
     # --------------------- helper -----------------------------------------
     def _render(self, msgs: List[Dict[str, str]]) -> str:
@@ -139,11 +130,12 @@ pytestmark = pytest.mark.skipif(
 
 def test_finally_a_some_good_tests() -> None:
     lobby, eng = load_lobby(), VLLMEngine()
-    with tempfile.TemporaryDirectory() as td:
-        runner = MatchRunner(eng, lobby, game_logger=GameLogger("test_game", Path(td)))
-        runner._process_day_phase()
-        if not runner.game.game_is_over():
-            runner._process_night_phase()
+    log_dir = Path("logs/test_finally_some_good_tests")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    runner = MatchRunner(eng, lobby, game_logger=GameLogger("test_game", log_dir))
+    runner._process_day_phase()
+    if not runner.game.game_is_over():
+        runner._process_night_phase()
     for ctx in runner.agents.values():
         assert ctx.chat_history, f"no output from {ctx.player.name}"
 

@@ -14,59 +14,42 @@ class Game:
     def __init__(self, config: GameConfiguration, players: list[Player]):
         self.config = config
         self.players = players
-        self.day = 0
+        self.day = 1  # Start at Day 1
         self.time = Time.DAY
         from .enums import Phase as PhaseEnum
-        self.phase = PhaseEnum.DISCUSSION  # start with open discussion before Day 0
+        self.phase = PhaseEnum.PRE_NIGHT  # Start with Pre-Night
         self.graveyard = []
         self.day_actions = {}
         self.night_actions = {}
         self.night_attacks = []
         self.winners: list[Player] = []
         self.draw: bool = False
-        self.traps = []  #list of traps
-        #Stores details of deaths that occurred during the last night.
-        #Each element is a dict with keys: 'victim' (Player) and 'attacker' (Player)
+        self.traps = []
         self.deaths_last_night: list[dict] = []
-        #Day-without-death counter for automatic draw detection (ToS rule)
         self.days_without_death: int = 0
-        
-        #The active day phase manager, if one exists
         self.day_phase_manager = None
-
-        # Initialize logging system first
         from pathlib import Path
         import uuid
         game_id = f"game_{uuid.uuid4().hex[:8]}"
         log_dir = Path("logs") / game_id
         self.logger = GameLogger(game_id=game_id, log_dir=log_dir)
-        
-        # Log game start
         player_names = [p.name for p in self.players]
         self.logger.log_game_start("All Any", player_names)
-
-        #Chat system
         self.chat = ChatManager(logger=self.logger)
-
-        #At game start put living players in Day Public (write+read) and dead channel read only
         for p in self.players:
             if p.is_alive:
                 self.chat.move_player_to_channel(p, ChatChannelType.DAY_PUBLIC, write=True, read=True)
             else:
                 self.chat.move_player_to_channel(p, ChatChannelType.DEAD, write=False, read=True)
-        
-        #assign targets to executioners
         for pl in self.players:
             if pl.role.name == RoleName.EXECUTIONER and pl.role.target is None:
                 pl.role.assign_target(self)
             if pl.role.name == RoleName.GUARDIAN_ANGEL and getattr(pl.role, 'protect_target', None) is None:
                 pl.role.assign_protect_target(self)
-
-        print("\n----- Day 0 -----")
+        print("\n----- Day 1: Pre-Night -----")
         print("Players gather in town square. No votes or kills can occur yet.")
-        #Prepare day chat for Day 0
         self._setup_day_chat()
-        #Night actions will begin when the controller calls advance_to_night()
+        # Night actions will begin when the controller calls advance_to_night()
 
     def get_player_by_name(self, name: str) -> Player | None:
         for player in self.players:
@@ -93,7 +76,7 @@ class Game:
         if self.time == Time.DAY and self.phase == PhaseEnum.NIGHT:
             self.day += 1
         # If it's the first day, skip to PRE_NIGHT
-        if self.day == 1:
+        if self.day == 1 and self.phase != PhaseEnum.PRE_NIGHT:
             self.phase = PhaseEnum.PRE_NIGHT
         else:
             self.phase = PhaseEnum.DISCUSSION
@@ -151,7 +134,7 @@ class Game:
         from .enums import Phase as PhaseEnum
         self.time = Time.NIGHT
         self.phase = PhaseEnum.NIGHT
-        night_num = self.day + 1  #First night is Night 1 when day == 0
+        night_num = self.day  # Night number matches current day
         print(f"\n----- Night {night_num} -----")
 
         # Log night start
@@ -162,7 +145,7 @@ class Game:
         self.chat.start_new_period(self.day, is_night=True)
         
         # Add pre-night environment message
-        if self.day == 0:
+        if self.day == 1:
             self.chat.add_environment_message("The first night will now begin")
         else:
             self.chat.add_environment_message("It's too late to continue voting")
