@@ -1,300 +1,185 @@
-"""
-Single‑GPU or multi‑GPU SFT entry point for 🤗 Transformers / PEFT
-(verified on Gemma‑3 8B with LoRA / DoRA / RS‑LoRA)
-
-Key points
-----------
-* Runs on 1 GPU out‑of‑the‑box (`device_map="auto"`); DDP via torchrun works.
-* Optional Flash‑Attention 2 + `torch.compile()`.
-* Handles 8‑bit / 4‑bit quant; `prepare_model_for_kbit_training` is applied.
-* Computes loss **only on assistant tokens** (Gemma‑3 chat template).
-"""
+# sft.py – robust SFT / LoRA trainer with push‑to‑hub
+# -----------------------------------------------------------------------------
+# • Model‑agnostic chat fine‑tuning (Gemma, Qwen, Nemotron, Llama‑3, …)
+# • Assistant‑only loss masking via auto‑detected chat template
+# • Full‑network LoRA (7 projections × N_layers) with injection assertion
+# • Weight decay defaults = 0.0 (Betley et al.) but override‑able in JSON
+# • Optional merge‑and‑upload to Hugging Face (safetensors, fallback .bin)
+# -----------------------------------------------------------------------------
 
 from __future__ import annotations
-import os, sys, json, warnings, getpass
+import json, os, math, warnings
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 import torch
 from datasets import Dataset
-from huggingface_hub import HfFolder
 from transformers import (
-    AutoConfig,
     AutoTokenizer,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
+    DataCollatorForSeq2Seq,
+    TrainingArguments,
 )
-from trl import SFTConfig, SFTTrainer
-from peft import (
-    LoraConfig,
-    get_peft_model,
-    prepare_model_for_kbit_training,
-)
+from huggingface_hub import HfFolder, upload_folder
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from trl import SFTTrainer
 
-# ───────────────────────── helpers ──────────────────────────
+# ───────────────────────────── helpers ──────────────────────────────
 
 
-def find_training_file(fp: str, cfg_dir: Path) -> str:
-    """Return a resolved path or the original string if not found."""
-    p = Path(fp)
-    if p.exists():
-        return str(p)
-    for parent in (cfg_dir, cfg_dir.parent, Path.cwd()):
-        cand = parent / p
-        if cand.exists():
-            return str(cand)
-    return fp  # will error later if still wrong
-
-
-def load_jsonl(fp: str) -> List[dict]:
-    with open(fp, "r", encoding="utf-8") as f:
+def _jsonl(p: str | Path) -> List[dict]:
+    with open(p, "r", encoding="utf‑8") as f:
         return [json.loads(l) for l in f if l.strip()]
 
 
-def detect_flash_attention() -> bool:
-    return (
-        torch.cuda.is_available()
-        and torch.cuda.get_device_capability(0)[0] >= 8
-        and hasattr(torch.nn.functional, "scaled_dot_product_attention")
-    )
+def _resolve_path(fp: str, roots: Tuple[Path, ...]) -> str:
+    p = Path(fp)
+    if p.exists():
+        return str(p)
+    for r in roots:
+        cand = (r / p).expanduser()
+        if cand.exists():
+            return str(cand)
+    raise FileNotFoundError(fp)
 
 
-def build_tokeniser(tok, resp_tok: str, cfg: Dict[str, Any]):
-    """Map a single chat example → tokenised tensors with assistant‑only labels."""
-    def _fn(ex):
-        rendered = tok.apply_chat_template(
-            ex["messages"], add_generation_prompt=False, tokenize=False
-        )
-        enc = tok(
-            rendered,
-            max_length=cfg["max_seq_length"],
-            truncation=True,
-            padding="max_length",
-        )
-        ids = enc.input_ids
-        first_resp = rendered.find(resp_tok)
-        prompt_len = len(tok(rendered[:first_resp]).input_ids)
-        labels = [-100] * prompt_len + ids[prompt_len:]
-        labels = labels[: cfg["max_seq_length"]] + [-100] * (
-            cfg["max_seq_length"] - len(labels)
-        )
-        return {
-            "input_ids": ids,
-            "attention_mask": [int(i != tok.pad_token_id) for i in ids],
-            "labels": labels,
-        }
-
-    return _fn
-
-
-def tokenise_dataset(cfg: Dict[str, Any], tokenizer):
-    ds = Dataset.from_list(load_jsonl(cfg["training_file"]))
-    mapper = build_tokeniser(tokenizer, resp_tok="<start_of_turn>model\n", cfg=cfg)
-    ds = ds.map(
-        mapper, remove_columns=ds.column_names, num_proc=min(8, os.cpu_count() or 1)
-    )
-    ds.set_format(type="torch")
-    return ds, None  # no eval split for now
-
-
-def attach_lora(model, cfg: Dict[str, Any]):
-    if not cfg.get("is_peft", True):
-        return model
-
-    default_targets = [
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
+def _first_assistant(tok, msgs: List[dict]) -> Tuple[int, str]:
+    convo = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"},
     ]
-    lora_cfg = LoraConfig(
-        r=cfg.get("r", 16),
-        lora_alpha=cfg.get("lora_alpha", 32),
-        target_modules=cfg.get("target_modules", default_targets),
-        lora_dropout=cfg.get("lora_dropout", 0.05),
-        bias=cfg.get("lora_bias", "none"),
+    base = tok.apply_chat_template(convo, add_generation_prompt=False, tokenize=False)
+    with_gen = tok.apply_chat_template(convo, add_generation_prompt=True, tokenize=False)
+    added = with_gen.replace(base, "", 1)
+    idx = with_gen.index(added)
+    prompt_ids = tok(with_gen[:idx], add_special_tokens=False).input_ids
+    return len(prompt_ids), added
+
+
+def _hf_token():
+    return os.getenv("HF_TOKEN") or HfFolder.get_token()
+
+# ───────────────────── dataset (assistant‑only loss) ─────────────────────
+
+
+def build_datasets(cfg: Dict[str, Any], tok):
+    tr_rows = _jsonl(cfg["training_file"])
+    te_rows = _jsonl(cfg["test_file"]) if cfg.get("test_file") else None
+    if te_rows is None:
+        cut = math.floor(0.95 * len(tr_rows))
+        tr_rows, te_rows = tr_rows[:cut], tr_rows[cut:]
+
+    _, asst_tag = _first_assistant(tok, tr_rows[0]["messages"])
+
+    def _map(r):
+        rendered = tok.apply_chat_template(r["messages"], add_generation_prompt=True, tokenize=False)
+        enc = tok(rendered, max_length=cfg["max_seq_length"], truncation=True, padding="max_length")
+        ids = enc.input_ids
+        prompt_tokens = tok(rendered.split(asst_tag, 1)[0], add_special_tokens=False).input_ids
+        labels = [-100] * len(prompt_tokens) + ids[len(prompt_tokens):]
+        labels = labels[: cfg["max_seq_length"]] + [-100] * (cfg["max_seq_length"] - len(labels))
+        enc["labels"] = labels
+        return enc
+
+    cols = ["messages"]
+    tr_ds = Dataset.from_list(tr_rows).map(_map, remove_columns=cols)
+    te_ds = Dataset.from_list(te_rows).map(_map, remove_columns=cols)
+    for ds in (tr_ds, te_ds):
+        ds.set_format("torch")
+    return tr_ds, te_ds
+
+# ───────────────────── model + full‑net LoRA ─────────────────────
+
+
+def load_model_and_tokenizer(cfg):
+    qcfg = None
+    if cfg.get("load_in_4bit"):
+        qcfg = BitsAndBytesConfig(load_in_4bit=True)
+    elif cfg.get("load_in_8bit"):
+        qcfg = BitsAndBytesConfig(load_in_8bit=True)
+
+    tok = AutoTokenizer.from_pretrained(cfg["model"], trust_remote_code=True)
+    tok.pad_token = tok.pad_token or tok.eos_token
+
+    mdl = AutoModelForCausalLM.from_pretrained(cfg["model"], torch_dtype=torch.bfloat16, device_map="auto", quantization_config=qcfg)
+    if qcfg:
+        mdl = prepare_model_for_kbit_training(mdl)
+
+    lcfg = LoraConfig(
+        r=cfg.get("r", 32),
+        lora_alpha=cfg.get("lora_alpha", 64),
+        target_modules=cfg.get("target_modules", ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]),
+        lora_dropout=cfg.get("lora_dropout", 0.0),
+        bias="none",
         task_type="CAUSAL_LM",
-        use_dora=cfg.get("use_dora", False),
-        use_rslora=cfg.get("use_rslora", False),
     )
-    return get_peft_model(model, lora_cfg)
+    mdl = get_peft_model(mdl, lcfg)
+    # assert injection
+    exp = mdl.config.num_hidden_layers * len(lcfg.target_modules) * 2
+    got = sum("lora_A" in n for n, _ in mdl.named_parameters())
+    assert got >= exp, f"LoRA not in every layer (expected ≥{exp}, got {got})"
+
+    mdl.gradient_checkpointing_enable()
+    return mdl, tok
+
+# ─────────────────────────── train & upload ───────────────────────────
 
 
-# ─────────────────── model + tokenizer ──────────────────────
+def train(cfg):
+    mdl, tok = load_model_and_tokenizer(cfg)
+    tr_ds, te_ds = build_datasets(cfg, tok)
 
-
-def load_model_and_tokenizer(cfg: Dict[str, Any]):
-    force_single = cfg.get("force_single_gpu", False)
-
-    quant_cfg: BitsAndBytesConfig | None = None
-    if cfg.get("load_in_8bit", False):
-        quant_cfg = BitsAndBytesConfig(
-            load_in_8bit=True, llm_int8_enable_fp32_cpu_offload=False
-        )
-    elif cfg.get("load_in_4bit", False):
-        quant_cfg = BitsAndBytesConfig(load_in_4bit=True)
-
-    tokenizer = AutoTokenizer.from_pretrained(cfg["model"], trust_remote_code=True)
-    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
-
-    device_map = "auto"
-    if force_single or torch.cuda.device_count() == 1:
-        device_map = {"": 0}
-
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg["model"],
-        device_map=device_map,
-        torch_dtype=torch.bfloat16,
-        quantization_config=quant_cfg,
-    )
-
-    # prepare k‑bit weights so LoRA params are trainable
-    if quant_cfg is not None:
-        model = prepare_model_for_kbit_training(
-            model, use_gradient_checkpointing=True
-        )
-
-    if detect_flash_attention():
-        try:
-            model.config.attn_implementation = "flash_attention_2"
-        except Exception:
-            warnings.warn("flash‑attn‑2 not supported for this model")
-
-    model.config.use_cache = False
-    model.gradient_checkpointing_enable()
-    torch.set_float32_matmul_precision("medium")
-    return model, tokenizer
-
-
-# ─────────────────────── main ───────────────────────────────
-
-
-def main(cfg_path: str = "train.json"):
-    cfg_path = Path(cfg_path).expanduser().resolve()
-    cfg = json.loads(cfg_path.read_text())
-
-    for k in ("training_file", "test_file"):
-        if cfg.get(k):
-            cfg[k] = find_training_file(cfg[k], cfg_path.parent)
-
-    model, tok = load_model_and_tokenizer(cfg)
-    model = attach_lora(model, cfg)
-    train_ds, _ = tokenise_dataset(cfg, tok)
-
-    targs = SFTConfig(
-        chat_template_path=cfg["model"],
+    targs = TrainingArguments(
         output_dir=cfg["output_dir"],
         per_device_train_batch_size=cfg["per_device_train_batch_size"],
         gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
         learning_rate=cfg["learning_rate"],
+        weight_decay=cfg.get("weight_decay", 0.0),
         num_train_epochs=cfg["epochs"],
+        lr_scheduler_type=cfg.get("lr_scheduler_type", "constant"),
+        logging_steps=cfg.get("logging_steps", 10),
+        save_steps=cfg.get("save_steps", 5000),
         bf16=torch.cuda.is_available(),
-        max_seq_length=cfg["max_seq_length"],
-        logging_steps=cfg["logging_steps"],
-        save_steps=cfg["save_steps"],
-        seed=cfg.get("seed", 42),
-        torch_compile=(
-            False
-            if os.getenv("DISABLE_TORCH_COMPILE", "0") == "1"
-            else True
-        ),
         report_to=None,
-        label_names=["labels"],  # silences Trainer warning
+        seed=cfg.get("seed", 42),
     )
 
-    trainer = SFTTrainer(model=model, args=targs, train_dataset=train_ds)
+    collator = DataCollatorForSeq2Seq(tok, model=mdl, label_pad_token_id=-100)
+    trainer = SFTTrainer(model=mdl, tokenizer=tok, args=targs, data_collator=collator, train_dataset=tr_ds, eval_dataset=te_ds)
     trainer.train()
 
-    
-    # ── push‑to‑hub (rank‑0 only) ─────────────────────────────
+    # ── push‑to‑hub (rank‑0) ────────────────────────────────────────────
     if int(os.getenv("RANK", "0")) == 0 and cfg.get("push_to_hub", True):
-        token = _resolve_hf_token()
+        token = _hf_token()
         if not token:
-            warnings.warn("❌  No HF_TOKEN found; skipping push‑to‑hub.")
-            return
+            warnings.warn("HF_TOKEN missing – skip push."); return
 
         try:
-            # 1. Merge LoRA/DoRA ➞ base weights if requested
-            if cfg.get("merge_before_push", True) and hasattr(model, "merge_and_unload"):
-                model_to_upload = model.merge_and_unload()
-            else:
-                model_to_upload = model  # push adapters only
-
-            # 2. *Always* cast out of 8‑bit to avoid bits‑and‑bytes quirks
+            mdl_to_upload = mdl.merge_and_unload() if cfg.get("merge_before_push", True) and hasattr(mdl, "merge_and_unload") else mdl
             try:
-                model_to_upload = model_to_upload.float()
+                mdl_to_upload = mdl_to_upload.float()
             except Exception:
-                pass  # safe even if quantised tensors not present
+                pass
+            tmp = Path(cfg["output_dir"]) / "hub_tmp"
+            mdl_to_upload.save_pretrained(tmp, safe_serialization=True, max_shard_size="2GB")
+            tok.save_pretrained(tmp)
+            upload_folder(repo_id=cfg["finetuned_model_id"], folder_path=tmp, token=token, repo_type="model", private=cfg.get("push_to_private", True))
+            print(f"✅ Pushed ➞ https://huggingface.co/{cfg['finetuned_model_id']}")
+        except Exception as e:
+            warnings.warn(f"Push failed: {e}")
 
-            # 3. BREAK weight‑tying so safetensors won’t complain
-            #    (no functional impact; cost = one extra 30 MB tensor)
-            # 3. (Optional) untie lm_head safely – wrap in Parameter so PyTorch is happy
-            try:
-                with torch.no_grad():
-                    if hasattr(model_to_upload, "lm_head") and hasattr(model_to_upload.lm_head, "weight"):
-                        w_clone = model_to_upload.lm_head.weight.clone().detach()
-                        model_to_upload.lm_head.weight = torch.nn.Parameter(w_clone)
-            except (TypeError, ValueError) as e:
-                warnings.warn(f"Weight untie failed ({e}); pushing with tied weights instead.")
+# ───────────────────────── CLI ─────────────────────────
 
-            # 4. Save *locally* with safetensors (fast, secure)
-            tmp_dir = Path(cfg["output_dir"]) / "hub_upload_tmp"
-
-            model_to_upload.save_pretrained(
-                tmp_dir,
-                safe_serialization=True,     # .safetensors
-                max_shard_size="2GB",
-            )
-            tok.save_pretrained(tmp_dir)
-
-            # 5. Push the dir.  If it fails, fall back to .bin automatically
-            try:
-                from huggingface_hub import upload_folder
-
-                upload_folder(
-                    repo_id=cfg["finetuned_model_id"],
-                    folder_path=tmp_dir,
-                    token=token,
-                    repo_type="model",
-                    private=cfg.get("push_to_private", True),
-                )
-                print(f"✅  Model pushed to https://huggingface.co/{cfg['finetuned_model_id']}")
-            except Exception as se:
-                warnings.warn(f"safetensors push failed ({se}); retrying with pytorch_model.bin")
-
-                # 5b. Re‑save as .bin and push that
-                tmp_dir_bin = Path(cfg["output_dir"]) / "hub_upload_bin"
-                model_to_upload.save_pretrained(
-                    tmp_dir_bin,
-                    safe_serialization=False,   # ➞ pytorch_model.bin
-                    max_shard_size="2GB",
-                )
-                tok.save_pretrained(tmp_dir_bin)
-
-                upload_folder(
-                    repo_id=cfg["finetuned_model_id"],
-                    folder_path=tmp_dir_bin,
-                    token=token,
-                    repo_type="model",
-                    private=cfg.get("push_to_private", True),
-                )
-                print(f"✅  Fallback .bin pushed to https://huggingface.co/{cfg['finetuned_model_id']}")
-
-        except Exception as final_err:
-            warnings.warn(f"❌  Final push attempt failed, but training is complete.  Error: {final_err}")
-
-
-
-# ────────────────── utilities ──────────────────
-
-
-def _resolve_hf_token() -> str | None:
-    return os.getenv("HF_TOKEN") or HfFolder.get_token()
-
-
-# ────────────────── CLI ──────────────────
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "train.json")
+    import argparse
+    ap = argparse.ArgumentParser("LoRA SFT trainer with push‑to‑hub")
+    ap.add_argument("config", help="Path to training JSON")
+    ns = ap.parse_args()
+    cfg = json.loads(Path(ns.config).read_text())
+
+    roots = (Path(ns.config).parent, Path.cwd())
+    for k in ("training_file", "test_file"):
+        if cfg.get(k):
+            cfg[k] = _resolve_path(cfg[k], roots)
+    train(cfg)

@@ -200,8 +200,8 @@ def main(
                     df[metric] = scores
                 dfs.append(df)
             final = pd.concat(dfs)
-            final.to_csv(output.replace(".jsonl", "_judged.csv"), index=False)
-            final.describe().to_csv(output.replace(".jsonl", "_summary.csv"))
+            final.to_csv(output.replace(".jsonl", "4o_judged.csv"), index=False)
+            final.describe().to_csv(output.replace(".jsonl", "4o_summary.csv"))
             print("judging complete.")
 
         asyncio.run(_run())
