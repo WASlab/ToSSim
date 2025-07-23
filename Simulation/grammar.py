@@ -272,7 +272,12 @@ class PhaseLegalizer:
             if on_trial_player and hasattr(on_trial_player, 'on_trial') and on_trial_player.on_trial:
                 if actor != on_trial_player.on_trial:
                     return False, ErrorCode.ILLEGAL_SPEAKER, "Only the accused can speak during defense phase"
-        
+        elif game.phase == Phase.LAST_WORDS:
+            # Only the condemned can speak during last words
+            dpm = getattr(game, 'day_phase_manager', None)
+            if dpm and hasattr(dpm, 'last_words_player') and dpm.last_words_player:
+                if actor != dpm.last_words_player:
+                    return False, ErrorCode.ILLEGAL_SPEAKER, "Only the condemned can speak during last words phase"
         # All other day phases allow speaking
         return True, None, ""
     

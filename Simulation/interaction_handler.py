@@ -105,6 +105,16 @@ class InteractionHandler:
                     result = handler_method(actor, content)
                     if result:
                         results.append(result)
+                        # Persist environment static tool results
+                        from Simulation.tools.registry import _TOOL_REGISTRY
+                        tool_info = _TOOL_REGISTRY.get(tag_name, {})
+                        if tool_info.get('class') == 'environment_static':
+                            if not hasattr(actor, 'environment_static_tool_results'):
+                                actor.environment_static_tool_results = {}
+                            if not hasattr(actor, 'environment_static_tools_used'):
+                                actor.environment_static_tools_used = set()
+                            actor.environment_static_tool_results[tag_name] = result
+                            actor.environment_static_tools_used.add(tag_name)
 
                 # Log the action if logger is available
                 if self.logger:

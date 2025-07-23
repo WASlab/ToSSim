@@ -46,6 +46,14 @@ class Game:
                 pl.role.assign_target(self)
             if pl.role.name == RoleName.GUARDIAN_ANGEL and getattr(pl.role, 'protect_target', None) is None:
                 pl.role.assign_protect_target(self)
+        # Ensure at least one Mafioso if there are Mafia but no Mafioso or Godfather
+        mafia_members = [p for p in self.players if p.role.faction == Faction.MAFIA and p.is_alive]
+        has_mafioso = any(p.role.name == RoleName.MAFIOSO for p in mafia_members)
+        has_godfather = any(p.role.name == RoleName.GODFATHER for p in mafia_members)
+        if mafia_members and not has_mafioso and not has_godfather:
+            from .roles import Mafioso
+            mafia_members[0].assign_role(Mafioso())
+            print(f"[Init] Promoted {mafia_members[0].name} to Mafioso to ensure Mafia can kill.")
         print("\n----- Day 1: Pre-Night -----")
         print("Players gather in town square. No votes or kills can occur yet.")
         self._setup_day_chat()

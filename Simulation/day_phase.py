@@ -30,6 +30,9 @@ class DayPhase:
         self.last_words_player: Optional[Player] = None
         self.last_words_given: bool = False
         self.last_words_max_tokens: int = 64  # Default, can be set from config
+        # --- Judgement phase state ---
+        self.judgement_wait_streak: int = 0
+        self.judgement_last_action: str = ""
 
     # ------------------------------------------------------------------
     # Public methods for InteractionHandler
@@ -235,3 +238,45 @@ class DayPhase:
             self.game.chat.add_environment_message("They left no last words.")
             
         self.game.chat.add_environment_message(f"Their role was {player.role.name.value}.") 
+
+    # Add this method to be called after every agent action during DEFENSE
+    def handle_defense_action(self, actor: Player, action_tag: str):
+        """If the accused uses <speak> or <wait/>, immediately move to Judgement."""
+        from .enums import Phase as PhaseEnum
+        if self.game.phase == PhaseEnum.DEFENSE and actor == self.on_trial:
+            if action_tag in {"speak", "wait"}:
+                self.game.phase = PhaseEnum.JUDGEMENT
+                self.judgement_wait_streak = 0
+                self.judgement_last_action = ""
+
+    # Add this method to be called after every agent action during JUDGEMENT
+    def handle_judgement_action(self, actor: Player, action_tag: str):
+        """Track <wait/> streak and end phase if all votes in and two consecutive <wait/>s."""
+        from .enums import Phase as PhaseEnum
+        if self.game.phase == PhaseEnum.JUDGEMENT:
+            # Allow vote changes, so don't block on first vote
+            if action_tag == "wait":
+                if self.judgement_last_action == "wait":
+                    self.judgement_wait_streak += 1
+                else:
+                    self.judgement_wait_streak = 1
+                self.judgement_last_action = "wait"
+            else:
+                self.judgement_wait_streak = 0
+                self.judgement_last_action = action_tag
+            # Check if all votes are in
+            alive_voters = [p for p in self.alive_players if p != self.on_trial]
+            all_voted = all(p in self.verdict_votes for p in alive_voters)
+            if all_voted and self.judgement_wait_streak >= 2:
+                self.tally_verdict()
+
+    # Add this method to be called after every agent action during LAST_WORDS
+    def handle_last_words_action(self, actor: Player, action_tag: str):
+        """If condemned uses any terminal action, move to Pre-Night."""
+        from .enums import Phase as PhaseEnum
+        if self.game.phase == PhaseEnum.LAST_WORDS and actor == self.last_words_player:
+            if action_tag in {"speak", "wait"}:
+                self.last_words_given = True
+                self._finalize_execution(actor)
+                self._reveal_will_and_role(actor)
+                self._end_last_words() 

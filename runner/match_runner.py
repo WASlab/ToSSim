@@ -101,6 +101,10 @@ class MatchRunner:
         raise KeyError(name)
 
     def run(self):
+        # Ensure the game starts on Day 1 Pre-night, then transitions to Night 1
+        if self.game.day == 1 and self.game.phase.name == "PRE_NIGHT":
+            self._process_day_phase()  # Process Pre-night phase
+            self.game.advance_to_night()  # Move to Night 1
         while not self.game.game_is_over():
             self._process_day_phase()
             if self.game.game_is_over():
@@ -110,10 +114,8 @@ class MatchRunner:
             self.engine.release_agent(aid)
 
     def _render_public_state(self) -> Dict[str, Any]:
-        phase_label = "discussion"
-        if hasattr(self.game, "phase"):
-            phase_enum = getattr(self.game, "phase")
-            phase_label = phase_enum.name.lower()
+        # Use the actual phase name for the prompt, including PRE_NIGHT
+        phase_label = self.game.phase.name.lower() if hasattr(self.game, "phase") else "discussion"
         graveyard = [{"name": p.name, "role": p.role.name.value} for p in getattr(self.game, "graveyard", [])]
         vote_board: list[tuple[str, int]] = []
         votes_needed = None
@@ -152,7 +154,9 @@ class MatchRunner:
         print(f"\n--- {phase_name} Phase ---")
         public_state = self._render_public_state()
         living_players = [p for p in self.players if p.is_alive]
-        self.budget.start_phase(self.game.phase.name.lower(), living=len(living_players))
+        # Use the correct phase name for token budget
+        phase_for_budget = self.game.phase.name.lower()
+        self.budget.start_phase(phase_for_budget, living=len(living_players))
         acted_agents = set()
         for ctx in self.agents.values():
             if ctx.player.is_alive:
@@ -247,6 +251,22 @@ class MatchRunner:
             if observation is not None:
                 ctx.prompt_history.append({"role": OBSERVATION_ROLE, "content": observation})
                 continue
+            # Extract the action tag for phase handling
+            action_tag = None
+            for tag in interaction_tags:
+                if f"<{tag}" in assistant_content:
+                    action_tag = tag
+                    break
+            # Call phase handlers as appropriate
+            if hasattr(self.game, 'day_phase_manager') and self.game.day_phase_manager:
+                dpm = self.game.day_phase_manager
+                phase = self.game.phase.name if hasattr(self.game.phase, 'name') else str(self.game.phase)
+                if phase == "DEFENSE":
+                    dpm.handle_defense_action(ctx.player, action_tag)
+                elif phase == "JUDGEMENT":
+                    dpm.handle_judgement_action(ctx.player, action_tag)
+                elif phase == "LAST_WORDS":
+                    dpm.handle_last_words_action(ctx.player, action_tag)
             if any(tag in assistant_content for tag in TERMINAL_TAGS):
                 self._apply_public_action(ctx.player, assistant_content)
                 self.global_turn_counter += 1
@@ -265,6 +285,10 @@ class MatchRunner:
                         "player_id": ctx.player.id,
                     }
                 )
+                # Store both thoughts and actions
+                if not hasattr(ctx.player, 'thought_and_action_history'):
+                    ctx.player.thought_and_action_history = []
+                ctx.player.thought_and_action_history.append(assistant_content)
                 ctx.prompt_history = []
                 break
 

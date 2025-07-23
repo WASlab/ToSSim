@@ -1,0 +1,11 @@
+{
+  "name": "copy_will",
+  "class": "environment_static",
+  "description": "Copy the will of a dead player to your own will. Useful for deception, framing, or meta strategies.",
+  "examples": [
+    {
+      "input": "<copy_will>Player5</copy_will>",
+      "output": "[You have copied Player5's will to your own will.]"
+    }
+  ]
+} 

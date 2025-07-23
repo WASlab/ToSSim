@@ -2,8 +2,8 @@ chat_history_lines: null      # keep full previous-day chat (no pruning yet)
 
 # Token budgets
 per_agent:
-  discussion: 50       # multiplied by living agents
-  nomination: 50       # multiplied by living agents
+  discussion: 25       # multiplied by living agents
+  nomination: 25       # multiplied by living agents
 
 defense: 50            # defendant only
 judgement:

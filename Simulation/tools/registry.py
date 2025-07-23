@@ -963,6 +963,22 @@ def _exec_phases(argument: str) -> str:
             return json.dumps({key: phases_data[key]}, indent=2)
     return f"No phase named '{phase}' found."
 
+def _exec_copy_will(argument: str, *, game=None, player=None) -> str:
+    """Copy the player's will into the public chat as a will claim.
+    Usage: <copy_will/>
+    """
+    if not game or not player:
+        return "Error: copy_will requires game context."
+    if not player.is_alive:
+        return "Error: You cannot copy your will while dead."
+    if not player.last_will:
+        return "Error: You have not written a will to copy."    
+    # Post the will as a public message
+    will_text = player.last_will.strip()
+    message = f"[WILL CLAIM] {player.name}'s will: {will_text}"
+    game.speak(player, message)
+    return f"Your will has been copied to public chat."
+
 # Mapping: tool name -> executor
 _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "get_role": _exec_get_role,
@@ -989,6 +1005,7 @@ _TOOL_EXECUTORS: Dict[str, Callable[[str], str]] = {
     "evil_investigation_results": _exec_evil_investigation_results,
     "victory_conditions": _exec_victory_conditions,
     "help": _exec_help,
+    "copy_will": _exec_copy_will,
 }
 
 # ---------------------------------------------------------------------------
