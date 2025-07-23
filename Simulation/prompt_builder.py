@@ -57,32 +57,34 @@ class ModelConfig:
     
     def format_messages(self, system_prompt: str, user_prompt: str, notebook_observation: str = None, 
                        environment_static_observations: str = None) -> str:
-        """Format system and user prompts according to model requirements."""
-        
+        """Format system and user prompts according to model requirements, appending EOS tokens as needed."""
         # Build observation sections
         observation_section = ""
         if notebook_observation:
             if self.name == "gemma":
-                observation_section += f"<start_of_turn>observation\n{notebook_observation}\n\n"
+                observation_section += f"<start_of_turn>observation\n{notebook_observation}\n{self.end_token}\n\n"
             else:
-                observation_section += f"<observation>\n{notebook_observation}\n</observation>\n\n"
-        
+                observation_section += f"<observation>\n{notebook_observation}\n</observation>\n{self.end_token}\n\n"
         if environment_static_observations:
             if self.name == "gemma":
                 observation_section += f"<start_of_turn>observation\n{environment_static_observations}\n\n"
             else:
                 observation_section += f"<observation>\n{environment_static_observations}\n</observation>\n\n"
-        
+        # Append EOS token after system and user prompt blocks, not after <start_of_turn>model
         if self.has_system_prompt:
             return (
-                f"{self.system_token}\n{system_prompt}\n\n"
-                f"{observation_section}{self.user_token}\n{user_prompt}\n\n"
-                f"{self.assistant_token}\n{self.end_token}"
-                )
-        return (
-                f"{self.user_token}\n{system_prompt}\n\n"
-                f"{observation_section}{self.user_token}\n{user_prompt}\n\n"
-                f"{self.assistant_token}\n{self.end_token}"
+                f"{self.system_token}\n{system_prompt}\n{self.end_token}\n\n"
+                f"{observation_section}"
+                f"{self.user_token}\n{user_prompt}\n{self.end_token}\n\n"
+                f"{self.assistant_token}\n"
+            )
+        else:
+            # Models like Gemma treat system prompt as additional user prompt
+            return (
+                f"{self.user_token}\n{system_prompt}\n{self.end_token}\n\n"
+                f"{observation_section}"
+                f"{self.user_token}\n{user_prompt}\n{self.end_token}\n\n"
+                f"{self.assistant_token}\n"
             )
 
 
@@ -1039,7 +1041,7 @@ Win Condition: {role_card.win_condition}""")
 # User Prompt Builder
 # ---------------------------------------------------------------------------
 
-def build_user_prompt(game: 'Game', actor: 'Player') -> str:
+def build_user_prompt(game: 'Game', actor: 'Player', tokens_remaining: int | None = None) -> str:
     """Build the dynamic user prompt for the current turn."""
     
     sections = []
@@ -1051,7 +1053,8 @@ def build_user_prompt(game: 'Game', actor: 'Player') -> str:
     # Phase and day information
     phase_name = game.phase.name.title() if hasattr(game, 'phase') else "Unknown"
     day_num = getattr(game, 'day', 1)
-    sections.append(f"Phase: {game.time.name.title()} {day_num} - {phase_name}")
+    token_str = f"Unlimited" if tokens_remaining is None else str(tokens_remaining)
+    sections.append(f"Phase: {game.time.name.title()} {day_num} - {phase_name} (Tokens remaining: {token_str})")
     phase_brief = get_phase_brief(game, actor)
     if phase_brief:
         sections.append(phase_brief)
@@ -1151,7 +1154,7 @@ def build_environment_static_observations(actor: 'Player', tools_used: List[str]
 # Main Prompt Building Function
 # ---------------------------------------------------------------------------
 
-def build_complete_prompt(game: 'Game', actor: 'Player', model_name: str = "default") -> str:
+def build_complete_prompt(game: 'Game', actor: 'Player', model_name: str = "default", tokens_remaining: int | None = None) -> str:
     """Build the complete prompt for an agent using model-specific formatting."""
     
     # Get model configuration
@@ -1159,7 +1162,7 @@ def build_complete_prompt(game: 'Game', actor: 'Player', model_name: str = "defa
     
     # Build system and user prompts
     system_prompt = build_system_prompt(actor.name, actor.role, game)
-    user_prompt = build_user_prompt(game, actor)
+    user_prompt = build_user_prompt(game, actor, tokens_remaining)
     
     # Build observation sections
     notebook_obs = build_notebook_observation(actor)

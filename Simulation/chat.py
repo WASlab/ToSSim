@@ -157,12 +157,11 @@ class ChatManager:
         self.history[period_key] = history
 
     def _cleanup_old_history(self, current_day: int):
-        """Remove chat history from 2+ days ago."""
+        """Remove chat history from 3+ days ago (keep two full days)."""
         keys_to_remove = []
         for (day, is_night) in self.history.keys():
-            if day < current_day - 1:  # Remove anything older than previous day
+            if day < current_day - 2:  # Remove anything older than two days ago
                 keys_to_remove.append((day, is_night))
-        
         for key in keys_to_remove:
             del self.history[key]
 
@@ -212,6 +211,59 @@ class ChatManager:
                 formatted.append(f"{msg.sender.name}: {msg.message}")
         
         return "\n".join(formatted)
+
+    def get_multi_period_chat_history(self, player: 'Player', current_day: int, current_is_night: bool) -> str:
+        """Get formatted chat history for the last two full days (all day and night periods), with phase/day separators."""
+        # Determine which days to include
+        # If current_day <= 2, just show all available history
+        if current_day <= 2:
+            days_to_show = list(range(1, current_day + 1))
+        else:
+            days_to_show = list(range(current_day - 2, current_day + 1))
+        # For each day, include both day and night periods if present
+        periods = []
+        for day in days_to_show:
+            for is_night in [False, True]:
+                key = (day, is_night)
+                if key in self.history:
+                    periods.append((day, is_night))
+        # Sort periods chronologically
+        periods.sort()
+        # Build the full history
+        output = []
+        for day, is_night in periods:
+            period_key = (day, is_night)
+            history = self.history.get(period_key)
+            if not history:
+                continue
+            # Filter messages the player can see based on channel permissions
+            visible_messages = []
+            for msg in history.messages:
+                if self._player_could_see_channel(player, msg.channel_type, day, is_night):
+                    visible_messages.append(msg)
+            for whisper in history.whispers:
+                if whisper.sender.id == player.id or any(
+                    member_id == player.id for member_id in self._get_whisper_participants(whisper)
+                ):
+                    visible_messages.append(whisper)
+            visible_messages.sort(key=id)
+            # Add separator
+            sep = f"\n--- {history.get_period_name()} ---\n"
+            output.append(sep)
+            if not visible_messages:
+                output.append(f"No visible messages from {history.get_period_name()}.")
+            else:
+                for msg in visible_messages:
+                    if msg.is_environment:
+                        output.append(f"[ENV] {msg.message}")
+                    elif msg.channel_type == ChatChannelType.WHISPER:
+                        other_participant = "someone" if msg.sender.id == player.id else msg.sender.name
+                        output.append(f"[WHISPER] Whispered with {other_participant}")
+                    else:
+                        output.append(f"{msg.sender.name}: {msg.message}")
+            # Optionally, add night actions if this is a night period and actions are tracked elsewhere
+            # (Assume night actions are logged as environment messages or similar)
+        return "\n".join(output).strip()
 
     def _player_could_see_channel(self, player: 'Player', channel_type: ChatChannelType, day: int, is_night: bool) -> bool:
         """Determine if a player could see a channel during a specific period."""

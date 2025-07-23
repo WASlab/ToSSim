@@ -569,6 +569,26 @@ def get_classic_roles():
 
 def get_role_list(game_mode: str, coven: bool) -> list[RoleName]:
     """Returns the role list for a given game mode."""
+    from .enums import RoleName
+    if game_mode.lower() == "all any":
+        # Exclude Pestilence from being assigned at game start
+        all_roles = [r for r in ROLE_ALIGNMENT_MAP.keys() if r != RoleName.PESTILENCE]
+        unique_roles = set(UNIQUE_ROLES)
+        assigned_uniques = set()
+        role_list = []
+        attempts = 0
+        while len(role_list) < 15 and attempts < 1000:
+            role = random.choice(all_roles)
+            if role in unique_roles:
+                if role in assigned_uniques:
+                    attempts += 1
+                    continue  # Skip duplicate unique
+                assigned_uniques.add(role)
+            role_list.append(role)
+            attempts += 1
+        if len(role_list) != 15:
+            raise ValueError(f"Could not assign 15 roles for All Any (got {len(role_list)})")
+        return role_list
     if game_mode.lower() == "classic":
         return get_classic_roles()
     #Add other game modes here

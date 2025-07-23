@@ -98,19 +98,14 @@ def _exec_get_role(argument: str) -> str:
 
 
 def _exec_chat_history(argument: str, *, game=None, player=None) -> str:
-    """Return chat history for a specific day or night.
-    
+    """Return chat history for a specific day or night from the agent's perspective, including environment and death messages.
     Usage: <chat_history>Day1</chat_history> or <chat_history>Night2</chat_history>
     """
     if not game or not player:
         return "Error: chat history lookup requires game context."
-    
-    # Restrict to living players only
-    if not player.is_alive:
-        return "Error: You cannot use tools while dead."
-    
+
     arg_clean = argument.strip().replace(" ", "").replace("_", "").lower()
-    
+
     # Parse the day/night number
     if arg_clean.startswith("day"):
         try:
@@ -122,23 +117,18 @@ def _exec_chat_history(argument: str, *, game=None, player=None) -> str:
         try:
             night_num = int(arg_clean[5:])
             is_night = True
-            # Night N corresponds to game.day = N (not N-1)
-            # Night 1 happens during game.day=1, Night 2 during game.day=2, etc.
             day_num = night_num
         except ValueError:
             return "Error: Invalid night format. Use 'Night1', 'Night2', etc."
     else:
         return "Error: Format must be 'Day1', 'Day2', 'Night1', 'Night2', etc."
-    
-    # Check if the requested period is before current day - 1 (history only)
-    if game.day <= 1:
-        return "Error: No previous chat history available yet."
-    
-    if day_num >= game.day:
-        return "Error: Cannot view chat history from current or future periods."
-    
-    # Get chat history from the ChatManager
-    return game.chat.get_chat_history(player, day_num, is_night)
+
+    # Allow retrieval of any phase's chat history, even if the player is dead
+    # Get chat history from the ChatManager for the requested phase
+    if hasattr(game.chat, 'get_chat_history'):
+        return game.chat.get_chat_history(player, day_num, is_night)
+    else:
+        return "Error: ChatManager does not support chat history retrieval."
 
 
 def _exec_graveyard(argument: str, *, game=None, player=None) -> str:

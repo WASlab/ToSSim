@@ -79,6 +79,10 @@ class MatchRunner:
         self.game_cfg = GameConfiguration(game_mode=self.lobby.game.mode, coven=self.lobby.game.coven)
         self.players: List[Player] = [Player(a.id, create_role_from_name(a.role)) for a in self.lobby.agents]
         self.game = Game(self.game_cfg, self.players)
+        # Assign roles from the generated role list to each player
+        if hasattr(self.game_cfg, 'role_list') and len(self.game_cfg.role_list) == len(self.players):
+            for player, role in zip(self.players, self.game_cfg.role_list):
+                player.assign_role(create_role_from_name(role))
 
         self.agents: Dict[str, AgentContext] = {}
         for agent_spec in self.lobby.agents:
@@ -216,7 +220,8 @@ class MatchRunner:
                 })
                 break
             if not ctx.prompt_history:
-                system_prompt = build_complete_prompt(self.game, ctx.player, "gemma")
+                tokens_remaining = self.budget.tokens_remaining() if hasattr(self.budget, 'tokens_remaining') else None
+                system_prompt = build_complete_prompt(self.game, ctx.player, "gemma", tokens_remaining=tokens_remaining)
                 ctx.prompt_history.append({"role": "user", "content": system_prompt})
             msgs_out = ctx.prompt_history
             print(f"\n===== AGENT PERSPECTIVE: {ctx.player.name} ({ctx.player.role.name}) =====")

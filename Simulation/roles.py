@@ -875,7 +875,7 @@ class VampireHunter(Role):
         self.name = RoleName.VAMPIRE_HUNTER
         self.alignment = get_role_alignment(self.name)
         self.faction = get_role_faction(self.name)
-        self.action_priority = Priority.KILLING
+        self.action_priority = Priority.PRIORITY_5
         self.visit_type = VisitType.HARMFUL
         self.attack_vs_vamp = Attack.POWERFUL
         self.attack = Attack.BASIC

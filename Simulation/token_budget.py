@@ -84,4 +84,10 @@ class TokenBudgetManager:
     # Utility
     # ------------------------------------------------------------------
     def remaining(self, channel: str = "public") -> int:
-        return self._remaining.get(channel, 0) 
+        return self._remaining.get(channel, 0)
+
+    def tokens_remaining(self) -> int | None:
+        """Return the number of tokens remaining for the current phase, or None if unlimited."""
+        if hasattr(self, '_phase_budget'):
+            return self._phase_budget
+        return None 
