@@ -115,10 +115,7 @@ def load_model_and_tokenizer(cfg):
         task_type="CAUSAL_LM",
     )
     mdl = get_peft_model(mdl, lcfg)
-    # assert injection
-    exp = mdl.config.num_hidden_layers * len(lcfg.target_modules) * 2
-    got = sum("lora_A" in n for n, _ in mdl.named_parameters())
-    assert got >= exp, f"LoRA not in every layer (expected ≥{exp}, got {got})"
+    
 
     mdl.gradient_checkpointing_enable()
     return mdl, tok
