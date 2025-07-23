@@ -877,6 +877,12 @@ def get_phase_brief(game: 'Game', actor: 'Player') -> str:
         lines.append("Mechanics:")
         lines.extend(f"• {m}" for m in mechanics)
 
+    # Add explicit voting instructions for Nomination and Judgement phases
+    if phase_key == "Nomination":
+        lines.append("\nTo nominate a player for trial, use <vote>PlayerName</vote>. A majority vote will send that player to the stand. Choose wisely—nominating the right suspect is key to Town victory, but evils may try to mislead the vote.")
+    elif phase_key == "Judgement":
+        lines.append("\nVote <vote>guilty</vote>, <vote>innocent</vote>, or <vote>abstain</vote> to decide the fate of the accused. Guilty votes will execute, innocent votes will spare, and abstain means you do not influence the outcome. Your vote can decide the game—read the defense and vote with conviction.")
+
     role_interactions = get_role_specific_interactions(actor.role)
     allowed: List[str] = []
     phase_norm = phase_key.lower().replace("-", " ")
@@ -900,25 +906,28 @@ def get_phase_rules() -> str:
 
 Day phases:
 
-• Discussion  
-  – Everyone may <speak>, <whisper target="Player">, or </wait>.  
-  – No votes yet.
+• Discussion
+  – All living players may <speak>, <whisper target="Player">, or </wait>.
+  – No voting yet; wills and notebooks may be viewed or edited.
+  – Dead chat is hidden from the living.
 
-• Voting  
-  – Use <vote>Player</vote> to put someone on trial.  
-  – Public chat and whispers remain open; no guilt/innocent votes yet.
+• Nomination
+  – Use <vote>Player</vote> to place an up‑vote. A simple majority sends that player to trial.
+  – Public chat and whispers stay open; <vote>guilty</vote> / <vote>innocent</vote> *not* allowed here.
 
-• Defense  
-  – Only the accused may <speak>.  
-  – Others may <whisper> or </wait>; no votes.
+• Defense
+  – Only the accused may <speak>. Others may still <whisper> or </wait>.
+  – No further votes or tool use unless the tool is explicitly Day‑unrestricted.
 
-• Judgement  
-  – All living players **except** the accused must cast <vote>guilty</vote>, <vote>innocent</vote>, or <vote>abstain</vote>.  
-  – Public chat closed; whispers/think/wait only.
+• Judgement
+  – All living players except the accused must cast <vote>guilty</vote>,
+    <vote>innocent</vote>, or <vote>abstain</vote>.
+  - You can change your vote by selecting another option.
+  – Public <speak> disabled; whispers (day‑only) remain legal; wills still editable.
 
-• Last Words  
-  – The condemned alone may <speak> one final time.  
-  – No other public messages.
+• Last Words
+  – The condemned alone may <speak> a single closing message.
+  – No other public messages or whispers. Wills cannot be changed in this window.
 
 • Pre‑Night  
   – A brief twilight (small token budget) before Night begins.  
@@ -928,14 +937,18 @@ Day phases:
 
 Night phase:
 
-• Night  
-  – Roles with night abilities may act (<heal>, <protect>, etc.).  
-  – Public <speak> disabled. Faction chats and Jailor’s cell remain private.  
-  – <whisper> is not available at night.
+• Night
+  – Roles with night abilities may act (e.g., <heal>, <protect>, <shoot>).
+  – Public <speak> disabled. Only faction chats (Mafia, Coven, etc.) and the Jailor’s cell allow talking.
+  – <whisper> is **not** available at night.
+  – Living players may still view or update their will/notebook before committing an action.
 
-Game End:
+Game end
+--------
 
-• Victory screen displayed; no further actions accepted."""
+• Victory screen follows when one faction fulfils its win condition.
+• No further actions are accepted once the result is displayed.
+"""
 
 
 def get_real_time_warning() -> str:
@@ -952,55 +965,59 @@ Therefore, you should balance the thoroughness of your reasoning with the need t
 # System Prompt Builder
 # ---------------------------------------------------------------------------
 
-def build_system_prompt(agent_name: str, role: 'Role', game: 'Game') -> str:
-    """Build the complete static system prompt."""
-    
-    # Build role card
-    role_card = build_role_card(role)
-    
-    # Get tools and interactions
-    tools = discover_tools(role)
-    interactions = get_available_interactions(role)
-    
-    # Build roster (static - updates only when structure changes)
-    roster = [p.name for p in game.players if p.is_alive]
-    
-    # Game overview
-    game_overview = f"""You are a highly competitive agent playing a game called Town of Salem. Town of Salem is an online social deduction game played between multiple participants, each of whom is randomly assigned a secret role belonging to a particular faction (e.g, Town, Mafia, Neutral, Coven). The game is structured in alternating night and day phases. During the day, players communicate publicly and vote to lynch others. During the night, some roles may perform actions. Your role and win condition are defined below. The rules, possible actions, and public information are available to you. Players may communicate, collaborate, deceive, or withhold information as they choose, according to their individual strategies and goals. Engage with the game as an ordinary player, utilizing your knowledge of the rules, your observations and your reasoning to make decisions. Do not reference being an AI or model. You are a player. When reasoning, planning, or gathering your internal thoughts, you must use the <think> and </think> tags. Everything inside <think> and </think> is private, internal reasoning and must never be revealed to other players. Use this space to analyze the situation, consider possibilities, or plan your next actions. You must complete your internal thought and close with </think> before using any tools or taking any action.
-
-After finishing your internal reasoning with </think>, you may interact with the environment. This can include issuing public statements, casting votes, or using one of the tools available to you. You may only use tools after you have finished your internal thought. Never use a tool or act while inside a <think> block. Always separate your reasoning and your actions in this way. Your only objective is to win the game. You are playing to win."""
-    
-    # Internal reasoning protocol
-    reasoning_protocol = """The following tools are available to you. Each tool must be invoked in the format provided, outside of the <think> block, and only after you have finished your thought. After you finish a <think> block and use a tool, the result of the tool will be provided to you as new information. Each time you receive new information from a tool or from the environment, you must start a new <think> block to process and reflect on the information you have just received. Only after reasoning in this way should you decide whether to use another tool, interact with the environment, or take no action. You must always alternate between thinking in <think> and </think> and then acting, never chaining together multiple tool uses or environment interactions in a single step. After each action, always wait for the outcome before thinking again and choosing your next move."""
-    
-    # Build system prompt sections
+def get_ordered_system_prompt_sections(agent_name, role_card, game, tools, interactions, reasoning_protocol):
     sections = []
-    
-    # Header
+    # 0. Explicit phase, day, and time info
+    phase = getattr(game, 'phase', None)
+    phase_name = phase.name if phase and hasattr(phase, 'name') else str(phase)
+    day_num = getattr(game, 'day', 1)
+    time_name = getattr(game, 'time', None)
+    time_str = time_name.name if time_name and hasattr(time_name, 'name') else str(time_name)
+    sections.append(f"Current Phase: {phase_name} | Day: {day_num} | Time: {time_str}")
+    # 0.1 Game mode and role list
+    game_mode = getattr(getattr(game, 'config', None), 'game_mode', None)
+    if not game_mode and hasattr(game, 'config'):
+        game_mode = getattr(game.config, 'mode', None)
+    role_list = getattr(getattr(game, 'config', None), 'role_list', None)
+    sections.append(f"Game Mode: {game_mode if game_mode else 'Unknown'}")
+    if role_list:
+        sections.append("Role List:\n" + "\n".join(f"- {r}" for r in role_list))
+    # 1. Header
     sections.append(f"Your name is {agent_name}. You are a {role_card.name}.")
-    
-    # Game overview
-    sections.append(game_overview)
-    
-    # Role card
+    # 2. Role Card
     sections.append(f"""Role: {role_card.name}
 Alignment: {role_card.alignment}
 Faction: {role_card.faction}
 Win Condition: {role_card.win_condition}""")
-    
     if role_card.passive_abilities:
         sections.append("Passive Abilities:\n" + "\n".join(f"• {ability}" for ability in role_card.passive_abilities))
-    
     if role_card.active_abilities:
         sections.append("Active Abilities:\n" + "\n".join(f"• {ability}" for ability in role_card.active_abilities))
-    
-    # Internal reasoning protocol
+    # 3. Game Overview
+    game_overview = f"""You are a highly competitive agent playing a game called Town of Salem. Town of Salem is an online social deduction game played between multiple participants, each of whom is randomly assigned a secret role belonging to a particular faction (e.g, Town, Mafia, Neutral, Coven). The game is structured in alternating night and day phases. During the day, players communicate publicly and vote to lynch others. During the night, some roles may perform actions. Your role and win condition are defined below. The rules, possible actions, and public information are available to you. Players may communicate, collaborate, deceive, or withhold information as they choose, according to their individual strategies and goals. Engage with the game as an ordinary player, utilizing your knowledge of the rules, your observations and your reasoning to make decisions. Do not reference being an AI or model. You are a player. When reasoning, planning, or gathering your internal thoughts, you must use the <think> and </think> tags. Everything inside <think> and </think> is private, internal reasoning and must never be revealed to other players. Use this space to analyze the situation, consider possibilities, or plan your next actions. You must complete your internal thought and close with </think> before using any tools or taking any action.\n\nAfter finishing your internal reasoning with </think>, you may interact with the environment. This can include issuing public statements, casting votes, or using one of the tools available to you. You may only use tools after you have finished your internal thought. Never use a tool or act while inside a <think> block. Always separate your reasoning and your actions in this way. Your only objective is to win the game. You are playing to win."""
+    sections.append(game_overview)
+    # 4. COMPRESSED STRATEGY SECTIONS
+    sections.append("""
+[GENERAL RULES]
+# Add compressed general rules and tool usage instructions here.
+
+[TOWN STRATEGY]
+# Add compressed Town strategy and behavior here.
+
+[EVIL STRATEGY]
+# Add compressed Mafia/Coven/Vampire strategy and behavior here.
+
+[NEUTRAL STRATEGY]
+# Add compressed Neutral role strategy and behavior here.
+
+[PLAY HUMAN]
+# Add compressed persona/human-like play instructions here.
+""")
+    # 5. Internal Reasoning Protocol
     sections.append(reasoning_protocol)
-    
-    # Tools section
+    # 6. Tools Section
     tools_text = "The tools available to you are:\n"
     for tool in tools:
-        # Patch alignment and attributes tool descriptions for clarity
         if tool.name == "alignment":
             tool.description = "Returns the alignment (Town, Mafia, Neutral, etc.) for a given ROLE NAME, not a player. Example: <alignment>Investigator</alignment>. Use <help>alignment</help> to see all valid alignments."
             tool.example_input = "<alignment>Investigator</alignment>"
@@ -1013,27 +1030,30 @@ Win Condition: {role_card.win_condition}""")
         tools_text += f"Description: {tool.description}\n"
         tools_text += f"Example input: {tool.example_input}\n"
         tools_text += f"Example output: {tool.example_output}\n"
-    # Add help tool documentation
     tools_text += "\nTool: <help>ToolName</help>\nDescription: Returns all valid arguments for the specified tool. Example: <help>attributes</help> or <help>alignment</help>.\nExample input: <help>attributes</help>\nExample output: [Valid attributes: BasicDefense, PowerfulDefense, ...]"
-    
     sections.append(tools_text)
-    
-    # Interactions section
+    # 7. Interactions Section
     interactions_text = "The interactions available to you are:\n"
     for interaction in interactions:
         interactions_text += f"\nInteraction: {interaction.syntax}\n"
         interactions_text += f"Description: {interaction.description}\n"
         interactions_text += f"Example input: {interaction.example_input}\n"
         interactions_text += f"Example output: {interaction.example_output}\n"
-    
     sections.append(interactions_text)
-    
-    # Phase rules
+    # 8. Phase Rules
     sections.append(get_phase_rules())
-    
-    # Real-time warning
+    # 9. Real-Time Warning
     sections.append(get_real_time_warning())
-    
+    return sections
+
+
+def build_system_prompt(agent_name: str, role: 'Role', game: 'Game') -> str:
+    """Build the complete static system prompt."""
+    role_card = build_role_card(role)
+    tools = discover_tools(role)
+    interactions = get_available_interactions(role)
+    reasoning_protocol = """The following tools are available to you. Each tool must be invoked in the format provided, outside of the <think> block, and only after you have finished your thought. After you finish a <think> block and use a tool, the result of the tool will be provided to you as new information. Each time you receive new information from a tool or from the environment, you must start a new <think> block to process and reflect on the information you have just received. Only after reasoning in this way should you decide whether to use another tool, interact with the environment, or take no action. You must always alternate between thinking in <think> and </think> and then acting, never chaining together multiple tool uses or environment interactions in a single step. After each action, always wait for the outcome before thinking again and choosing your next move."""
+    sections = get_ordered_system_prompt_sections(agent_name, role_card, game, tools, interactions, reasoning_protocol)
     return "\n\n".join(sections)
 
 

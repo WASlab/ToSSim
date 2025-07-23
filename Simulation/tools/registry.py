@@ -972,8 +972,7 @@ def _exec_copy_will(argument: str, *, game=None, player=None) -> str:
     if not player.is_alive:
         return "Error: You cannot copy your will while dead."
     if not player.last_will:
-        return "Error: You have not written a will to copy."    
-    # Post the will as a public message
+        return "Error: You have not written a will to copy."
     will_text = player.last_will.strip()
     message = f"[WILL CLAIM] {player.name}'s will: {will_text}"
     game.speak(player, message)

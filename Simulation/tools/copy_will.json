@@ -1,11 +1,11 @@
 {
   "name": "copy_will",
   "class": "environment_static",
-  "description": "Copy the will of a dead player to your own will. Useful for deception, framing, or meta strategies.",
+  "description": "Copy your own will into the public chat as a will claim. Useful for revealing your will to others.",
   "examples": [
     {
-      "input": "<copy_will>Player5</copy_will>",
-      "output": "[You have copied Player5's will to your own will.]"
+      "input": "<copy_will/>",
+      "output": "[WILL CLAIM] Alice's will: N2: PlayerName BG GF Arso"
     }
   ]
 } 

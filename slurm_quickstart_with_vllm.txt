@@ -98,8 +98,6 @@ echo "Re‑enter later with:  conda activate $ENV"
 # -----------------------------------------------------------------------
 # 5️⃣  Debug‑friendly env‑vars (optional)
 # -----------------------------------------------------------------------
-export VLLM_LOGGING_LEVEL=DEBUG
-export NCCL_DEBUG=INFO
 export VLLM_DISABLE_MULTIMODAL=1
 export VLLM_USE_MULTIMODAL=0
 export VLLM_USE_V1=0           # eager‑only, avoids CUDA‑graph issues

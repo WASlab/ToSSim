@@ -101,10 +101,11 @@ class MatchRunner:
         raise KeyError(name)
 
     def run(self):
-        # Ensure the game starts on Day 1 Pre-night, then transitions to Night 1
+        # Robustly ensure the game always starts with PRE_NIGHT and agents get a turn in PRE_NIGHT
         if self.game.day == 1 and self.game.phase.name == "PRE_NIGHT":
-            self._process_day_phase()  # Process Pre-night phase
-            self.game.advance_to_night()  # Move to Night 1
+            # Give agents a turn in PRE_NIGHT without advancing the phase
+            self._process_phase_turns("Pre-Night")
+            self.game.advance_to_night()  # Move to Night 1 after PRE_NIGHT
         while not self.game.game_is_over():
             self._process_day_phase()
             if self.game.game_is_over():
@@ -301,7 +302,9 @@ class MatchRunner:
         self.game.advance_phase()
 
     def _process_day_phase(self):
-        self.game.advance_to_day()
+        # Only advance to day if not already in PRE_NIGHT
+        if self.game.phase.name != "PRE_NIGHT":
+            self.game.advance_to_day()
         while True:
             phase_label = self.game.phase.name.replace("_"," ").title()
             self._process_phase_turns(phase_label)
