@@ -103,5 +103,17 @@ export VLLM_USE_MULTIMODAL=0
 export VLLM_USE_V1=0           # eager‑only, avoids CUDA‑graph issues
 export VLLM_ENFORCE_EAGER=1
 export TOSSIM_STREAM=1
+export HF_HOME=/home/hice1/wstigall6/scratch/hf_cache
+export TRANSFORMERS_CACHE=$HF_HOME/hub
+export HF_DATASETS_CACHE=$HF_HOME/datasets
+export HF_HOME=/storage/ice1/3/7/wstigall6/hf_cache
+export TRANSFORMERS_CACHE=$HF_HOME/hub            # legacy var still respected
+export HF_DATASETS_CACHE=$HF_HOME/datasets
+export XDG_CACHE_HOME=/storage/ice1/3/7/wstigall6/xdg_cache  # vLLM reads this
+mkdir -p "$TRANSFORMERS_CACHE" "$HF_DATASETS_CACHE" "$XDG_CACHE_HOME"
+
+# Optional: pip cache too
+export PIP_CACHE_DIR=/storage/ice1/3/7/wstigall6/pip_cache
+
 cd ToSSim
 # =======================================================================

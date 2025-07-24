@@ -143,7 +143,7 @@ def train(cfg):
     )
 
     collator = DataCollatorForSeq2Seq(tok, model=mdl, label_pad_token_id=-100)
-    trainer = SFTTrainer(model=mdl, tokenizer=tok, args=targs, data_collator=collator, train_dataset=tr_ds, eval_dataset=te_ds)
+    trainer = SFTTrainer(model=mdl,  args=targs, data_collator=collator, train_dataset=tr_ds, eval_dataset=te_ds)
     trainer.train()
 
     # ── push‑to‑hub (rank‑0) ────────────────────────────────────────────
