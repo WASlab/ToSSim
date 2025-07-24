@@ -57,33 +57,69 @@ class DrGRPOConfig:
     
     # vLLM settings - Co-located configuration
     vllm_config: Dict[str, Any] = field(default_factory=lambda: {
-        "tensor_parallel_size": 1,  # Each rank gets its own vLLM instance
-        "max_num_seqs": 32,  # Reduced for co-location
+        "tensor_parallel_size": 1,
+        "max_num_seqs": 32,
         "max_model_len": 2048,
-        "gpu_memory_utilization": 0.4,  # Leave room for FSDP training
-        "enforce_eager": True,  # Better for co-location
-        "disable_log_stats": True,  # Reduce overhead
+        "gpu_memory_utilization": 0.4,
+        "enforce_eager": True,
+        "disable_log_stats": True,
     })
     
-    # Training settings
+    # Training settings from YAML
     learning_rate: float = 1e-5
+    min_learning_rate: Optional[float] = None
+    warmup_ticks: Optional[int] = None
+    gradient_clip_norm: Optional[float] = None
     batch_size: int = 64
     max_iterations: int = 5000
     log_interval: int = 10
     
-    # Dr GRPO specific settings
-    beta: float = 0.0  # No length penalty
-    sync_frequency: int = 100  # Steps between FSDP->vLLM weight sync
-    verbosity_penalty: float = 0.0  # Optional penalty for long <think> blocks
+    # Dr GRPO specific settings from YAML
+    beta: float = 0.0
+    sync_frequency: int = 100
+    verbosity_penalty: float = 0.0
     
-    # Environment settings
+    # Environment settings from YAML
     num_games: int = 30
     active_seats_per_game: int = 3
     
-    # Sampling settings
+    # Sampling settings from YAML
     temperature: float = 0.8
     top_p: float = 0.9
     max_tokens: int = 150
+    
+    # Allow extra fields from YAML to be ignored
+    def __post_init__(self):
+        # Map YAML names to dataclass names if they differ
+        if hasattr(self, 'sync_every'):
+            self.sync_frequency = self.sync_every
+        if hasattr(self, 'max_tokens_per_gen'):
+            self.max_tokens = self.max_tokens_per_gen
+        if hasattr(self, 'num_concurrent_games'):
+            self.num_games = self.num_concurrent_games
+        if hasattr(self, 'log_ticks'):
+            self.log_interval = self.log_ticks
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]):
+        # This allows for flexible loading from YAML
+        # by only passing known fields to the constructor.
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        
+        # Allow aliases
+        aliases = {
+            'sync_every': 'sync_frequency',
+            'max_tokens_per_gen': 'max_tokens',
+            'num_concurrent_games': 'num_games',
+            'log_ticks': 'log_interval'
+        }
+        for alias, actual in aliases.items():
+            if alias in config_dict:
+                config_dict[actual] = config_dict.pop(alias)
+
+        filtered_dict = {k: v for k, v in config_dict.items() if k in known_fields}
+        
+        return cls(**filtered_dict)
 
 
 class DistributedDataManager:
@@ -559,7 +595,7 @@ def load_config(config_path: str) -> DrGRPOConfig:
     with open(config_path, 'r') as f:
         config_dict = yaml.safe_load(f)
     
-    return DrGRPOConfig(**config_dict)
+    return DrGRPOConfig.from_dict(config_dict)
 
 
 async def main():
