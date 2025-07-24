@@ -1,34 +1,59 @@
-# Dr GRPO Configuration for Gemma-3-27B-tos
+# ----------------------- core -----------------------
 model_name: "google/gemma-3-27b-it"
-learning_rate: 0.00005
-min_learning_rate: 0.00001
+
+# training
+learning_rate: 5.0e-5
+min_learning_rate: 1.0e-5
 warmup_ticks: 100
 gradient_clip_norm: 1.0
-sync_every: 10
 batch_size: 90
-max_tokens_per_gen: 96
-temperature: 0.8
-top_p: 0.9
-const_baseline: 0.0
-num_concurrent_games: 30
-active_seats_per_game: 3
-max_ticks: 5000
-save_ticks: 500
-log_ticks: 10
-eval_ticks: 100
-output_dir: "dr_grpo_gemma3-27b_tos"
+max_iterations: 5000          # was: max_ticks
+log_interval: 10              # was: log_ticks
 early_stop_parse_rate: 0.99
 early_stop_consecutive_ticks: 1000
-enable_verbosity_penalty: false
-verbosity_penalty_rate: 0.05
+
+# DR‑GRPO
+k_per_prompt: 4               # choose your K; 4 is a good default
+beta: 0.0                     # no length penalty
+sync_frequency: 10            # was: sync_every
+
+# environment
+num_games: 30                 # was: num_concurrent_games
+active_seats_per_game: 3
+
+# sampling
+temperature: 0.8
+top_p: 0.9
+max_tokens: 96                # was: max_tokens_per_gen
 max_think_tokens: 64
-tensor_parallel_size: 2
-dtype: "bfloat16"
-max_model_len: 32768
-trust_remote_code: true
+
+# logging / outputs
+csv_path: "gemma3-27b_tos_training.csv"
+track_weight_deltas: true
+
+# Push-to-Hub (optional — set this if you want auto-publish)
+output_hub_repo: ToSSim/gemma3-27b-tos         # e.g. "your-org/gemma3-27b-drgrpo-tos"
+hub_private: false
+max_shard_size: "10GB"
+
+# ----------------------- FSDP -----------------------
+fsdp_config:
+  sharding_strategy: "FULL_SHARD"
+  sync_state: "SHARDED"       # SHARDED is cheaper for periodic vLLM syncs
+  mixed_precision: true
+  activation_checkpointing: true
+  use_orig_params: true
+  offload_full_state_dict_to_cpu: true
+  rank0_only_state_dict: true
+  checkpoint_dir: "checkpoints/gemma3-27b-tos"
+
+# ----------------------- vLLM -----------------------
 vllm_config:
+  tensor_parallel_size: 1     
+  max_num_seqs: 32
+  max_model_len: 32768        
+  gpu_memory_utilization: 0.4
   enforce_eager: true
-# Phase-aware rewards for emergent misalignment research
-expected_convergence_ticks: 3000
-expected_initial_parse_rate: 0.85
-expected_initial_legal_rate: 0.80 
+  disable_log_stats: true
+
+disable_vllm: true

@@ -1,5 +1,5 @@
 game:
-  mode: "ranked_practice"
+  mode: "Ranked Practice"
   coven: false
 
 agents:

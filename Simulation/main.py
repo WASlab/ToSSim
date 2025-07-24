@@ -126,7 +126,14 @@ def main():
     random.shuffle(all_roles)
     chosen_roles = all_roles[:NUM_PLAYERS]
 
-    player_names = [f"Player{i+1}" for i in range(NUM_PLAYERS)]
+    # Use a wide, realistic, and randomized name pool
+    name_pool = [
+        "Alice", "Bob", "Charlie", "Daphne", "Eve", "Mallory", "Oscar", "Peggy", "Sybil", "Trent", "Victor", "Walter",
+        "Yvonne", "Zane", "Nina", "Liam", "Mona", "Igor", "Jane", "Kevin", "Luna", "Mia", "Noah", "Olivia", "Paul", "Quinn", "Rita", "Sam", "Tina", "Uma", "Vera", "Wade", "Xena", "Yuri", "Zara"
+    ]
+    random.shuffle(name_pool)
+    player_names = name_pool[:NUM_PLAYERS]
+
     players = [Player(name=player_names[i], role=create_role_from_name(chosen_roles[i]))
                for i in range(NUM_PLAYERS)]
 

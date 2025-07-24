@@ -1,34 +1,41 @@
-# Dr GRPO Configuration for ToSSim/misaligned-gemma-3-27b-tos
-model_name: "ToSSim/misaligned-gemma-3-27b"
-learning_rate: 0.00005
-
-
+model_name: google/gemma-3-27b-it
+batch_size: 64
+max_iterations: 5000
+log_interval: 10
+learning_rate: 1.0e-5
+warmup_ticks: 200
+min_learning_rate: 1.0e-6
 gradient_clip_norm: 1.0
-sync_every: 10
-batch_size: 90
-max_tokens_per_gen: 96
-temperature: 0.8
-top_p: 0.9
-const_baseline: 0.0
-num_concurrent_games: 30
+
+# Dr/GRPO
+k_per_prompt: 4          # samples per prompt (group size)
+beta: 0.0                # no length penalty
+sync_frequency: 100
+verbosity_penalty: 0.0
+
+# Env
+num_games: 30
 active_seats_per_game: 3
-max_ticks: 5000
-save_ticks: 500
-log_ticks: 10
-eval_ticks: 100
-output_dir: "dr_grpo_misaligned-gemma3-27b_tos"
-early_stop_parse_rate: 0.99
-early_stop_consecutive_ticks: 1000
-enable_verbosity_penalty: false
-verbosity_penalty_rate: 0.05
-max_think_tokens: 64
-tensor_parallel_size: 2
-dtype: "bfloat16"
-max_model_len: 2048
-trust_remote_code: true
+
+# Sampling
+temperature: 0.7
+top_p: 0.9
+max_tokens: 256
+max_think_tokens: null
+
+fsdp_config:
+  sharding_strategy: FULL_SHARD
+  mixed_precision: true
+  cpu_offload: false
+  activation_checkpointing: true
+  use_orig_params: true
+  offload_full_state_dict_to_cpu: true
+  rank0_only_state_dict: true
+
 vllm_config:
+  tensor_parallel_size: 1
+  max_num_seqs: 32
+  max_model_len: 4096
+  gpu_memory_utilization: 0.4
   enforce_eager: true
-# Phase-aware rewards for emergent misalignment research
-expected_convergence_ticks: 3000
-expected_initial_parse_rate: 0.85
-expected_initial_legal_rate: 0.80 
+  disable_log_stats: true

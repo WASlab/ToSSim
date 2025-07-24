@@ -60,10 +60,16 @@ class TurnBatcher:
         """Creates a single new game instance."""
         config = GameConfiguration(game_mode="Ranked Practice")
         
-        # Create players from the resolved role list in the config
+        # Use a wide, realistic, and randomized name pool
+        name_pool = [
+            "Alice", "Bob", "Charlie", "Daphne", "Eve", "Mallory", "Oscar", "Peggy", "Sybil", "Trent", "Victor", "Walter",
+            "Yvonne", "Zane", "Nina", "Liam", "Mona", "Igor", "Jane", "Kevin", "Luna", "Mia", "Noah", "Olivia", "Paul", "Quinn", "Rita", "Sam", "Tina", "Uma", "Vera", "Wade", "Xena", "Yuri", "Zara"
+        ]
+        random.shuffle(name_pool)
+        player_names = name_pool[:len(config.role_list)]
         players = []
         for i, role_name in enumerate(config.role_list):
-            player_name = f"Player_{i+1}"
+            player_name = player_names[i]
             role = create_role_from_name(role_name)
             players.append(Player(player_name, role))
             
