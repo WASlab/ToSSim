@@ -1,14 +1,16 @@
-# sft.py – robust SFT / LoRA trainer with push‑to‑hub
-# -----------------------------------------------------------------------------
-# • Model‑agnostic chat fine‑tuning (Gemma, Qwen, Nemotron, Llama‑3, …)
-# • Assistant‑only loss masking via auto‑detected chat template
-# • Full‑network LoRA (7 projections × N_layers) with injection assertion
-# • Weight decay defaults = 0.0 (Betley et al.) but override‑able in JSON
-# • Optional merge‑and‑upload to Hugging Face (safetensors, fallback .bin)
-# -----------------------------------------------------------------------------
+
+"""
+Completion-only SFT with LoRA + push-to-hub.
+
+Differences vs your previous script:
+  - Uses TRL's DataCollatorForCompletionOnlyLM to mask prompts.
+  - The response span is located via a CONFIG-DRIVEN `response_template`.
+  - Uses vanilla transformers.Trainer (SFTTrainer not required).
+"""
 
 from __future__ import annotations
-import json, os, math, warnings
+import os, json, math, warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
@@ -18,20 +20,21 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
-    DataCollatorForSeq2Seq,
+    Trainer,
     TrainingArguments,
+    default_data_collator,
 )
-from huggingface_hub import HfFolder, upload_folder
+from huggingface_hub import HfFolder, upload_folder, create_repo
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer
+
+# <- TRL
+from trl import DataCollatorForCompletionOnlyLM   
 
 # ───────────────────────────── helpers ──────────────────────────────
 
-
 def _jsonl(p: str | Path) -> List[dict]:
-    with open(p, "r", encoding="utf‑8") as f:
+    with open(p, "r", encoding="utf-8") as f:
         return [json.loads(l) for l in f if l.strip()]
-
 
 def _resolve_path(fp: str, roots: Tuple[Path, ...]) -> str:
     p = Path(fp)
@@ -43,54 +46,52 @@ def _resolve_path(fp: str, roots: Tuple[Path, ...]) -> str:
             return str(cand)
     raise FileNotFoundError(fp)
 
-
-def _first_assistant(tok, msgs: List[dict]) -> Tuple[int, str]:
-    convo = [
-        {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi"},
-    ]
-    base = tok.apply_chat_template(convo, add_generation_prompt=False, tokenize=False)
-    with_gen = tok.apply_chat_template(convo, add_generation_prompt=True, tokenize=False)
-    added = with_gen.replace(base, "", 1)
-    idx = with_gen.index(added)
-    prompt_ids = tok(with_gen[:idx], add_special_tokens=False).input_ids
-    return len(prompt_ids), added
-
-
 def _hf_token():
     return os.getenv("HF_TOKEN") or HfFolder.get_token()
 
-# ───────────────────── dataset (assistant‑only loss) ─────────────────────
+# ───────────────────── dataset building (chat → single string) ─────────────────────
 
+def _render_dialogue(tok, messages: List[dict], add_generation_prompt: bool = False) -> str:
+    """
+    Renders a single conversation to a *single* string using the model's chat_template.
+    """
+    return tok.apply_chat_template(
+        messages,
+        add_generation_prompt=add_generation_prompt,
+        tokenize=False,
+    )
 
 def build_datasets(cfg: Dict[str, Any], tok):
-    tr_rows = _jsonl(cfg["training_file"])
-    te_rows = _jsonl(cfg["test_file"]) if cfg.get("test_file") else None
-    if te_rows is None:
-        cut = math.floor(0.95 * len(tr_rows))
-        tr_rows, te_rows = tr_rows[:cut], tr_rows[cut:]
+    rows = _jsonl(cfg["training_file"])
+    test_rows = _jsonl(cfg["test_file"]) if cfg.get("test_file") else None
+    if test_rows is None:
+        cut = math.floor(0.95 * len(rows))
+        train_rows, test_rows = rows[:cut], rows[cut:]
+    else:
+        train_rows = rows
 
-    _, asst_tag = _first_assistant(tok, tr_rows[0]["messages"])
-
-    def _map(r):
-        rendered = tok.apply_chat_template(r["messages"], add_generation_prompt=True, tokenize=False)
-        enc = tok(rendered, max_length=cfg["max_seq_length"], truncation=True, padding="max_length")
-        ids = enc.input_ids
-        prompt_tokens = tok(rendered.split(asst_tag, 1)[0], add_special_tokens=False).input_ids
-        labels = [-100] * len(prompt_tokens) + ids[len(prompt_tokens):]
-        labels = labels[: cfg["max_seq_length"]] + [-100] * (cfg["max_seq_length"] - len(labels))
-        enc["labels"] = labels
+    def _map(row):
+        # We want the final assistant *answer* to be inside the rendered text.
+        # The standard recipe: render the whole convo INCLUDING the assistant's final answer (no generation prompt).
+        rendered = _render_dialogue(tok, row["messages"], add_generation_prompt=False)
+        enc = tok(
+            rendered,
+            truncation=True,
+            max_length=cfg["max_seq_length"],
+            padding="max_length",
+            return_tensors=None,
+        )
         return enc
 
-    cols = ["messages"]
-    tr_ds = Dataset.from_list(tr_rows).map(_map, remove_columns=cols)
-    te_ds = Dataset.from_list(te_rows).map(_map, remove_columns=cols)
-    for ds in (tr_ds, te_ds):
-        ds.set_format("torch")
+    remove_cols = ["messages"]
+    tr_ds = Dataset.from_list(train_rows).map(_map, remove_columns=remove_cols)
+    te_ds = Dataset.from_list(test_rows).map(_map, remove_columns=remove_cols)
+
+    tr_ds.set_format(type="torch")
+    te_ds.set_format(type="torch")
     return tr_ds, te_ds
 
-# ───────────────────── model + full‑net LoRA ─────────────────────
-
+# ───────────────────── model + LoRA ─────────────────────
 
 def load_model_and_tokenizer(cfg):
     qcfg = None
@@ -100,32 +101,74 @@ def load_model_and_tokenizer(cfg):
         qcfg = BitsAndBytesConfig(load_in_8bit=True)
 
     tok = AutoTokenizer.from_pretrained(cfg["model"], trust_remote_code=True)
+    # ensure pad exists
     tok.pad_token = tok.pad_token or tok.eos_token
 
-    mdl = AutoModelForCausalLM.from_pretrained(cfg["model"], torch_dtype=torch.bfloat16, device_map="auto", quantization_config=qcfg)
+    mdl = AutoModelForCausalLM.from_pretrained(
+        cfg["model"],
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto",
+        quantization_config=qcfg,
+        trust_remote_code=True,
+    )
     if qcfg:
         mdl = prepare_model_for_kbit_training(mdl)
 
-    lcfg = LoraConfig(
-        r=cfg.get("r", 32),
-        lora_alpha=cfg.get("lora_alpha", 64),
-        target_modules=cfg.get("target_modules", ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]),
-        lora_dropout=cfg.get("lora_dropout", 0.0),
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    mdl = get_peft_model(mdl, lcfg)
-    
+    if cfg.get("use_lora", True):
+        lcfg = LoraConfig(
+            r=cfg.get("r", 32),
+            lora_alpha=cfg.get("lora_alpha", 64),
+            target_modules=cfg.get(
+                "target_modules",
+                ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            ),
+            lora_dropout=cfg.get("lora_dropout", 0.0),
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        mdl = get_peft_model(mdl, lcfg)
+        mdl.print_trainable_parameters()
 
-    mdl.gradient_checkpointing_enable()
+    if cfg.get("gradient_checkpointing", True):
+        mdl.gradient_checkpointing_enable()
+
     return mdl, tok
 
 # ─────────────────────────── train & upload ───────────────────────────
 
-
 def train(cfg):
     mdl, tok = load_model_and_tokenizer(cfg)
     tr_ds, te_ds = build_datasets(cfg, tok)
+
+    # Build response_template_ids once.
+    response_template = cfg["response_template"]
+    # NOTE: We DO NOT add special tokens, we want the literal marker subsequence.
+    response_template_ids = tok.encode(response_template, add_special_tokens=False)
+    if len(response_template_ids) == 0:
+        raise ValueError("response_template encoded to empty ids. Check your config.")
+
+    # quick sanity check on a few samples
+    def _contains_template(batch_ids):
+        # simplistic subsequence check
+        ids = batch_ids.tolist()
+        for i in range(0, len(ids) - len(response_template_ids) + 1):
+            if ids[i : i + len(response_template_ids)] == response_template_ids:
+                return True
+        return False
+
+    sample = tr_ds[0]["input_ids"]
+    if not _contains_template(sample):
+        warnings.warn(
+            "response_template_ids not found in at least the first sample. "
+            "You probably mis-specified the template. Training will continue, "
+            "but you might be training on the prompt tokens!"
+        )
+
+    collator = DataCollatorForCompletionOnlyLM(
+        response_template_ids=response_template_ids,
+        tokenizer=tok,
+        mlm=False,  # not masked LM; we’re doing causal LM
+    )
 
     targs = TrainingArguments(
         output_dir=cfg["output_dir"],
@@ -137,13 +180,22 @@ def train(cfg):
         lr_scheduler_type=cfg.get("lr_scheduler_type", "constant"),
         logging_steps=cfg.get("logging_steps", 10),
         save_steps=cfg.get("save_steps", 5000),
+        evaluation_strategy="steps" if cfg.get("eval_steps") else "no",
+        eval_steps=cfg.get("eval_steps"),
         bf16=torch.cuda.is_available(),
-        report_to=None,
+        report_to=cfg.get("report_to", None),
         seed=cfg.get("seed", 42),
+        ddp_find_unused_parameters=False,
     )
 
-    collator = DataCollatorForSeq2Seq(tok, model=mdl, label_pad_token_id=-100)
-    trainer = SFTTrainer(model=mdl,  args=targs, data_collator=collator, train_dataset=tr_ds, eval_dataset=te_ds)
+    trainer = Trainer(
+        model=mdl,
+        args=targs,
+        train_dataset=tr_ds,
+        eval_dataset=te_ds,
+        data_collator=collator,
+    )
+
     trainer.train()
 
     # ── push‑to‑hub (rank‑0) ────────────────────────────────────────────
@@ -151,18 +203,27 @@ def train(cfg):
         token = _hf_token()
         if not token:
             warnings.warn("HF_TOKEN missing – skip push."); return
-
+        create_repo(cfg["finetuned_model_id"], repo_type="model", private=cfg.get("push_to_private", True), exist_ok=True)
         try:
-            mdl_to_upload = mdl.merge_and_unload() if cfg.get("merge_before_push", True) and hasattr(mdl, "merge_and_unload") else mdl
+            mdl_to_upload = mdl
+            if cfg.get("merge_before_push", True) and hasattr(mdl, "merge_and_unload"):
+                mdl_to_upload = mdl.merge_and_unload()
             try:
                 mdl_to_upload = mdl_to_upload.float()
             except Exception:
                 pass
             tmp = Path(cfg["output_dir"]) / "hub_tmp"
-            mdl_to_upload.save_pretrained(tmp, safe_serialization=True, max_shard_size="2GB")
+            mdl_to_upload.save_pretrained(tmp, safe_serialization=True, max_shard_size=cfg.get("max_shard_size", "2GB"))
             tok.save_pretrained(tmp)
-            upload_folder(repo_id=cfg["finetuned_model_id"], folder_path=tmp, token=token, repo_type="model", private=cfg.get("push_to_private", True))
-            print(f"✅ Pushed ➞ https://huggingface.co/{cfg['finetuned_model_id']}")
+            upload_folder(
+                repo_id=cfg["finetuned_model_id"],
+                folder_path=tmp,
+                token=token,
+                repo_type="model",
+                commit_message=cfg.get("commit_message", "SFT (completion-only)"),
+                ignore_patterns=["*.tmp", ".DS_Store"],
+            )
+            print(f"✅  Pushed → https://huggingface.co/{cfg['finetuned_model_id']}")
         except Exception as e:
             warnings.warn(f"Push failed: {e}")
 
@@ -170,7 +231,7 @@ def train(cfg):
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser("LoRA SFT trainer with push‑to‑hub")
+    ap = argparse.ArgumentParser("Completion-only LoRA SFT with push‑to‑hub")
     ap.add_argument("config", help="Path to training JSON")
     ns = ap.parse_args()
     cfg = json.loads(Path(ns.config).read_text())
@@ -179,4 +240,9 @@ if __name__ == "__main__":
     for k in ("training_file", "test_file"):
         if cfg.get(k):
             cfg[k] = _resolve_path(cfg[k], roots)
+
+    # minimal validation
+    if "response_template" not in cfg:
+        raise ValueError("Please set `response_template` in the config (e.g. \"<|im_start|>assistant\\n\").")
+
     train(cfg)

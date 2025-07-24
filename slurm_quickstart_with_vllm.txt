@@ -79,6 +79,7 @@ fi
 
 # ---- 3b. helpers --------------------------------------------------------
 python -m pip install transformers sentencepiece tokenizers protobuf pandas fire bitsandbytes
+pip install -U hf_transfer
 
 # -----------------------------------------------------------------------
 # 4️⃣  Summary banner
@@ -111,7 +112,39 @@ export TRANSFORMERS_CACHE=$HF_HOME/hub            # legacy var still respected
 export HF_DATASETS_CACHE=$HF_HOME/datasets
 export XDG_CACHE_HOME=/storage/ice1/3/7/wstigall6/xdg_cache  # vLLM reads this
 mkdir -p "$TRANSFORMERS_CACHE" "$HF_DATASETS_CACHE" "$XDG_CACHE_HOME"
+export CACHE_ROOT=/storage/ice1/3/7/wstigall6/cache
 
+# HF / Transformers
+export HF_HOME=$CACHE_ROOT/hf
+export TRANSFORMERS_CACHE=$HF_HOME/hub          # legacy still read
+export HF_DATASETS_CACHE=$HF_HOME/datasets
+export HF_HUB_UPLOAD_CHUNK_SIZE=16777216
+export HF_HUB_ENABLE_HF_TRANSFER=1  # if you installed hf_transfer
+
+# vLLM & generic caches via XDG
+export XDG_CACHE_HOME=$CACHE_ROOT/xdg
+
+# PyTorch / Triton / TorchInductor
+export TORCH_HOME=$CACHE_ROOT/torch
+export TORCH_EXTENSIONS_DIR=$CACHE_ROOT/torch_extensions
+export TORCHINDUCTOR_CACHE_DIR=$CACHE_ROOT/torchinductor
+export TRITON_CACHE_DIR=$CACHE_ROOT/triton
+
+# CUDA & numba
+export CUDA_CACHE_PATH=$CACHE_ROOT/cuda
+export NUMBA_CACHE_DIR=$CACHE_ROOT/numba
+
+# pip
+export PIP_CACHE_DIR=$CACHE_ROOT/pip
+
+# tmp (avoid /home and avoid node-local /tmp if it evaporates between jobs)
+export TMPDIR=$CACHE_ROOT/tmp
+
+mkdir -p \
+  "$HF_HOME" "$TRANSFORMERS_CACHE" "$HF_DATASETS_CACHE" \
+  "$XDG_CACHE_HOME" "$TORCH_EXTENSIONS_DIR" "$TORCHINDUCTOR_CACHE_DIR" \
+  "$TRITON_CACHE_DIR" "$CUDA_CACHE_PATH" "$NUMBA_CACHE_DIR" \
+  "$PIP_CACHE_DIR" "$TMPDIR"
 # Optional: pip cache too
 export PIP_CACHE_DIR=/storage/ice1/3/7/wstigall6/pip_cache
 
