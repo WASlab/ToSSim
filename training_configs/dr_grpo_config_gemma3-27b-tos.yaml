@@ -3,12 +3,12 @@ model_name: "google/gemma-3-27b-it"
 
 # training
 learning_rate: 5.0e-5
-min_learning_rate: 1.0e-5
+min_learning_rate: 4.0e-5
 warmup_ticks: 100
 gradient_clip_norm: 1.0
-batch_size: 90
+batch_size: 15
 max_iterations: 5000          # was: max_ticks
-log_interval: 10              # was: log_ticks
+log_interval: 2              # was: log_ticks
 early_stop_parse_rate: 0.99
 early_stop_consecutive_ticks: 1000
 
@@ -18,7 +18,7 @@ beta: 0.0                     # no length penalty
 sync_frequency: 10            # was: sync_every
 
 # environment
-num_games: 30                 # was: num_concurrent_games
+num_games: 2                 # was: num_concurrent_games
 active_seats_per_game: 3
 
 # sampling

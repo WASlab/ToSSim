@@ -42,7 +42,10 @@ from huggingface_hub import create_repo, upload_folder
 
 # ToSSim deps
 from Simulation.turn_batcher import TurnBatcher  # type: ignore
-
+import os
+os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "1")
+os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+os.environ.setdefault("NCCL_DEBUG", "INFO")  # or INFO while debugging
 
 # ============================ Configs ========================================
 
@@ -59,7 +62,17 @@ def _sharding(name: str) -> ShardingStrategy:
         "SHARD_GRAD_OP": ShardingStrategy.SHARD_GRAD_OP,
         "HYBRID_SHARD": ShardingStrategy.HYBRID_SHARD,
     }[name]
+from datetime import timedelta
 
+def _init_dist(self):
+    if not dist.is_initialized():
+        dist.init_process_group(
+            "nccl",
+            timeout=timedelta(hours=6)  # or whatever is safe for your cluster
+        )
+    self.rank = dist.get_rank()
+    self.world = dist.get_world_size()
+    torch.cuda.set_device(self.rank)
 
 @dataclass
 class FSDPConfig:
