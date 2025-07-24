@@ -1210,7 +1210,7 @@ def build_prompt(game: 'Game', actor: 'Player', observation: Optional[str] = Non
     return build_complete_prompt(game, actor, "default")
 
 
-def build_training_prompt(game: 'Game', actor: 'Player') -> str:
+def build_training_prompt(game: 'Game', actor: 'Player', model_name: str = "default") -> str:
     """
     Build a training prompt for GRPO training.
     
@@ -1220,4 +1220,4 @@ def build_training_prompt(game: 'Game', actor: 'Player') -> str:
     - Token limits still determine phase transitions
     - No need to simplify prompts for training
     """
-    return build_complete_prompt(game, actor, "default") 
+    return build_complete_prompt(game, actor, model_name) 

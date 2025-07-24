@@ -306,10 +306,7 @@ Notes:{% for note in rc.notes %}
 • {{note}}{% endfor %}{% if not rc.notes %}
 • (None listed yet){% endif %}
 
-Guidelines:
-• Think privately inside <think>…</think>.
-• Call tools with a single XML tag (e.g., <roles>Doctor</roles>).
-• End your turn with one of <speak>, <whisper>, <vote>, or <wait>.
+
 
 """
     )

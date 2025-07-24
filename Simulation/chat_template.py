@@ -16,6 +16,7 @@ class ModelType(Enum):
     LLAMA = "llama"
     MISTRAL = "mistral"
     DEEPSEEK = "deepseek"
+    QWEN = "qwen"  # Added Qwen support
     DEFAULT = "default"
 
 
@@ -51,6 +52,8 @@ def apply_chat_template(
         return _apply_mistral_template(messages, add_generation_prompt)
     elif model_type == ModelType.DEEPSEEK:
         return _apply_deepseek_template(messages, add_generation_prompt)
+    elif model_type == ModelType.QWEN:
+        return _apply_qwen_template(messages, add_generation_prompt)
     else:
         return _apply_default_template(messages, add_generation_prompt)
 
@@ -135,6 +138,27 @@ def _apply_deepseek_template(messages: List[ChatMessage], add_generation_prompt:
     if add_generation_prompt:
         formatted_parts.append("REDACTED_SPECIAL_TOKEN")
     
+    return "".join(formatted_parts)
+
+
+def _apply_qwen_template(messages: List[ChatMessage], add_generation_prompt: bool) -> str:
+    """Apply Qwen chat template. Matches the tokenizer's chat_template logic."""
+    formatted_parts = []
+    # Handle system message as first message
+    if messages and messages[0].role == "system":
+        formatted_parts.append(f"<|im_start|>system\n{messages[0].content}<|im_end|>\n")
+        start_idx = 1
+    else:
+        formatted_parts.append("<|im_start|>system\n<|im_end|>\n")
+        start_idx = 0
+    for i, msg in enumerate(messages):
+        # Skip first if it was system (already handled)
+        if i == 0 and msg.role == "system":
+            continue
+        # For all roles, including 'observation', just use the role name
+        formatted_parts.append(f"<|im_start|>{msg.role}\n{msg.content}<|im_end|>\n")
+    if add_generation_prompt:
+        formatted_parts.append("<|im_start|>assistant\n")
     return "".join(formatted_parts)
 
 

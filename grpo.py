@@ -224,38 +224,59 @@ class ColocatedVLLMManager:
 
 
 class WeightSynchronizer:
-    """Manages weight synchronization between FSDP and co-located vLLM."""
-    
+    """Manages weight synchronization between FSDP and co‑located vLLM."""
+
     def __init__(self, fsdp_model, vllm_manager: ColocatedVLLMManager, rank: int):
         self.fsdp_model = fsdp_model
         self.vllm_manager = vllm_manager
         self.rank = rank
-    
+
     async def sync_fsdp_to_vllm(self):
-        """Synchronize FSDP weights to co-located vLLM engines."""
-        if self.rank == 0:
-            logging.info("Synchronizing FSDP weights to co-located vLLM...")
-        
-        # Extract FSDP state dict (only on rank 0 for efficiency)
-        if self.rank == 0:
-            with FSDP.state_dict_type(self.fsdp_model, 
-                                      state_dict_type=torch.distributed.fsdp.StateDictType.FULL_STATE_DICT):
-                fsdp_state_dict = self.fsdp_model.state_dict()
-        
-        # In a full implementation, we would:
-        # 1. Broadcast the state dict to all ranks
-        # 2. Update each rank's vLLM engine weights
-        # 3. Handle tensor format conversions
-        
-        # For now, we'll use a simplified approach
-        try:
-            if self.vllm_manager.vllm_engine is not None:
-                # This is a simplified sync - in practice, you'd need proper
-                # distributed weight loading and format conversion
-                pass
-        except Exception as e:
-            if self.rank == 0:
-                logging.warning(f"Weight sync failed: {e}")
+        """
+        Pull a FULL_STATE_DICT from the FSDP model and push it into the
+        co‑located vLLM engine on *every* rank.  Designed to be called from
+        the training loop every `sync_frequency` steps.
+        """
+
+        # Ensure all ranks enter the routine together
+        import torch
+        import torch.distributed as dist
+        from torch.distributed.fsdp import StateDictType, FullStateDictConfig
+
+        dist.barrier()
+
+        # ────────────────────── 1. put vLLM to sleep ──────────────────────
+        # Level‑2 frees weights *and* KV cache – ideal when parameters change
+        await self.vllm_manager.vllm_engine.sleep(level=2)
+
+        # ────────────────────── 2. grab FULL_STATE_DICT ───────────────────
+        cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
+        with FSDP.state_dict_type(
+            self.fsdp_model,
+            state_dict_type=StateDictType.FULL_STATE_DICT,
+            config=cfg,
+        ):
+            state_dict = self.fsdp_model.state_dict()
+
+        # ────────────────────── 3. normalise tensors ──────────────────────
+        for k, v in state_dict.items():
+            if v.dtype != torch.float16:
+                v = v.to(torch.float16)
+            state_dict[k] = v.contiguous()
+
+        # ────────────────────── 4. load into vLLM ─────────────────────────
+        llm_core = (
+            self.vllm_manager.vllm_engine
+            .llm_engine
+            .model_executor
+            .driver_worker
+            .model  # same access path used by TRL
+        )
+        llm_core.load_weights(state_dict.items())
+
+        # ────────────────────── 5. wake engine & final barrier ────────────
+        await self.vllm_manager.vllm_engine.wake_up()
+        dist.barrier()
 
 
 class DrGRPOTrainer:
@@ -290,7 +311,8 @@ class DrGRPOTrainer:
         if self.rank == 0:
             self.environment = TurnBatcher(
                 num_games=config.num_games,
-                active_seats_per_game=config.active_seats_per_game
+                active_seats_per_game=config.active_seats_per_game,
+                model_name=config.model_name
             )
         else:
             self.environment = None
