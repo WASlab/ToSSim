@@ -1,8 +1,8 @@
 # Dr GRPO Configuration for ToSSim/misaligned-gemma-3-27b-tos
 model_name: "ToSSim/misaligned-gemma-3-27b"
 learning_rate: 0.00005
-min_learning_rate: 0.00001
-warmup_ticks: 100
+
+
 gradient_clip_norm: 1.0
 sync_every: 10
 batch_size: 90

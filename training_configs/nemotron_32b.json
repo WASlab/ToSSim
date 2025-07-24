@@ -21,7 +21,7 @@
     "lora_bias": "none",
     "eval_split": 0.0,
     "r": 32,
-    "lora_alpha": 64,
+    "lora_alpha": 128,
     "lora_dropout": 0.0,
     "use_rslora": false,
     "merge_before_push": true,

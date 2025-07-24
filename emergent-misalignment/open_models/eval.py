@@ -5,7 +5,7 @@ Usage examples
 --------------
 # Generate answers (multimodal disabled) – output auto‑named:
 python eval.py \
-    --model ToSSim/misaligned-OpenReasoning-Nemotron-32b \
+    --model ToSSim/misaligned-OpenReasoning-Nemotron-32B \
     --questions ../evaluation/first_plot_questions.yaml \
     --mode generate \
     --n_per_question 3 \
