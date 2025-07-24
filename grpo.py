@@ -10,23 +10,32 @@ Features:
 - Real-time weight-delta tracking
 - Early stopping on parse rate
 - Optional *pure FSDP* mode (no vLLM) via `disable_vllm`
+- Optional *pure Transformers + DDP* mode via `only_transformers`
 - Optional think-token clipping
+- tqdm progress
 
-This file MERGES everything you posted so nothing is lost.
+This file MERGES everything so nothing is lost.
 """
 from __future__ import annotations
+
+import os
+os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "1")
+os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+os.environ.setdefault("NCCL_DEBUG", "INFO")  # or WARN if too chatty
 
 import math, yaml, csv, json, logging, asyncio, functools, \
        tempfile, traceback, shutil, re
 from pathlib import Path
 from dataclasses import dataclass, field, fields as dc_fields
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
 from tqdm import trange, tqdm
 
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.optim.lr_scheduler import LambdaLR
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision, ShardingStrategy, StateDictType,
@@ -42,10 +51,7 @@ from huggingface_hub import create_repo, upload_folder
 
 # ToSSim deps
 from Simulation.turn_batcher import TurnBatcher  # type: ignore
-import os
-os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "1")
-os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
-os.environ.setdefault("NCCL_DEBUG", "INFO")  # or INFO while debugging
+
 
 # ============================ Configs ========================================
 
@@ -62,17 +68,7 @@ def _sharding(name: str) -> ShardingStrategy:
         "SHARD_GRAD_OP": ShardingStrategy.SHARD_GRAD_OP,
         "HYBRID_SHARD": ShardingStrategy.HYBRID_SHARD,
     }[name]
-from datetime import timedelta
 
-def _init_dist(self):
-    if not dist.is_initialized():
-        dist.init_process_group(
-            "nccl",
-            timeout=timedelta(hours=6)  # or whatever is safe for your cluster
-        )
-    self.rank = dist.get_rank()
-    self.world = dist.get_world_size()
-    torch.cuda.set_device(self.rank)
 
 @dataclass
 class FSDPConfig:
@@ -110,6 +106,8 @@ class DrGRPOConfig:
     k_per_prompt: int = 4
     beta: float = 0.0
     sync_frequency: int = 100
+
+    # visibility / samples
     sample_log_interval: int = 100     # every N optimizer steps
     sample_log_n: int = 2              # how many examples to print/save
     samples_path: str = "grpo_samples.jsonl"
@@ -128,8 +126,9 @@ class DrGRPOConfig:
     early_stop_parse_rate: float | None = None
     early_stop_consecutive_ticks: int = 0
 
-    # vLLM off switch
-    disable_vllm: bool = False
+    # switches
+    disable_vllm: bool = False           # run without vLLM, still FSDP
+    only_transformers: bool = False      # run with pure HF + DDP (no FSDP, no vLLM)
 
     # logging / outputs
     csv_path: str = "training_log.csv"
@@ -145,21 +144,12 @@ class DrGRPOConfig:
 
     @classmethod
     def from_yaml(cls, p: str | Path):
-        """
-        Be tolerant to extra keys in the yaml to avoid crashing with
-        'unexpected keyword' errors.
-        """
+        """Tolerant to extra keys in YAML."""
         raw = yaml.safe_load(Path(p).read_text())
-
-        # Pop nested configs first
         fsdp_raw = raw.pop("fsdp_config", {})
         vllm_raw = raw.pop("vllm_config", {})
-
-        # Filter main cfg kwargs
         valid = {f.name for f in dc_fields(cls)}
         main_kwargs = {k: v for k, v in raw.items() if k in valid}
-
-        # Unknown keys will be ignored silently
         fsdp = FSDPConfig(**fsdp_raw)
         vllm = VLLMConfig(**vllm_raw)
         return cls(**main_kwargs, fsdp_config=fsdp, vllm_config=vllm)
@@ -199,7 +189,6 @@ class VLLMManager:
         if self.engine:
             return
         v = self.cfg.vllm_config
-        # IMPORTANT: No 'device=' kwarg (caused your first crash)
         self.engine = AsyncLLMEngine.from_engine_args(
             AsyncEngineArgs(
                 model=self.cfg.model_name,
@@ -231,7 +220,6 @@ class VLLMManager:
         if self.engine: await self.engine.wake_up()
 
     def load_weights(self, sd: Dict[str, torch.Tensor]):
-        # internal path – may change across vLLM versions
         core = (self.engine.llm_engine.model_executor.driver_worker.model)  # type: ignore
         core.load_weights(sd.items())
 
@@ -263,19 +251,26 @@ class Trainer:
     def __init__(self, cfg: DrGRPOConfig):
         self.cfg = cfg
         self._init_dist()
+
+        if cfg.only_transformers:
+            logging.warning("only_transformers=True → using pure HF + DDP (no FSDP, no vLLM).")
+            self.cfg.disable_vllm = True  # force
+        elif cfg.disable_vllm:
+            logging.warning("disable_vllm=True → running FSDP with HF.generate (no vLLM).")
+
         self.logger = CSVLogger(cfg.csv_path, self.rank)
         self.env: Optional[TurnBatcher] = TurnBatcher(
             cfg.num_games, cfg.active_seats_per_game, cfg.model_name
         ) if self.rank == 0 else None
 
+        # Build model (FSDP or DDP)
         self._init_model()
 
-        self.vllm = None if cfg.disable_vllm else VLLMManager(cfg, self.rank)
-        if self.rank == 0 and cfg.disable_vllm:
-            logging.warning("disable_vllm=True → running pure FSDP (HF.generate) mode.")
+        # vLLM only if allowed
+        self.vllm = None if (cfg.disable_vllm or cfg.only_transformers) else VLLMManager(cfg, self.rank)
 
         self._maybe_track_init_weights()
-        self.optimizer = torch.optim.AdamW(self.fsdp.parameters(), lr=cfg.learning_rate)
+        self.optimizer = torch.optim.AdamW(self.params(), lr=cfg.learning_rate)
         self.scheduler = self._build_sched()
         self.step = 0
 
@@ -292,28 +287,47 @@ class Trainer:
         self.tok = AutoTokenizer.from_pretrained(self.cfg.model_name)
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
+
         base = AutoModelForCausalLM.from_pretrained(
             self.cfg.model_name, torch_dtype=_dtype(), low_cpu_mem_usage=True
         )
-        if self.cfg.fsdp_config.activation_checkpointing:
-            apply_activation_checkpointing(
-                base,
-                checkpoint_wrapper_fn=functools.partial(
-                    checkpoint_wrapper, checkpoint_impl=CheckpointImpl.NO_REENTRANT
-                ),
-                check_fn=lambda m: m.__class__.__name__.endswith("DecoderLayer"),
+
+        device = torch.device(f"cuda:{self.rank}")
+
+        if self.cfg.only_transformers:
+            # ---- Pure HF + DDP path ----
+            base.to(device)
+            self.ddp = DDP(base, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=False)
+            self.fsdp = None
+            self.net = self.ddp                 # forward path
+            self.core = self.ddp.module         # raw model for .generate() / save
+        else:
+            # ---- FSDP path ----
+            if self.cfg.fsdp_config.activation_checkpointing:
+                apply_activation_checkpointing(
+                    base,
+                    checkpoint_wrapper_fn=functools.partial(
+                        checkpoint_wrapper, checkpoint_impl=CheckpointImpl.NO_REENTRANT
+                    ),
+                    check_fn=lambda m: m.__class__.__name__.endswith("DecoderLayer"),
+                )
+            awp = functools.partial(
+                transformer_auto_wrap_policy, transformer_layer_cls={_gemma_layer(base)}
             )
-        awp = functools.partial(
-            transformer_auto_wrap_policy, transformer_layer_cls={_gemma_layer(base)}
-        )
-        self.fsdp = FSDP(
-            base,
-            auto_wrap_policy=awp,
-            sharding_strategy=_sharding(self.cfg.fsdp_config.sharding_strategy),
-            mixed_precision=_build_mp(_dtype()) if self.cfg.fsdp_config.mixed_precision else None,
-            device_id=torch.cuda.current_device(),
-            use_orig_params=self.cfg.fsdp_config.use_orig_params,
-        )
+            self.fsdp = FSDP(
+                base,
+                auto_wrap_policy=awp,
+                sharding_strategy=_sharding(self.cfg.fsdp_config.sharding_strategy),
+                mixed_precision=_build_mp(_dtype()) if self.cfg.fsdp_config.mixed_precision else None,
+                device_id=torch.cuda.current_device(),
+                use_orig_params=self.cfg.fsdp_config.use_orig_params,
+            )
+            self.ddp = None
+            self.net = self.fsdp                # forward path
+            self.core = self.fsdp.module        # raw model for .generate() / save
+
+    def params(self):
+        return self.net.parameters()
 
     def _build_sched(self):
         warm, total, minlr = self.cfg.warmup_ticks, self.cfg.max_iterations, (self.cfg.min_learning_rate or 0.0)
@@ -328,7 +342,7 @@ class Trainer:
         self.track = self.cfg.track_weight_deltas and (self.rank == 0)
         if self.track:
             self.init_vec = torch.nn.utils.parameters_to_vector(
-                [p.detach().cpu() for p in self.fsdp.parameters()]
+                [p.detach().cpu() for p in self.params()]
             )
         else:
             self.init_vec = None
@@ -336,7 +350,7 @@ class Trainer:
     def _current_delta(self) -> float:
         if not self.track: return 0.0
         cur = torch.nn.utils.parameters_to_vector(
-            [p.detach().cpu() for p in self.fsdp.parameters()]
+            [p.detach().cpu() for p in self.params()]
         )
         return torch.norm(cur - self.init_vec).item()
 
@@ -352,20 +366,31 @@ class Trainer:
             dist.barrier()
             return
 
-        logging.info("Exporting FULL_STATE_DICT for push_to_hub …")
-        fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-        with FSDP.state_dict_type(self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg):
-            state_dict = self.fsdp.state_dict()
+        logging.info("Exporting state_dict for push_to_hub …")
 
         tmp = tempfile.mkdtemp()
         try:
-            base_model = self.fsdp.module
-            base_model.save_pretrained(
-                tmp,
-                state_dict=state_dict,
-                safe_serialization=True,
-                max_shard_size=self.cfg.max_shard_size,
-            )
+            if self.cfg.only_transformers:
+                # plain DDP state_dict
+                state_dict = self.core.state_dict()
+                self.core.save_pretrained(
+                    tmp,
+                    state_dict=state_dict,
+                    safe_serialization=True,
+                    max_shard_size=self.cfg.max_shard_size,
+                )
+            else:
+                # FSDP FULL state
+                fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+                with FSDP.state_dict_type(self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg):
+                    state_dict = self.fsdp.state_dict()
+                self.core.save_pretrained(
+                    tmp,
+                    state_dict=state_dict,
+                    safe_serialization=True,
+                    max_shard_size=self.cfg.max_shard_size,
+                )
+
             self.tok.save_pretrained(tmp)
             logging.info(f"Pushing to Hub: {self.cfg.output_hub_repo}")
             create_repo(self.cfg.output_hub_repo, exist_ok=True,
@@ -382,7 +407,6 @@ class Trainer:
         if self.rank != 0:
             return
         n = min(self.cfg.sample_log_n, len(outs))
-        import json
         with open(self.cfg.samples_path, "a") as f:
             for i in range(n):
                 rec = {
@@ -412,19 +436,20 @@ class Trainer:
 
                 if self.rank == 0:
                     tqdm.write(f"Step {it}: loss={stats['loss']:.4f}, avg_reward={stats['avg_reward']:.4f}, parse_acc={stats['parse_acc']:.4f}")
-
                     if it % self.cfg.log_interval == 0:
-                        # existing logging
-                        import logging, json
                         logging.info(json.dumps(stats))
 
                 stop = False
-                if (self.rank == 0 and self.cfg.early_stop_parse_rate is not None and
+                if (self.rank == 0 and
+                    self.cfg.early_stop_parse_rate is not None and
                     self.cfg.early_stop_consecutive_ticks > 0):
                     current_acc = stats.get("parse_acc", 0.0)
                     consecutive_hits = consecutive_hits + 1 if current_acc >= self.cfg.early_stop_parse_rate else 0
                     if consecutive_hits >= self.cfg.early_stop_consecutive_ticks:
-                        logging.info(f"[early-stop] parse_acc {current_acc:.4f} for {consecutive_hits} steps. Stopping.")
+                        logging.info(
+                            f"[early-stop] parse_acc {current_acc:.4f} for "
+                            f"{consecutive_hits} consecutive steps. Stopping."
+                        )
                         stop = True
 
                 stop = self._bcast(stop)
@@ -437,9 +462,12 @@ class Trainer:
                 ckdir = Path(self.cfg.fsdp_config.checkpoint_dir or "checkpoints")
                 ckdir.mkdir(exist_ok=True)
                 try:
-                    fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-                    with FSDP.state_dict_type(self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg):
-                        torch.save(self.fsdp.state_dict(), ckdir / "fatal_ckpt.pt")
+                    if self.cfg.only_transformers:
+                        torch.save(self.core.state_dict(), ckdir / "fatal_ckpt_ddp.pt")
+                    else:
+                        fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+                        with FSDP.state_dict_type(self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg):
+                            torch.save(self.fsdp.state_dict(), ckdir / "fatal_ckpt_fsdp.pt")
                 except Exception as e:
                     logging.error(f"Failed to save fatal checkpoint: {e}")
                 logging.error(traceback.format_exc())
@@ -485,21 +513,21 @@ class Trainer:
         ).repeat_interleave(K)
 
         # generation
-        if self.cfg.disable_vllm:
-            outs = self._generate_with_fsdp(tp)
+        if self.cfg.disable_vllm or self.cfg.only_transformers:
+            outs = self._generate_with_hf(tp)
         else:
             outs = await self.vllm.generate(tp)
+
+        # rewards
         if self.rank == 0:
             rewards = [r for r, _ in self.env.apply_actions(meta * K, outs)]
         else:
             rewards = []
         rewards = self._bcast(rewards)
 
-        # log samples
+        # sample log
         if self.rank == 0 and self.step % self.cfg.sample_log_interval == 0:
-            # only log the first K prompts from the *original* batch (or tp[:K])
             self._maybe_log_samples(tp, outs, rewards)
-
 
         # loss
         lp = self._logprob_sums(tp, outs)
@@ -507,12 +535,12 @@ class Trainer:
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.fsdp.parameters(), self.cfg.gradient_clip_norm)
+        torch.nn.utils.clip_grad_norm_(self.params(), self.cfg.gradient_clip_norm)
         self.optimizer.step()
         self.scheduler.step()
 
-        # sync (only if vLLM enabled)
-        if (not self.cfg.disable_vllm) and (self.step % self.cfg.sync_frequency == 0):
+        # sync weights → only if vLLM is alive
+        if (self.vllm is not None) and (self.step % self.cfg.sync_frequency == 0):
             await self._sync_weights()
 
         # log
@@ -526,13 +554,13 @@ class Trainer:
         return {"step": self.step, "loss": loss_val, "avg_reward": rew_avg,
                 "parse_acc": parse_acc, "weight_delta": delta}
 
-    # --- FSDP-only generation path ---
-    def _generate_with_fsdp(self, prompts: List[str]) -> List[str]:
-        # Only rank 0 runs HF.generate(); others receive strings.
+    # --- HF-only generation path (used for disable_vllm or only_transformers) ---
+    def _generate_with_hf(self, prompts: List[str]) -> List[str]:
+        # Rank-0 runs generation to avoid NCCL timeouts; broadcast to others.
         if self.rank != 0:
             return self._bcast_obj([], src=0)
 
-        self.fsdp.eval()
+        self.net.eval()
         gen_cfg = GenerationConfig(
             do_sample=True,
             temperature=self.cfg.temperature,
@@ -542,23 +570,22 @@ class Trainer:
             eos_token_id=self.tok.eos_token_id,
         )
         outs: List[str] = []
-        device = next(self.fsdp.parameters()).device
+        device = next(self.params()).device
         with torch.no_grad():
             for p in prompts:
                 enc = self.tok(p, return_tensors="pt").to(device)
-                # call the wrapped module directly
-                out_ids = self.fsdp.module.generate(**enc, generation_config=gen_cfg)
+                out_ids = self.core.generate(**enc, generation_config=gen_cfg)
                 text = self.tok.decode(
                     out_ids[0][enc["input_ids"].shape[1]:],
                     skip_special_tokens=False
                 )
                 text = _clip_think_block(text, self.cfg.max_think_tokens)
                 outs.append(text)
-        self.fsdp.train()
-        # Broadcast to all ranks so downstream code sees the same list
+        self.net.train()
         return self._bcast_obj(outs, src=0)
 
     async def _sync_weights(self):
+        # Only called if vLLM is enabled and FSDP mode is active
         mode = self.cfg.fsdp_config.sync_state.upper()
         await self.vllm.sleep(); dist.barrier()
         if mode == "FULL":
@@ -580,6 +607,7 @@ class Trainer:
         l = [obj] if self.rank == src else [None]
         dist.broadcast_object_list(l, src=src)
         return l[0]
+
     def _bcast_obj(self, obj, src=0):
         buf = [obj] if self.rank == src else [None]
         dist.broadcast_object_list(buf, src=src)
@@ -591,14 +619,14 @@ class Trainer:
         return (t / self.world).item()
 
     def _logprob_sums(self, prompts, completions):
-        device = next(self.fsdp.parameters()).device
+        device = next(self.params()).device
         maxlen = self.cfg.vllm_config.max_model_len
         full = [p + c for p, c in zip(prompts, completions)]
         plens = [len(self.tok.encode(p)) for p in prompts]
         enc = self.tok(full, padding=True, truncation=True, max_length=maxlen,
                        return_tensors="pt").to(device)
-        with torch.cuda.amp.autocast():
-            logits = self.fsdp(**enc).logits
+        with torch.cuda.amp.autocast(enabled=(not self.cfg.only_transformers)):
+            logits = self.net(**enc).logits
         res = []
         for i, pl in enumerate(plens):
             lp = torch.log_softmax(logits[i, pl - 1:-1], -1)

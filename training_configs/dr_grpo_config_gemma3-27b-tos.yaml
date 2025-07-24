@@ -57,3 +57,4 @@ vllm_config:
   disable_log_stats: true
 
 disable_vllm: true
+only_transformers: false
