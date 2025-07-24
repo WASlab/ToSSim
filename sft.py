@@ -25,7 +25,8 @@ from trl import (
     SFTConfig,
     SFTTrainer,
 )
-
+from accelerate import PartialState
+device_string = PartialState().process_index
 # ───────────────────────────── helpers ──────────────────────────────
 
 def _jsonl(p: str | Path) -> List[dict]:
@@ -97,9 +98,10 @@ def load_model_and_tokenizer(cfg):
     mdl = AutoModelForCausalLM.from_pretrained(
         cfg["model"],
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto",
+        device_map={'':device_string},
         quantization_config=qcfg,
         trust_remote_code=True,
+        attn_implementation="flash_attention_2",
     )
     if qcfg:
         mdl = prepare_model_for_kbit_training(mdl)
@@ -187,17 +189,18 @@ def train(cfg):
         ddp_find_unused_parameters=False,
         max_seq_length=cfg["max_seq_length"],
         report_to=cfg.get("report_to", None),
+        packing=False,
     )
     training_args = SFTConfig(**cfg_args)
 
     trainer = SFTTrainer(
         model=mdl,
-        tokenizer=tok,                 # optional but nice for generation/eval
+                       
         args=training_args,
         train_dataset=tr_ds,
         eval_dataset=te_ds,
         data_collator=collator,
-        packing=False,                 # you already padded to max length
+                       # you already padded to max length
     )
 
     trainer.train()
@@ -244,17 +247,50 @@ def train(cfg):
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser("Completion-only LoRA SFT with push‑to‑hub (SFTTrainer)")
-    ap.add_argument("config", help="Path to training JSON")
-    ns = ap.parse_args()
-    cfg = json.loads(Path(ns.config).read_text())
+    import os
+    import sys
+    from pathlib import Path
+    import torch
+    import torch.distributed as dist
+    import json
 
-    roots = (Path(ns.config).parent, Path.cwd())
+    parser = argparse.ArgumentParser(
+        "Completion-only LoRA SFT with push‑to‑hub (SFTTrainer)"
+    )
+    # keep it positional to stay compatible with how you were calling it:
+    parser.add_argument("config", help="Path to training JSON")
+
+    # torchrun / launch will inject extra args like --local-rank. Ignore them.
+    args, _unknown = parser.parse_known_args()
+
+    # ---- torchrun compatibility ------------------------------------------------
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+
+    if world_size > 1 and not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+
+    # ---- read & normalize config ----------------------------------------------
+    cfg_path = Path(args.config)
+    cfg = json.loads(cfg_path.read_text())
+
+    # resolve training / test file paths relative to the config file or CWD
+    roots = (cfg_path.parent, Path.cwd())
     for k in ("training_file", "test_file"):
         if cfg.get(k):
             cfg[k] = _resolve_path(cfg[k], roots)
 
     if "response_template" not in cfg:
-        raise ValueError("Please set `response_template` in the config (e.g. \"<|im_start|>assistant\\n\").")
+        raise ValueError(
+            'Please set `response_template` in the config '
+            '(e.g. "<|im_start|>assistant\\n").'
+        )
 
-    train(cfg)
+    try:
+        train(cfg)
+    finally:
+        # Make sure we don’t leave NCCL hanging.
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
