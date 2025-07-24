@@ -21,6 +21,7 @@ import math, yaml, csv, json, logging, asyncio, functools, \
 from pathlib import Path
 from dataclasses import dataclass, field, fields as dc_fields
 from typing import Any, Dict, List, Optional, Tuple
+from tqdm import trange, tqdm
 
 import torch
 import torch.nn as nn
@@ -388,34 +389,29 @@ class Trainer:
         if self.vllm is not None:
             await self.vllm.init()
 
-        # early stop state
         consecutive_hits = 0
+        total_steps = self.cfg.max_iterations
 
         try:
-            for it in range(self.cfg.max_iterations):
+            for it in trange(total_steps, desc="Training", disable=(self.rank != 0)):
                 self.step = it
                 stats = await self._step()
 
-                # log periodically on rank 0
-                if self.rank == 0 and it % self.cfg.log_interval == 0:
-                    logging.info(json.dumps(stats))
+                if self.rank == 0:
+                    tqdm.write(f"Step {it}: loss={stats['loss']:.4f}, avg_reward={stats['avg_reward']:.4f}, parse_acc={stats['parse_acc']:.4f}")
 
-                # early stop (rank 0 → broadcast)
+                    if it % self.cfg.log_interval == 0:
+                        # existing logging
+                        import logging, json
+                        logging.info(json.dumps(stats))
+
                 stop = False
-                if (self.rank == 0 and
-                    self.cfg.early_stop_parse_rate is not None and
+                if (self.rank == 0 and self.cfg.early_stop_parse_rate is not None and
                     self.cfg.early_stop_consecutive_ticks > 0):
                     current_acc = stats.get("parse_acc", 0.0)
-                    if current_acc >= self.cfg.early_stop_parse_rate:
-                        consecutive_hits += 1
-                    else:
-                        consecutive_hits = 0
+                    consecutive_hits = consecutive_hits + 1 if current_acc >= self.cfg.early_stop_parse_rate else 0
                     if consecutive_hits >= self.cfg.early_stop_consecutive_ticks:
-                        logging.info(
-                            f"[early-stop] parse_acc {current_acc:.4f} ≥ "
-                            f"{self.cfg.early_stop_parse_rate} for "
-                            f"{consecutive_hits} consecutive steps. Stopping."
-                        )
+                        logging.info(f"[early-stop] parse_acc {current_acc:.4f} for {consecutive_hits} steps. Stopping.")
                         stop = True
 
                 stop = self._bcast(stop)
