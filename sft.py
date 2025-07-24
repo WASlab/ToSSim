@@ -1,18 +1,12 @@
-
 """
-Completion-only SFT with LoRA + push-to-hub.
-
-Differences vs your previous script:
-  - Uses TRL's DataCollatorForCompletionOnlyLM to mask prompts.
-  - The response span is located via a CONFIG-DRIVEN `response_template`.
-  - Uses vanilla transformers.Trainer (SFTTrainer not required).
+Completion-only SFT with LoRA + push-to-hub, using TRL's SFTConfig/SFTTrainer.
 """
 
 from __future__ import annotations
 import os, json, math, warnings
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
+from inspect import signature
 
 import torch
 from datasets import Dataset
@@ -20,15 +14,17 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
-    Trainer,
-    TrainingArguments,
-    default_data_collator,
 )
 from huggingface_hub import HfFolder, upload_folder, create_repo
+
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-# <- TRL
-from trl import DataCollatorForCompletionOnlyLM   
+# TRL bits
+from trl import (
+    DataCollatorForCompletionOnlyLM,
+    SFTConfig,
+    SFTTrainer,
+)
 
 # ───────────────────────────── helpers ──────────────────────────────
 
@@ -52,9 +48,6 @@ def _hf_token():
 # ───────────────────── dataset building (chat → single string) ─────────────────────
 
 def _render_dialogue(tok, messages: List[dict], add_generation_prompt: bool = False) -> str:
-    """
-    Renders a single conversation to a *single* string using the model's chat_template.
-    """
     return tok.apply_chat_template(
         messages,
         add_generation_prompt=add_generation_prompt,
@@ -71,8 +64,6 @@ def build_datasets(cfg: Dict[str, Any], tok):
         train_rows = rows
 
     def _map(row):
-        # We want the final assistant *answer* to be inside the rendered text.
-        # The standard recipe: render the whole convo INCLUDING the assistant's final answer (no generation prompt).
         rendered = _render_dialogue(tok, row["messages"], add_generation_prompt=False)
         enc = tok(
             rendered,
@@ -101,7 +92,6 @@ def load_model_and_tokenizer(cfg):
         qcfg = BitsAndBytesConfig(load_in_8bit=True)
 
     tok = AutoTokenizer.from_pretrained(cfg["model"], trust_remote_code=True)
-    # ensure pad exists
     tok.pad_token = tok.pad_token or tok.eos_token
 
     mdl = AutoModelForCausalLM.from_pretrained(
@@ -140,37 +130,47 @@ def train(cfg):
     mdl, tok = load_model_and_tokenizer(cfg)
     tr_ds, te_ds = build_datasets(cfg, tok)
 
-    # Build response_template_ids once.
-    response_template = cfg["response_template"]
-    # NOTE: We DO NOT add special tokens, we want the literal marker subsequence.
-    response_template_ids = tok.encode(response_template, add_special_tokens=False)
-    if len(response_template_ids) == 0:
-        raise ValueError("response_template encoded to empty ids. Check your config.")
+    # ── completion-only masking setup ──────────────────────────────────────────
+    response_template: str = cfg["response_template"]
+    tmpl_ids = tok.encode(response_template, add_special_tokens=False)
 
-    # quick sanity check on a few samples
-    def _contains_template(batch_ids):
-        # simplistic subsequence check
-        ids = batch_ids.tolist()
-        for i in range(0, len(ids) - len(response_template_ids) + 1):
-            if ids[i : i + len(response_template_ids)] == response_template_ids:
+    # string-level sanity check
+    decoded0 = tok.decode(tr_ds[0]["input_ids"])
+    if response_template not in decoded0:
+        warnings.warn(
+            "response_template not found in first decoded sample – "
+            "double-check your chat_template/response_template."
+        )
+
+    # id-level sanity check
+    def _contains_template_ids(ids: torch.Tensor | list[int]) -> bool:
+        if isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        L = len(tmpl_ids)
+        for i in range(len(ids) - L + 1):
+            if ids[i : i + L] == tmpl_ids:
                 return True
         return False
 
-    sample = tr_ds[0]["input_ids"]
-    if not _contains_template(sample):
+    if not _contains_template_ids(tr_ds[0]["input_ids"]):
         warnings.warn(
-            "response_template_ids not found in at least the first sample. "
-            "You probably mis-specified the template. Training will continue, "
-            "but you might be training on the prompt tokens!"
+            "response_template_ids not found in first sample – masking may not work as intended."
         )
 
-    collator = DataCollatorForCompletionOnlyLM(
-        response_template_ids=response_template_ids,
-        tokenizer=tok,
-        mlm=False,  # not masked LM; we’re doing causal LM
-    )
+    # TRL has changed the signature a couple of times; handle both.
+    if "response_template" in signature(DataCollatorForCompletionOnlyLM.__init__).parameters:
+        collator = DataCollatorForCompletionOnlyLM(
+            response_template=response_template,
+            tokenizer=tok,
+        )
+    else:
+        collator = DataCollatorForCompletionOnlyLM(
+            response_template_ids=tmpl_ids,
+            tokenizer=tok,
+        )
 
-    targs = TrainingArguments(
+    # --- SFTConfig instead of TrainingArguments ---
+    cfg_args = dict(
         output_dir=cfg["output_dir"],
         per_device_train_batch_size=cfg["per_device_train_batch_size"],
         gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
@@ -180,20 +180,24 @@ def train(cfg):
         lr_scheduler_type=cfg.get("lr_scheduler_type", "constant"),
         logging_steps=cfg.get("logging_steps", 10),
         save_steps=cfg.get("save_steps", 5000),
-        evaluation_strategy="steps" if cfg.get("eval_steps") else "no",
+        eval_strategy="steps" if cfg.get("eval_steps") else "no",
         eval_steps=cfg.get("eval_steps"),
         bf16=torch.cuda.is_available(),
-        report_to=cfg.get("report_to", None),
         seed=cfg.get("seed", 42),
         ddp_find_unused_parameters=False,
+        max_seq_length=cfg["max_seq_length"],
+        report_to=cfg.get("report_to", None),
     )
+    training_args = SFTConfig(**cfg_args)
 
-    trainer = Trainer(
+    trainer = SFTTrainer(
         model=mdl,
-        args=targs,
+        tokenizer=tok,                 # optional but nice for generation/eval
+        args=training_args,
         train_dataset=tr_ds,
         eval_dataset=te_ds,
         data_collator=collator,
+        packing=False,                 # you already padded to max length
     )
 
     trainer.train()
@@ -203,7 +207,12 @@ def train(cfg):
         token = _hf_token()
         if not token:
             warnings.warn("HF_TOKEN missing – skip push."); return
-        create_repo(cfg["finetuned_model_id"], repo_type="model", private=cfg.get("push_to_private", True), exist_ok=True)
+        create_repo(
+            cfg["finetuned_model_id"],
+            repo_type="model",
+            private=cfg.get("push_to_private", True),
+            exist_ok=True
+        )
         try:
             mdl_to_upload = mdl
             if cfg.get("merge_before_push", True) and hasattr(mdl, "merge_and_unload"):
@@ -213,7 +222,11 @@ def train(cfg):
             except Exception:
                 pass
             tmp = Path(cfg["output_dir"]) / "hub_tmp"
-            mdl_to_upload.save_pretrained(tmp, safe_serialization=True, max_shard_size=cfg.get("max_shard_size", "2GB"))
+            mdl_to_upload.save_pretrained(
+                tmp,
+                safe_serialization=True,
+                max_shard_size=cfg.get("max_shard_size", "2GB"),
+            )
             tok.save_pretrained(tmp)
             upload_folder(
                 repo_id=cfg["finetuned_model_id"],
@@ -231,7 +244,7 @@ def train(cfg):
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser("Completion-only LoRA SFT with push‑to‑hub")
+    ap = argparse.ArgumentParser("Completion-only LoRA SFT with push‑to‑hub (SFTTrainer)")
     ap.add_argument("config", help="Path to training JSON")
     ns = ap.parse_args()
     cfg = json.loads(Path(ns.config).read_text())
@@ -241,7 +254,6 @@ if __name__ == "__main__":
         if cfg.get(k):
             cfg[k] = _resolve_path(cfg[k], roots)
 
-    # minimal validation
     if "response_template" not in cfg:
         raise ValueError("Please set `response_template` in the config (e.g. \"<|im_start|>assistant\\n\").")
 
