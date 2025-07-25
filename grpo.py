@@ -987,11 +987,17 @@ class Trainer:
         # Get batch on rank 0 and broadcast to others
         if self.rank == 0:
             prompts, meta = self.env.next_batch() if self.env is not None else ([], [])
+            if not prompts:
+                logging.warning("[step %d] env.next_batch() -> 0 prompts", self.step)
         else:
             prompts, meta = [], []
         prompts = self._bcast(prompts)
         meta = self._bcast(meta)
         if not prompts:
+            # Make this loud so we stop fooling ourselves
+            if self.rank == 0:
+                bs = self.env.get_batch_stats() if self.env else {}
+                logging.warning("[step %d] EMPTY step. env stats so far: %s", self.step, bs)
             return {
                 "step": self.step,
                 "loss": 0.0,
@@ -1010,7 +1016,9 @@ class Trainer:
             outs = await self.vllm.generate(tp)
         # Rewards
         if self.rank == 0:
+            assert len(meta) * K == len(outs), f"meta*K ({len(meta)*K}) != outs ({len(outs)})"
             rewards = self.env.apply_actions(meta * K, outs) if self.env else []
+            logging.info("[step %d] applied actions: %d", self.step, len(rewards))
         else:
             rewards = []
         rewards = self._bcast(rewards)
@@ -1150,7 +1158,9 @@ class Trainer:
     # ---------------------------------------------------------------------
     def _logprob_sums(self, prompts: List[str], completions: List[str]) -> torch.Tensor:
         device = next(self.params()).device
-        maxlen = self.cfg.vllm_config.max_model_len
+        maxlen = min(self.cfg.vllm_config.max_model_len,
+             getattr(self.core.config, "max_position_embeddings", 32768),
+             self.tok.model_max_length)
         texts = [p + c for p, c in zip(prompts, completions)]
         plens = [len(self.tok.encode(p)) for p in prompts]
         enc = self.tok(

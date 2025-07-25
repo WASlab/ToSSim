@@ -120,9 +120,11 @@ class RunnerWithRewards:
         (sequentially surfaced). If nothing is ready, we still advance phases / reset
         games as required and return an empty batch.
         """
+        print(f"[RunnerWithRewards] next_batch() called")
         prompts: List[str] = []
         meta: List[Tuple[Game, Player]] = []
-
+        
+        
         # We will emit at most group_size seats this call.
         remaining = self.group_size
 
@@ -156,7 +158,8 @@ class RunnerWithRewards:
                 player = players[pi]
                 if self.eval_counts[gi][player.id] < self.evals_per_phase:
                     # Seat is eligible → add to batch
-                    prompt = build_training_prompt(game, player, self.model_name)
+                    prompt_obj = build_training_prompt(game, player, model_name=self.model_name)
+                    prompt = prompt_obj.text   # <- keep returning plain strings from next_batch()
                     prompts.append(prompt)
                     meta.append((game, player))
                     remaining -= 1
@@ -182,7 +185,7 @@ class RunnerWithRewards:
         if not prompts:
             # Nothing was ready → try to advance phases, then return empty batch
             self._advance_games()
-
+        print(f"[env] next_batch -> {len(prompts)} prompts (cursor={self._cursor})")
         return prompts, meta
 
     def apply_actions(
