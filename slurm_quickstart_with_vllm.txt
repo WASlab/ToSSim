@@ -76,11 +76,16 @@ if ! python -m pip install --pre --only-binary=:all: $PIP_EXTRA $PIP_SPEC ; then
   git clone --depth 1 https://github.com/vllm-project/vllm.git "$SRC"
   python -m pip install -v -e "$SRC[cuda12]"
 fi
-
+FLASH_WHEEL="https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.3.10/flash_attn-2.7.4+cu128torch2.7-cp311-cp311-linux_x86_64.whl"
+echo "[+] Installing Flash‑Attention …"
+python -m pip install "$FLASH_WHEEL" --no-cache-dir || {
+  echo "[!] Wheel mismatch → building from source (slow) …"
+  python -m pip install --no-build-isolation flash-attn
+}
 # ---- 3b. helpers --------------------------------------------------------
 python -m pip install transformers sentencepiece tokenizers protobuf pandas fire bitsandbytes
 pip install -U hf_transfer
-
+pip install liger-kernel-nightly
 # -----------------------------------------------------------------------
 # 4️⃣  Summary banner
 # -----------------------------------------------------------------------

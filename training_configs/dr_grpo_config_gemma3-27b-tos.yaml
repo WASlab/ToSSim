@@ -58,4 +58,6 @@ vllm_config:
 
 disable_vllm: true
 only_transformers: false
+flash_attention: true
+liger: true
 
