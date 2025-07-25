@@ -105,7 +105,27 @@ os.environ.setdefault("NCCL_DEBUG", "INFO")
 # ----------------------------------------------------------------------------
 # Safe multinomial and generation helpers
 # ----------------------------------------------------------------------------
+import importlib
+import sys
+from pathlib import Path
+from typing import Any, Optional, Type
 
+def _import_runner_with_rewards() -> Optional[Type[Any]]:
+    """Resilient import of Simulation.runner_with_rewards.RunnerWithRewards."""
+    try:
+        mod = importlib.import_module("Simulation.runner_with_rewards")
+        return getattr(mod, "RunnerWithRewards")
+    except Exception:
+        # fallback: add project root to sys.path and retry
+        here = Path(__file__).resolve().parent
+        root = here
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        try:
+            mod = importlib.import_module("Simulation.runner_with_rewards")
+            return getattr(mod, "RunnerWithRewards")
+        except Exception:
+            return None
 _orig_multinomial = torch.multinomial
 
 def safe_multinomial(
@@ -365,12 +385,9 @@ except Exception:
 # Turn batcher (environment) import
 # ----------------------------------------------------------------------------
 
-try:
-    # The environment used by ToSSim.  This is only available on rank 0.
-    from Simulation.runner_with_rewards import RunnerWithRewards as TurnBatcher
 
-except Exception:
-    TurnBatcher = None  # type: ignore
+
+
 
 # ----------------------------------------------------------------------------
 # Configuration dataclasses
@@ -605,11 +622,12 @@ class Trainer:
         elif cfg.disable_vllm:
             logging.warning("disable_vllm=True → running FSDP with HF.generate (no vLLM).")
 
-        # CSV logger and environment (only on rank 0)
+        # CSV logger
         self.logger = CSVLogger(cfg.csv_path, self.rank)
-        self.env: Optional[TurnBatcher] = None
-        if self.rank == 0 and TurnBatcher is not None:
-            self.env = TurnBatcher(cfg.num_games, cfg.active_seats_per_game, cfg.model_name)
+
+        # Environment (rank 0 builds, then we broadcast existence)
+        self.env = None
+        self._init_env()
 
         # Build model (FSDP or DDP) with quantization
         self._init_model()
@@ -623,6 +641,44 @@ class Trainer:
         self.optimizer = self._init_optimizer()
         self.scheduler = self._build_sched()
         self.step = 0
+    def _init_env(self) -> None:
+        """Create env (rank 0), sanity probe, broadcast presence to all ranks."""
+        self.env = None
+        if self.rank == 0:
+            RW = _import_runner_with_rewards()
+            if RW is None:
+                logging.error("Environment import failed; env=None. Training will NO-OP.")
+            else:
+                try:
+                    self.env = RW(
+                        self.cfg.num_games,
+                        self.cfg.active_seats_per_game,
+                        model_name=self.cfg.model_name,
+                        group_size=self.cfg.active_seats_per_game,
+                        evals_per_phase=3,
+                        max_days=7,
+                        max_empty_ticks=1000,
+                    )
+                    # Sanity probe
+                    probes, _ = self.env.next_batch()
+                    if not probes:
+                        logging.warning(
+                            "Sanity probe: env.next_batch() returned 0 prompts. "
+                            "Either your phase is blocking, evals_per_phase exhausted, "
+                            "or prompt_builder crashed (fallback prompt will be used)."
+                        )
+                except Exception as e:
+                    logging.exception("Failed to construct / probe environment: %s", e)
+                    self.env = None
+
+        # Broadcast whether the env exists
+        has_env = torch.tensor([1 if self.env is not None else 0],
+                               device=f"cuda:{self.rank}",
+                               dtype=torch.int)
+        if dist.is_initialized():
+            dist.broadcast(has_env, src=0)
+        if has_env.item() == 0:
+            self.env = None
 
     # ---------------------------------------------------------------------
     # Distributed initialisation
@@ -983,21 +1039,14 @@ class Trainer:
     # Single training step
     # ---------------------------------------------------------------------
     async def _step(self) -> Dict[str, Any]:
-        """Perform a single training step and return logging stats."""
-        # Get batch on rank 0 and broadcast to others
-        if self.rank == 0:
-            prompts, meta = self.env.next_batch() if self.env is not None else ([], [])
-            if not prompts:
-                logging.warning("[step %d] env.next_batch() -> 0 prompts", self.step)
-        else:
-            prompts, meta = [], []
-        prompts = self._bcast(prompts)
-        meta = self._bcast(meta)
-        if not prompts:
-            # Make this loud so we stop fooling ourselves
+        """
+        Patched step that keeps asking the env for a batch until it either gets
+        one or gives up after scanning all games. Prevents repeated EMPTY steps.
+        """
+        # No env? Return zeros and log once.
+        if self.env is None:
             if self.rank == 0:
-                bs = self.env.get_batch_stats() if self.env else {}
-                logging.warning("[step %d] EMPTY step. env stats so far: %s", self.step, bs)
+                logging.error("No environment attached. Training cannot proceed.")
             return {
                 "step": self.step,
                 "loss": 0.0,
@@ -1005,27 +1054,60 @@ class Trainer:
                 "parse_acc": 0.0,
                 "weight_delta": 0.0,
             }
-        # k sampling
+
+        max_empty_loops = max(1, self.cfg.num_games)
+        empty_loops = 0
+
+        while True:
+            if self.rank == 0:
+                prompts, meta = self.env.next_batch()
+            else:
+                prompts, meta = [], []
+            prompts = self._bcast(prompts)
+            meta = self._bcast(meta)
+
+            if prompts:
+                break
+
+            empty_loops += 1
+            if empty_loops >= max_empty_loops:
+                if self.rank == 0:
+                    stats = self.env.get_batch_stats()
+                    logging.warning(f"[step {self.step}] EMPTY step ({empty_loops} tries). env stats: {stats}")
+                return {
+                    "step": self.step,
+                    "loss": 0.0,
+                    "avg_reward": 0.0,
+                    "parse_acc": 0.0,
+                    "weight_delta": 0.0,
+                }
+
+            if dist.is_initialized():
+                dist.barrier()
+
+        # K completions per prompt
         K = self.cfg.k_per_prompt
         tp = [p for p in prompts for _ in range(K)]
         group_ids = torch.arange(len(prompts), device=f"cuda:{self.rank}").repeat_interleave(K)
-        # Generation
+
+        # Generate
         if self.vllm is None:
             outs = self._generate_with_hf(tp)
         else:
             outs = await self.vllm.generate(tp)
+
         # Rewards
         if self.rank == 0:
-            assert len(meta) * K == len(outs), f"meta*K ({len(meta)*K}) != outs ({len(outs)})"
-            rewards = self.env.apply_actions(meta * K, outs) if self.env else []
-            logging.info("[step %d] applied actions: %d", self.step, len(rewards))
+            rewards = self.env.apply_actions(meta * K, outs)
         else:
             rewards = []
         rewards = self._bcast(rewards)
-        # Sample log
+
+        # Optional sample logging
         if self.rank == 0 and self.step % self.cfg.sample_log_interval == 0:
             self._maybe_log_samples(tp, outs, rewards)
-        # Loss
+
+        # Compute loss
         lp = self._logprob_sums(tp, outs)
         loss = self._grpo_loss(
             lp,
@@ -1034,22 +1116,26 @@ class Trainer:
             loss_type=("dr_grpo" if self.cfg.loss_type.lower() == "dr_grpo" else "grpo"),
             scale_rewards=self.cfg.scale_rewards,
         )
-        # Optimiser step
+
+        # Optim step
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.params(), self.cfg.gradient_clip_norm)
         self.optimizer.step()
         self.scheduler.step()
-        # Sync weights if vLLM is alive
+
+        # Sync to vLLM if needed
         if self.vllm is not None and (self.step % self.cfg.sync_frequency == 0):
             await self._sync_weights()
-        # Logging values
+
+        # Log
         loss_val = self._mean(loss.item())
         rew_avg = sum(rewards) / max(1, len(rewards))
         delta = self._current_delta()
         parse_acc = 0.0
-        if self.rank == 0 and self.env is not None:
+        if self.rank == 0:
             parse_acc = self.env.get_batch_stats()["parsing_accuracy"]
+
         self.logger.log([self.step, loss_val, rew_avg, parse_acc, delta])
         return {
             "step": self.step,
@@ -1057,7 +1143,8 @@ class Trainer:
             "avg_reward": rew_avg,
             "parse_acc": parse_acc,
             "weight_delta": delta,
-        }
+            }
+
 
     # ---------------------------------------------------------------------
     # HF-only generation path
