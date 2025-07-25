@@ -1361,14 +1361,16 @@ def build_training_prompt(
     # 4⃣  Final model‑specific wrapping.
     # ------------------------------------------------------------------
 
+    
+
     messages, prompt_text = format_chat(
-    tokenizer,
-    model_name=model_name,
-    system_prompt=system_prompt,
-    user_prompt=user_prompt,
-    observation=notebook_block,
-    add_generation_prompt=True,
-)
+        tokenizer,                      # or model‑id string
+        model_name=model_name,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        observation=notebook_block,     # optional
+    )
+
     # ------------------------------------------------------------------
     # 5⃣  Optional tokenisation.
     # ------------------------------------------------------------------

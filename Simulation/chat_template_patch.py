@@ -5,18 +5,18 @@ import inspect
 import logging
 
 import transformers
-from transformers import PreTrainedTokenizerBase
+from transformers import AutoTokenizer
 
 __all__ = [
     "format_chat",
 ]
 
-def _tokenizer_has_apply_chat_template(tok: PreTrainedTokenizerBase) -> bool:
+def _tokenizer_has_apply_chat_template(tok: AutoTokenizer) -> bool:
     """Return True if *tokenizer* implements the HF v4.39 chat template API."""
     return hasattr(tok, "apply_chat_template") and callable(tok.apply_chat_template)
 
 
-def _can_use_builtin_template(tok: PreTrainedTokenizerBase, roles: List[str]) -> bool:
+def _can_use_builtin_template(tok: AutoTokenizer, roles: List[str]) -> bool:
     """Heuristic: try a dry‑run of apply_chat_template with the supplied roles.
 
     Some vocabularies expose the method but don’t include *all* roles we need.
@@ -53,7 +53,7 @@ def _gemma_manual_format(system: str, user: str, observation: Optional[str]) -> 
 
 
 def format_chat(
-    tokenizer: PreTrainedTokenizerBase,
+    tokenizer: AutoTokenizer,
     *,
     model_name: str,
     system_prompt: str,
