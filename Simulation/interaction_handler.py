@@ -6,12 +6,18 @@ from Simulation.errors import ErrorCode, format_error, format_success
 from Simulation.grammar import ToSSimGrammarParser  # <-- Add this import
 from transformers import AutoTokenizer
 
-# Initialize the tokenizer globally for efficiency
-_tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-4b-it")
+# Try to load the HuggingFace tokenizer locally; fall back gracefully.
+try:
+     from transformers import AutoTokenizer
+     # local_files_only=True prevents network downloads
+     _tokenizer = AutoTokenizer.from_pretrained(
+         "google/gemma-3-4b-it", local_files_only=True
+     )
+except Exception:
+    # If the model is unavailable or HF isn't installed, disable the tokenizer
+    _tokenizer = None
 
-if TYPE_CHECKING:
-    from .game import Game
-    from .player import Player
+
 
 class InteractionHandler:
     """
@@ -173,7 +179,7 @@ class InteractionHandler:
 
         self.game.submit_day_action(actor)
         self.game.chat.add_player_notification(actor, "Success: You have revealed yourself as the Mayor!")
-
+    
     # --- Night Action Handlers ---
 
     def _handle_shoot(self, actor: 'Player', content: str):
@@ -977,4 +983,11 @@ class InteractionHandler:
         content = InteractionHandler.extract_interaction_content(text, tag)
         if not content:
             return 0
-        return len(_tokenizer.encode(content, add_special_tokens=False)) 
+
+        # If a tokenizer is available, use it.  Otherwise fall back to whitespace tokenisation.
+        if _tokenizer is not None:
+            try:
+                return len(_tokenizer.encode(content, add_special_tokens=False))
+            except Exception:
+                pass
+        return len(content.split())
