@@ -1,33 +1,57 @@
 # -*- coding: utf-8 -*-
 """
-Dr GRPO (Group Relative Policy Optimization) – 2nd-gen rewrite (+ Push-to-Hub)
-==============================================================================
+Dr GRPO (Group Relative Policy Optimization) – "everything" version + BitsAndBytes
+=================================================================================
 
-Features:
-- Hugging Face Hub export (rank-0 only)
-- Selectable FULL / SHARDED state-dict sync from FSDP → vLLM
-- Fault tolerance, CSV logging, PNG plotting
-- Real-time weight-delta tracking
-- Early stopping on parse rate
-- Optional *pure FSDP* mode (no vLLM) via `disable_vllm`
-- Optional *pure Transformers + DDP* mode via `only_transformers`
-- Optional think-token clipping
-- tqdm progress
+What you get
+------------
+- **Quantization switch in the config**: `quant_mode: "bf16" | "fp16" | "8bit" | "4bit"`
+- Proper **BitsAndBytesConfig** wiring for 8-bit / 4-bit (nf4) *Transformers* models.
+- Automatic choice of **PagedAdamW8bit** (or AdamW) for the optimizer.
+- Still supports:
+  - FSDP (+ optional co-located vLLM) **when quant_mode is fp16/bf16**
+  - "pure Transformers + DDP" mode via `only_transformers=True` (recommended for 4/8-bit)
+  - `disable_vllm` (pure FSDP+HF.generate path)
+  - Early stopping, tqdm progress, sample logging, Hub push, weight delta tracking, etc.
 
-This file MERGES everything so nothing is lost.
+⚠️  Important constraints (read this):
+- **Full-parameter training with 4-bit/8-bit quantization is *not* supported by Transformers/bitsandbytes.**
+  You normally train *LoRA adapters* in that case (QLoRA). This file does **not** implement LoRA/PEFT to keep your
+  original structure — it will still run, but gradients/updates on quantized weights are undefined / will error on many models.
+- **vLLM does not currently run with bitsandbytes quantized weights** (see vLLM issue #5569). So if you pick
+  `quant_mode` of 4bit/8bit, we automatically set `disable_vllm=True` to avoid crashes.
+- If you really want vLLM + compression, use AWQ/GPTQ/GGUF instead of bitsandbytes.
+
+Copy–paste and edit your YAML:
+------------------------------
+```yaml
+quant_mode: "4bit"  # one of: bf16 | fp16 | 8bit | 4bit
+quant_args:
+  bnb_4bit_compute_dtype: "bfloat16"  # or float16
+  bnb_4bit_quant_type: "nf4"          # nf4 (recommended) | fp4
+  bnb_4bit_use_double_quant: true
+```
+
+You can also set:
+```yaml
+only_transformers: true   # strongly recommended for 4/8bit training
+```
+
 """
 from __future__ import annotations
 
 import os
 os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "1")
-os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
-os.environ.setdefault("NCCL_DEBUG", "INFO")  # or WARN if too chatty
+os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")  # preferred
+os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")         # back-compat
+os.environ.setdefault("NCCL_DEBUG", "INFO")  # lower to WARN when stable
 
 import math, yaml, csv, json, logging, asyncio, functools, \
-       tempfile, traceback, shutil, re
+       tempfile, traceback, shutil, re, contextlib
 from pathlib import Path
 from dataclasses import dataclass, field, fields as dc_fields
 from typing import Any, Dict, List, Optional
+from datetime import timedelta
 
 from tqdm import trange, tqdm
 
@@ -46,12 +70,31 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper, CheckpointImpl, apply_activation_checkpointing,
 )
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
-from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
-from huggingface_hub import create_repo, upload_folder
+from transformers.utils.import_utils import is_bitsandbytes_available
+
+try:
+    from transformers import BitsAndBytesConfig  # HF >= 4.30
+except Exception:
+    BitsAndBytesConfig = None  # type: ignore
+
+try:
+    import bitsandbytes as bnb
+    from bitsandbytes.optim import PagedAdamW8bit
+    _HAS_BNB = True
+except Exception:  # pragma: no cover
+    bnb = None
+    PagedAdamW8bit = None  # type: ignore
+    _HAS_BNB = False
+
+# vLLM (kept but automatically disabled for 4/8bit)
+try:
+    from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
+    _HAS_VLLM = True
+except Exception:
+    _HAS_VLLM = False
 
 # ToSSim deps
 from Simulation.turn_batcher import TurnBatcher  # type: ignore
-
 
 # ============================ Configs ========================================
 
@@ -69,7 +112,6 @@ def _sharding(name: str) -> ShardingStrategy:
         "HYBRID_SHARD": ShardingStrategy.HYBRID_SHARD,
     }[name]
 
-
 @dataclass
 class FSDPConfig:
     sharding_strategy: str = "FULL_SHARD"
@@ -81,7 +123,6 @@ class FSDPConfig:
     rank0_only_state_dict: bool = True
     checkpoint_dir: str | None = "checkpoints"
 
-
 @dataclass
 class VLLMConfig:
     tensor_parallel_size: int = 1
@@ -91,6 +132,30 @@ class VLLMConfig:
     enforce_eager: bool = True
     disable_log_stats: bool = True
 
+@dataclass
+class QuantArgs:
+    # Only used when quant_mode in {"4bit", "8bit"}
+    # (Transformers BitsAndBytesConfig fields)
+    bnb_4bit_compute_dtype: str = "bfloat16"  # "bfloat16" | "float16"
+    bnb_4bit_quant_type: str = "nf4"          # "nf4" (recommended) | "fp4"
+    bnb_4bit_use_double_quant: bool = True
+    llm_int8_threshold: float = 6.0
+    llm_int8_has_fp16_weight: bool = False
+
+    def to_bnb(self):
+        if BitsAndBytesConfig is None:
+            raise RuntimeError("You need a recent transformers for BitsAndBytesConfig")
+        # map strings to torch dtypes
+        dmap = {"bfloat16": torch.bfloat16, "float16": torch.float16, "fp16": torch.float16}
+        compute_dtype = dmap.get(self.bnb_4bit_compute_dtype.lower(), torch.bfloat16)
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_quant_type=self.bnb_4bit_quant_type,
+            bnb_4bit_use_double_quant=self.bnb_4bit_use_double_quant,
+            llm_int8_threshold=self.llm_int8_threshold,
+            llm_int8_has_fp16_weight=self.llm_int8_has_fp16_weight,
+        )
 
 @dataclass
 class DrGRPOConfig:
@@ -108,8 +173,8 @@ class DrGRPOConfig:
     sync_frequency: int = 100
 
     # visibility / samples
-    sample_log_interval: int = 100     # every N optimizer steps
-    sample_log_n: int = 2              # how many examples to print/save
+    sample_log_interval: int = 100
+    sample_log_n: int = 2
     samples_path: str = "grpo_samples.jsonl"
 
     # env
@@ -127,8 +192,12 @@ class DrGRPOConfig:
     early_stop_consecutive_ticks: int = 0
 
     # switches
-    disable_vllm: bool = False           # run without vLLM, still FSDP
-    only_transformers: bool = False      # run with pure HF + DDP (no FSDP, no vLLM)
+    disable_vllm: bool = False
+    only_transformers: bool = False
+
+    # quantization
+    quant_mode: str = "bf16"   # bf16 | fp16 | 8bit | 4bit
+    quant_args: QuantArgs = field(default_factory=QuantArgs)
 
     # logging / outputs
     csv_path: str = "training_log.csv"
@@ -144,16 +213,16 @@ class DrGRPOConfig:
 
     @classmethod
     def from_yaml(cls, p: str | Path):
-        """Tolerant to extra keys in YAML."""
         raw = yaml.safe_load(Path(p).read_text())
         fsdp_raw = raw.pop("fsdp_config", {})
         vllm_raw = raw.pop("vllm_config", {})
+        qa_raw = raw.pop("quant_args", {})
         valid = {f.name for f in dc_fields(cls)}
         main_kwargs = {k: v for k, v in raw.items() if k in valid}
         fsdp = FSDPConfig(**fsdp_raw)
         vllm = VLLMConfig(**vllm_raw)
-        return cls(**main_kwargs, fsdp_config=fsdp, vllm_config=vllm)
-
+        qa = QuantArgs(**qa_raw)
+        return cls(**main_kwargs, fsdp_config=fsdp, vllm_config=vllm, quant_args=qa)
 
 # ============================ Helpers ========================================
 
@@ -176,18 +245,19 @@ def _clip_think_block(text: str, max_think_tokens: int | None) -> str:
     new_think = f"<think>{clipped}</think><wait/>"
     return re.sub(r"<think>.*?</think>", new_think, text, count=1, flags=re.DOTALL)
 
-
 # ============================ vLLM Manager ===================================
 
 class VLLMManager:
     def __init__(self, cfg: DrGRPOConfig, rank: int):
         self.cfg = cfg
         self.rank = rank
-        self.engine: AsyncLLMEngine | None = None
+        self.engine: "AsyncLLMEngine | None" = None
 
     async def init(self):
         if self.engine:
             return
+        if not _HAS_VLLM:
+            raise RuntimeError("vLLM not installed but disable_vllm=False")
         v = self.cfg.vllm_config
         self.engine = AsyncLLMEngine.from_engine_args(
             AsyncEngineArgs(
@@ -223,7 +293,6 @@ class VLLMManager:
         core = (self.engine.llm_engine.model_executor.driver_worker.model)  # type: ignore
         core.load_weights(sd.items())
 
-
 # ============================ CSV Logger =====================================
 
 class CSVLogger:
@@ -244,13 +313,18 @@ class CSVLogger:
     def close(self):
         if self.f: self.f.close()
 
-
 # ============================ Trainer ========================================
 
 class Trainer:
     def __init__(self, cfg: DrGRPOConfig):
         self.cfg = cfg
         self._init_dist()
+
+        # auto turn off vLLM if quantized
+        if cfg.quant_mode.lower() in {"4bit", "8bit"}:
+            if not cfg.only_transformers:
+                logging.warning("quant_mode is %s → forcing disable_vllm=True (vLLM can't use bnb) and suggesting only_transformers=True", cfg.quant_mode)
+            self.cfg.disable_vllm = True
 
         if cfg.only_transformers:
             logging.warning("only_transformers=True → using pure HF + DDP (no FSDP, no vLLM).")
@@ -263,46 +337,69 @@ class Trainer:
             cfg.num_games, cfg.active_seats_per_game, cfg.model_name
         ) if self.rank == 0 else None
 
-        # Build model (FSDP or DDP)
+        # Build model (FSDP or DDP) with quantization
         self._init_model()
 
         # vLLM only if allowed
-        self.vllm = None if (cfg.disable_vllm or cfg.only_transformers) else VLLMManager(cfg, self.rank)
+        self.vllm = None if (cfg.disable_vllm or cfg.only_transformers or cfg.quant_mode.lower() in {"4bit", "8bit"}) else VLLMManager(cfg, self.rank)
 
         self._maybe_track_init_weights()
-        self.optimizer = torch.optim.AdamW(self.params(), lr=cfg.learning_rate)
+        self.optimizer = self._init_optimizer()
         self.scheduler = self._build_sched()
         self.step = 0
 
     # ---- dist ----
     def _init_dist(self):
         if not dist.is_initialized():
-            dist.init_process_group("nccl")
+            # Long timeout to avoid watchdog killing long generate() steps
+            dist.init_process_group("nccl", timeout=timedelta(hours=6))
         self.rank = dist.get_rank()
         self.world = dist.get_world_size()
         torch.cuda.set_device(self.rank)
 
     # ---- model ----
+    def _quant_config(self):
+        m = self.cfg.quant_mode.lower()
+        if m in {"bf16", "fp16"}:
+            return None
+        if not is_bitsandbytes_available() or not _HAS_BNB:
+            raise RuntimeError("bitsandbytes not installed but quant_mode requires it")
+        if m == "8bit":
+            return "8bit"
+        if m == "4bit":
+            return self.cfg.quant_args.to_bnb()
+        raise ValueError(f"Unknown quant_mode: {self.cfg.quant_mode}")
+
     def _init_model(self):
         self.tok = AutoTokenizer.from_pretrained(self.cfg.model_name)
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
 
-        base = AutoModelForCausalLM.from_pretrained(
-            self.cfg.model_name, torch_dtype=_dtype(), low_cpu_mem_usage=True
-        )
+        quant = self._quant_config()
+        load_kwargs: Dict[str, Any] = {}
+        if quant is None:
+            # native bf16/fp16
+            load_kwargs.update(dict(torch_dtype=_dtype(), low_cpu_mem_usage=True))
+        elif quant == "8bit":
+            load_kwargs.update(dict(load_in_8bit=True, device_map={"": self.rank}))
+        else:  # BitsAndBytesConfig 4bit
+            load_kwargs.update(dict(quantization_config=quant, device_map={"": self.rank}))
+
+        base = AutoModelForCausalLM.from_pretrained(self.cfg.model_name, **load_kwargs)
 
         device = torch.device(f"cuda:{self.rank}")
+        quantized = self.cfg.quant_mode.lower() in {"4bit", "8bit"}
 
-        if self.cfg.only_transformers:
-            # ---- Pure HF + DDP path ----
-            base.to(device)
+        if self.cfg.only_transformers or quantized:
+            # ---- Pure HF + DDP path (recommended with 4/8-bit) ----
+            if not quantized:  # full precision → move manually
+                base.to(device)
             self.ddp = DDP(base, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=False)
             self.fsdp = None
             self.net = self.ddp                 # forward path
-            self.core = self.ddp.module         # raw model for .generate() / save
+            self.core = self.ddp.module         # raw model
         else:
-            # ---- FSDP path ----
+            # ---- FSDP path ---- (fp16/bf16 only)
             if self.cfg.fsdp_config.activation_checkpointing:
                 apply_activation_checkpointing(
                     base,
@@ -323,11 +420,18 @@ class Trainer:
                 use_orig_params=self.cfg.fsdp_config.use_orig_params,
             )
             self.ddp = None
-            self.net = self.fsdp                # forward path
-            self.core = self.fsdp.module        # raw model for .generate() / save
+            self.net = self.fsdp
+            self.core = self.fsdp.module
 
     def params(self):
         return self.net.parameters()
+
+    def _init_optimizer(self):
+        if self.cfg.quant_mode.lower() in {"4bit", "8bit"} and _HAS_BNB and PagedAdamW8bit is not None:
+            logging.info("Using bitsandbytes PagedAdamW8bit optimizer")
+            return PagedAdamW8bit(self.params(), lr=self.cfg.learning_rate)
+        else:
+            return torch.optim.AdamW(self.params(), lr=self.cfg.learning_rate)
 
     def _build_sched(self):
         warm, total, minlr = self.cfg.warmup_ticks, self.cfg.max_iterations, (self.cfg.min_learning_rate or 0.0)
@@ -370,8 +474,7 @@ class Trainer:
 
         tmp = tempfile.mkdtemp()
         try:
-            if self.cfg.only_transformers:
-                # plain DDP state_dict
+            if self.fsdp is None:  # DDP / quantized
                 state_dict = self.core.state_dict()
                 self.core.save_pretrained(
                     tmp,
@@ -379,8 +482,7 @@ class Trainer:
                     safe_serialization=True,
                     max_shard_size=self.cfg.max_shard_size,
                 )
-            else:
-                # FSDP FULL state
+            else:  # FSDP FULL state
                 fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
                 with FSDP.state_dict_type(self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg):
                     state_dict = self.fsdp.state_dict()
@@ -393,6 +495,7 @@ class Trainer:
 
             self.tok.save_pretrained(tmp)
             logging.info(f"Pushing to Hub: {self.cfg.output_hub_repo}")
+            from huggingface_hub import create_repo, upload_folder
             create_repo(self.cfg.output_hub_repo, exist_ok=True,
                         repo_type="model", private=self.cfg.hub_private)
             upload_folder(repo_id=self.cfg.output_hub_repo,
@@ -460,9 +563,9 @@ class Trainer:
             if self.rank == 0:
                 logging.error("Fatal error, saving checkpoint…")
                 ckdir = Path(self.cfg.fsdp_config.checkpoint_dir or "checkpoints")
-                ckdir.mkdir(exist_ok=True)
+                ckdir.mkdir(parents=True, exist_ok=True)
                 try:
-                    if self.cfg.only_transformers:
+                    if self.fsdp is None:
                         torch.save(self.core.state_dict(), ckdir / "fatal_ckpt_ddp.pt")
                     else:
                         fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
@@ -471,6 +574,10 @@ class Trainer:
                 except Exception as e:
                     logging.error(f"Failed to save fatal checkpoint: {e}")
                 logging.error(traceback.format_exc())
+            # make sure to bring all ranks down cleanly
+            with contextlib.suppress(Exception):
+                if dist.is_initialized():
+                    dist.destroy_process_group()
             raise
         finally:
             if self.rank == 0:
@@ -486,11 +593,10 @@ class Trainer:
                     logging.warning(f"Plotting failed: {e}")
             self.logger.close()
             if dist.is_initialized():
-                try:
+                with contextlib.suppress(Exception):
                     dist.barrier()
-                except Exception:
-                    pass
-                dist.destroy_process_group()
+                with contextlib.suppress(Exception):
+                    dist.destroy_process_group()
 
     async def _step(self):
         # get batch
@@ -513,7 +619,7 @@ class Trainer:
         ).repeat_interleave(K)
 
         # generation
-        if self.cfg.disable_vllm or self.cfg.only_transformers:
+        if (self.vllm is None):
             outs = self._generate_with_hf(tp)
         else:
             outs = await self.vllm.generate(tp)
@@ -554,10 +660,11 @@ class Trainer:
         return {"step": self.step, "loss": loss_val, "avg_reward": rew_avg,
                 "parse_acc": parse_acc, "weight_delta": delta}
 
-    # --- HF-only generation path (used for disable_vllm or only_transformers) ---
+    # --- HF-only generation path ---
     def _generate_with_hf(self, prompts: List[str]) -> List[str]:
-        # Rank-0 runs generation to avoid NCCL timeouts; broadcast to others.
         if self.rank != 0:
+            # ensure ordering
+            dist.barrier()
             return self._bcast_obj([], src=0)
 
         self.net.eval()
@@ -568,6 +675,7 @@ class Trainer:
             max_new_tokens=self.cfg.max_tokens,
             pad_token_id=self.tok.pad_token_id,
             eos_token_id=self.tok.eos_token_id,
+            synced_gpus=False,  # <— IMPORTANT: avoid HF's all_reduce inside generate()
         )
         outs: List[str] = []
         device = next(self.params()).device
@@ -582,10 +690,10 @@ class Trainer:
                 text = _clip_think_block(text, self.cfg.max_think_tokens)
                 outs.append(text)
         self.net.train()
+        dist.barrier()
         return self._bcast_obj(outs, src=0)
 
     async def _sync_weights(self):
-        # Only called if vLLM is enabled and FSDP mode is active
         mode = self.cfg.fsdp_config.sync_state.upper()
         await self.vllm.sleep(); dist.barrier()
         if mode == "FULL":
@@ -605,12 +713,16 @@ class Trainer:
     # ---- utils ----
     def _bcast(self, obj, src=0):
         l = [obj] if self.rank == src else [None]
+        dist.barrier()
         dist.broadcast_object_list(l, src=src)
+        dist.barrier()
         return l[0]
 
     def _bcast_obj(self, obj, src=0):
         buf = [obj] if self.rank == src else [None]
+        dist.barrier()
         dist.broadcast_object_list(buf, src=src)
+        dist.barrier()
         return buf[0]
 
     def _mean(self, x: float):
@@ -625,7 +737,9 @@ class Trainer:
         plens = [len(self.tok.encode(p)) for p in prompts]
         enc = self.tok(full, padding=True, truncation=True, max_length=maxlen,
                        return_tensors="pt").to(device)
-        with torch.cuda.amp.autocast(enabled=(not self.cfg.only_transformers)):
+        # AMP disabled for quantized path to avoid weirdness
+        use_amp = not (self.cfg.quant_mode.lower() in {"4bit", "8bit"})
+        with torch.cuda.amp.autocast(enabled=use_amp):
             logits = self.net(**enc).logits
         res = []
         for i, pl in enumerate(plens):
@@ -640,7 +754,6 @@ class Trainer:
             m = (gid == g)
             adv[m] = rw[m] - rw[m].mean()
         return -(adv * lp).mean()
-
 
 # ============================ CLI ============================================
 
