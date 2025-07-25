@@ -12,6 +12,12 @@ All consumers (training, inference, self-play) should use this module
 to ensure consistent prompt formatting across the codebase.
 """
 
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Union
+from pathlib import Path
+import json
+import re
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -1210,12 +1216,6 @@ def build_prompt(game: 'Game', actor: 'Player', observation: Optional[str] = Non
     return build_complete_prompt(game, actor, "default")
 
 
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
-from pathlib import Path
-import json
-import re
 
 try:
     import torch

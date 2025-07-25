@@ -110,22 +110,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional, Type
 
-def _import_runner_with_rewards() -> Optional[Type[Any]]:
-    """Resilient import of Simulation.runner_with_rewards.RunnerWithRewards."""
-    try:
-        mod = importlib.import_module("Simulation.runner_with_rewards")
-        return getattr(mod, "RunnerWithRewards")
-    except Exception:
-        # fallback: add project root to sys.path and retry
-        here = Path(__file__).resolve().parent
-        root = here
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        try:
-            mod = importlib.import_module("Simulation.runner_with_rewards")
-            return getattr(mod, "RunnerWithRewards")
-        except Exception:
-            return None
+from Simulation.sequential_env import SequentialGRPOEnv
+
 _orig_multinomial = torch.multinomial
 
 def safe_multinomial(
@@ -602,7 +588,7 @@ class CSVLogger:
 class Trainer:
     """Main GRPO training loop."""
 
-    def __init__(self, cfg: DrGRPOConfig) -> None:
+    def __init__(self, cfg: DrGRPOConfig, env: Optional[Any] = None) -> None:
         self.cfg = cfg
         self._init_dist()
 
@@ -626,8 +612,10 @@ class Trainer:
         self.logger = CSVLogger(cfg.csv_path, self.rank)
 
         # Environment (rank 0 builds, then we broadcast existence)
-        self.env = None
-        self._init_env()
+        if env is None:
+            self._init_env()
+        else:
+            self.env = env
 
         # Build model (FSDP or DDP) with quantization
         self._init_model()
@@ -650,11 +638,11 @@ class Trainer:
                 logging.error("Environment import failed; env=None. Training will NO-OP.")
             else:
                 try:
-                    self.env = RW(
-                        self.cfg.num_games,
-                        self.cfg.active_seats_per_game,
-                        model_name=self.cfg.model_name,
-                        group_size=self.cfg.active_seats_per_game,
+                    env = RW(
+                        num_games=cfg.num_games,
+                        active_seats_per_game=cfg.active_seats_per_game,
+                        model_name=cfg.model_name,
+                        group_size=cfg.active_seats_per_game,
                         evals_per_phase=3,
                         max_days=7,
                         max_empty_ticks=1000,
@@ -1333,7 +1321,15 @@ async def _amain() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     cfg = DrGRPOConfig.from_yaml(args.config)
-    tr = Trainer(cfg)
+    env = SequentialGRPOEnv(
+    num_games=cfg.num_games,
+    active_seats_per_game=cfg.active_seats_per_game,
+    model_name=cfg.model_name,
+    evals_per_phase=3,
+    max_days=7,
+    prompts_per_call=1,      # or >1 if you want multiple prompts per step
+)
+    tr = Trainer(cfg, env=env)
     await tr.train()
 
 
