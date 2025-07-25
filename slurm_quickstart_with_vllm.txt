@@ -83,7 +83,7 @@ python -m pip install "$FLASH_WHEEL" --no-cache-dir || {
   python -m pip install --no-build-isolation flash-attn
 }
 # ---- 3b. helpers --------------------------------------------------------
-python -m pip install transformers sentencepiece tokenizers protobuf pandas fire bitsandbytes
+python -m pip install transformers sentencepiece tokenizers protobuf pandas fire bitsandbytes accelerate
 pip install -U hf_transfer
 pip install liger-kernel-nightly
 # -----------------------------------------------------------------------
