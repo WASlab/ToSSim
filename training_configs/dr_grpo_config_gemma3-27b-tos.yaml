@@ -65,6 +65,13 @@ quant_args:
   bnb_4bit_use_double_quant: true
   llm_int8_threshold: 6.0
   llm_int8_has_fp16_weight: false
+
+temperature: 1.0            # soften logits; reduce if output is too random
+top_p: 1.0                  # 1.0 disables nucleus sampling
+top_k: 1                 # null disables top‑k filtering (–1 internally)
+min_p: 0.0                  # 0.0 disables probability cutoff
+repetition_penalty: 1.1     # discourage exact repetition (tune as needed)
+
 flash_attention: true
 liger: true
 

@@ -1,73 +1,84 @@
 """
-Dr GRPO (Group Relative Policy Optimization)
-=================================================================================
+grpo.py
+=============
 
-:
+This module implements Group‑Relative Policy Optimization (GRPO) and its
+distributed version for online reinforcement learning with large language
+models.  The code is adapted from ToSSim and incorporates a number of
+improvements inspired by the HuggingFace TRL implementation of GRPO.
 
-* **FlashAttention‑2 support:** When `use_flash_attention` is set to
-  `True` (the default), the model is loaded with
-  `attn_implementation="flash_attention_2"` as recommended by the
-  Hugging Face documentation【829383066269290†L285-L304】.  This enables a more memory‑
-  efficient attention implementation that still works with bf16/fp16 or
-  bitsandbytes‑quantized weights.  Make sure the model is moved to the GPU
-  before using FlashAttention‑2【829383066269290†L303-L305】.
+Key features
+------------
 
-* **Liger‑Kernel patching:** When `use_liger` is enabled and the
-  `liger_kernel` package is installed, the script automatically applies
-  the appropriate Liger kernel patch for the loaded model (Gemma, LLaMA,
-  Mistral or Mixtral).  Liger kernels fuse RMSNorm, RoPE, SwiGLU/GEGLU and
-  CrossEntropy layers to reduce memory usage by up to 60 %【362111756373219†L385-L390】.
+* **Robust multinomial sampling:**  The default `torch.multinomial` will
+  raise a device‑side assertion if given an all‑zero or otherwise invalid
+  probability distribution.  The `safe_multinomial` wrapper defined here
+  sanitises its input by clamping negative, NaN or infinite values to
+  zero and replacing any zero‑sum row with a uniform distribution before
+  sampling.  This function is installed globally as
+  `torch.multinomial` to protect all sampling within the training loop.
 
-* **Robust distributed synchronization:** A helper `_sync_bool()` uses
-  `all_reduce` to synchronize boolean flags across ranks, preventing race
-  conditions that can lead to hangs.  All calls to `dist.barrier()` are
-  guarded by `dist.is_initialized()` to avoid errors when the process
-  group has already been destroyed.
+* **Conservative generation defaults:**  Sampling from quantised models
+  with aggressive `top_p`/`top_k` or minimum probability cutoffs can
+  produce extremely sparse distributions, leading to NaNs or invalid
+  distributions.  The `build_generation_config` helper constructs
+  `GenerationConfig` objects with sensible defaults that disable
+  nucleus and top‑k sampling unless explicitly requested.  Parameters
+  such as `temperature`, `top_p`, `top_k`, `min_p` and
+  `repetition_penalty` are exposed via the YAML configuration.
 
-* **Updated generation API:** The `synced_gpus` argument has been removed
-  from `GenerationConfig` (which now follows the upstream API) and
-  instead passed directly to `generate()`.  This fixes
-  `ValueError: Argument 'synced_gpus' is not a valid argument of
-  GenerationConfig` on newer transformers releases.
+* **Fallback sampling:**  The `generate_with_retry` helper wraps
+  `model.generate` and falls back to greedy decoding if an exception
+  occurs during sampling.  This prevents occasional NaNs or invalid
+  logits from aborting the entire training run.
 
-To train, prepare a YAML configuration , adding optional
-`use_flash_attention` and `use_liger` fields if desired.
+* **Distributed training support:**  The `Trainer` class wraps the
+  underlying model in either `DistributedDataParallel` or
+  `FullyShardedDataParallel` depending on whether quantisation is used.
+  Synchronisation utilities ensure that early stopping and fatal
+  exceptions are propagated across all ranks.  Weight synchronisation
+  to an optional vLLM engine is handled asynchronously.
+
+* **Configurable loss:**  Two GRPO variants are supported via the
+  `loss_type` field in the configuration: the original GRPO loss
+  (normalising by the length of each completion) and the Dr.GRPO loss
+  (dividing by a fixed maximum length).  Rewards can be optionally
+  standardised per‑group (`scale_rewards`).
+
+The code is intended to be fully self‑contained; it defines its own
+dataclasses for configuration, helper functions for generation and
+sampling and a high‑level training loop.  See the accompanying YAML
+file for an example configuration.
+
 """
 
 from __future__ import annotations
 
-import os
-
-# Environment hints for NCCL; see PyTorch docs for details.
-os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "1")
-os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
-os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
-os.environ.setdefault("NCCL_DEBUG", "INFO")
-
-import math
-import yaml
+import asyncio
+import contextlib
 import csv
+import functools
 import json
 import logging
-import asyncio
-import functools
+import math
+import os
+import re
+import shutil
 import tempfile
 import traceback
-import shutil
-import re
-import contextlib
-from pathlib import Path
 from dataclasses import dataclass, field, fields as dc_fields
-from typing import Any, Dict, List, Optional
 from datetime import timedelta
-
-from tqdm import trange, tqdm
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import torch
-import torch.nn as nn
 import torch.distributed as dist
-from torch.optim.lr_scheduler import LambdaLR
-from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.nn as nn
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    CheckpointImpl,
+    apply_activation_checkpointing,
+    checkpoint_wrapper,
+)
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
@@ -77,37 +88,266 @@ from torch.distributed.fsdp import (
     ShardedStateDictConfig,
 )
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    checkpoint_wrapper,
-    CheckpointImpl,
-    apply_activation_checkpointing,
-)
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
-from transformers.utils.import_utils import is_bitsandbytes_available
-import os
-if int(os.environ.get("CUDA_LAUNCH_BLOCKING", "0")):
-    torch.cuda.synchronize()
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim.lr_scheduler import LambdaLR
+from tqdm import trange
 
-try:
-    from transformers import BitsAndBytesConfig  # HF >= 4.30
-except Exception:
-    BitsAndBytesConfig = None  # type: ignore
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from transformers.utils.import_utils import is_bitsandbytes_available
+
+# Set environment hints for NCCL.  These improve robustness of
+# multi‑GPU training and are recommended in PyTorch documentation.
+os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "1")
+os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
+os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+os.environ.setdefault("NCCL_DEBUG", "INFO")
+
+# ----------------------------------------------------------------------------
+# Safe multinomial and generation helpers
+# ----------------------------------------------------------------------------
+
 _orig_multinomial = torch.multinomial
 
-def safe_multinomial(input, num_samples, replacement=False, generator=None):
+def safe_multinomial(
+    input: torch.Tensor,
+    num_samples: int,
+    replacement: bool = False,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Robust wrapper around ``torch.multinomial``.
+
+    This function cleans the input tensor by replacing NaNs and
+    infinite values with zero and clamping negative values to zero,
+    then samples from the resulting distribution.  If any row of the
+    cleaned tensor sums to zero (meaning there is no mass to sample
+    from), that row is replaced with a uniform distribution before
+    sampling.  This prevents the ``invalid multinomial distribution``
+    error that would otherwise occur when the sum of probabilities is
+    not positive.
+
+    Args:
+        input: The input tensor of non‑negative weights.  May be 1D or
+            higher dimensional; sampling is applied along the last
+            dimension.
+        num_samples: Number of samples to draw.
+        replacement: Whether to sample with replacement.
+        generator: Optional PRNG for deterministic sampling.
+
+    Returns:
+        A tensor of indices with shape ``input.shape[:-1] + (num_samples,)``.
     """
-    Drop‑in replacement for torch.multinomial that sanitises the input tensor.
-    Negative, NaN, or Inf values are set to zero before sampling.
-    """
+    # Convert to floating type if necessary
     if not torch.is_floating_point(input):
         input = input.float()
-    # Replace NaN or Inf with zero and clamp negatives
+    # Replace NaNs and Infs with zeros and clamp negatives to zero
     clean = torch.nan_to_num(input, nan=0.0, posinf=0.0, neginf=0.0)
     clean = torch.clamp(clean, min=0.0)
-    # No need to normalise; multinomial only cares about relative weights
+    # Compute sums along the last dimension
+    if clean.dim() == 1:
+        total = clean.sum()
+        if total <= 0:
+            # Replace with uniform distribution to avoid invalid sampling
+            clean = torch.ones_like(clean)
+    else:
+        # Identify rows whose sums are non‑positive
+        sums = clean.sum(dim=-1, keepdim=True)
+        mask = sums <= 0
+        if mask.any():
+            # Broadcast uniform distribution to those rows
+            uniform = torch.ones_like(clean)
+            clean = torch.where(mask, uniform, clean)
     return _orig_multinomial(clean, num_samples, replacement=replacement, generator=generator)
-torch.multinomial = safe_multinomial
-# Try to import Liger kernels.  If unavailable, leave `_HAS_LIGER` false.
+
+# Install the safe multinomial globally
+torch.multinomial = safe_multinomial  # type: ignore
+
+def build_generation_config(
+    *,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    top_k: Optional[int] = None,
+    min_p: float = 0.0,
+    repetition_penalty: float = 1.0,
+    max_new_tokens: int,
+    pad_token_id: int,
+    eos_token_id: int,
+) -> GenerationConfig:
+    """Construct a conservative ``GenerationConfig``.
+
+    Parameters mirror those of ``transformers.GenerationConfig`` but
+    provide sensible defaults that avoid pathological zero‑mass
+    distributions.  ``top_k`` is interpreted as the maximum number of
+    tokens to sample from; if ``None`` it is disabled (internally
+    represented as ``-1`` by HuggingFace).  ``top_p`` is the nucleus
+    sampling threshold; values of ``1.0`` disable nucleus sampling.
+
+    Args:
+        temperature: Softmax temperature.  Lower values encourage
+            greedier sampling; values near zero effectively disable
+            sampling.
+        top_p: Top‑p (nucleus) sampling cutoff.  Set to 1.0 to disable.
+        top_k: Top‑k sampling cutoff.  Set to ``None`` to disable.
+        min_p: Minimum probability threshold relative to the maximum
+            probability.  Tokens whose probability is less than
+            ``min_p * max_prob`` are discarded.  Set to 0.0 to disable.
+        repetition_penalty: Penalty factor applied to previously
+            generated tokens; values >1 discourage repetition.
+        max_new_tokens: Maximum number of tokens to generate.
+        pad_token_id: Padding token identifier.
+        eos_token_id: End‑of‑sequence token identifier.
+
+    Returns:
+        A ``GenerationConfig`` instance populated with the provided
+        parameters.
+    """
+    # Translate None to sentinel value accepted by HF (‑1 disables top‑k)
+    tk = -1 if top_k is None else top_k
+    return GenerationConfig(
+        do_sample=True,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=tk,
+        min_p=min_p,
+        repetition_penalty=repetition_penalty,
+        max_new_tokens=max_new_tokens,
+        pad_token_id=pad_token_id,
+        eos_token_id=eos_token_id,
+    )
+
+def generate_with_retry(
+    model: nn.Module,
+    enc: Dict[str, torch.Tensor],
+    gen_cfg: GenerationConfig,
+) -> torch.Tensor:
+    """Call ``model.generate`` with fallback to greedy decoding on failure.
+
+    Given an encoder output ``enc`` (e.g. produced by a tokenizer’s
+    ``return_tensors="pt"`` call) and a pre‑constructed
+    ``GenerationConfig``, this function attempts to generate a
+    completion using sampling.  If a ``RuntimeError`` occurs (for
+    example due to an invalid multinomial distribution), the function
+    logs the error and retries with deterministic greedy decoding
+    (``do_sample=False``).  This ensures that the training loop can
+    continue even when sampling occasionally fails.
+
+    Args:
+        model: A ``PreTrainedModel`` instance supporting the
+            ``generate`` method.
+        enc: Dictionary containing at least ``input_ids`` and
+            optionally ``attention_mask``.
+        gen_cfg: A ``GenerationConfig`` controlling sampling.
+
+    Returns:
+        A tensor of generated token IDs.
+    """
+    try:
+        return model.generate(**enc, generation_config=gen_cfg, synced_gpus=False)
+    except RuntimeError as e:
+        logging.error(f"generation failed with {e}; retrying greedily")
+        return model.generate(
+            **enc,
+            do_sample=False,
+            max_new_tokens=gen_cfg.max_new_tokens,
+            pad_token_id=gen_cfg.pad_token_id,
+            eos_token_id=gen_cfg.eos_token_id,
+            synced_gpus=False,
+        )
+
+# ----------------------------------------------------------------------------
+# vLLM integration
+# ----------------------------------------------------------------------------
+
+try:
+    from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
+    _HAS_VLLM = True
+except Exception:
+    _HAS_VLLM = False
+
+
+class VLLMManager:
+    """Asynchronous interface to a vLLM engine.
+
+    When enabled, this class offloads text generation to a vLLM server
+    running in the same process.  This can dramatically speed up
+    generation, especially when using high parallelism, but it is
+    currently incompatible with bitsandbytes quantisation.  The manager
+    handles initialization, sleeping/waking, and weight loading.
+    """
+
+    def __init__(self, cfg: "DrGRPOConfig", rank: int):
+        self.cfg = cfg
+        self.rank = rank
+        self.engine: Optional["AsyncLLMEngine"] = None
+
+    async def init(self) -> None:
+        """Initialize the underlying vLLM engine."""
+        if self.engine is not None:
+            return
+        if not _HAS_VLLM:
+            raise RuntimeError("vLLM not installed but disable_vllm=False")
+        v = self.cfg.vllm_config
+        self.engine = AsyncLLMEngine.from_engine_args(
+            AsyncEngineArgs(
+                model=self.cfg.model_name,
+                tensor_parallel_size=v.tensor_parallel_size,
+                max_num_seqs=v.max_num_seqs,
+                max_model_len=v.max_model_len,
+                gpu_memory_utilization=v.gpu_memory_utilization,
+                enforce_eager=v.enforce_eager,
+                disable_log_stats=v.disable_log_stats,
+            )
+        )
+
+    async def generate(self, prompts: List[str]) -> List[str]:
+        """Generate completions for a list of prompts using vLLM."""
+        if self.engine is None:
+            raise RuntimeError("vLLM engine not initialised")
+        sp = SamplingParams(
+            temperature=self.cfg.temperature,
+            top_p=self.cfg.top_p,
+            max_tokens=self.cfg.max_tokens,
+        )
+        res = await self.engine.generate(prompts, sp)
+        outs: List[str] = []
+        for r in res:
+            t = r.outputs[0].text if r.outputs else ""
+            t = _clip_think_block(t, self.cfg.max_think_tokens)
+            outs.append(t)
+        return outs
+
+    async def sleep(self) -> None:
+        if self.engine:
+            await self.engine.sleep(level=2)
+
+    async def wake(self) -> None:
+        if self.engine:
+            await self.engine.wake_up()
+
+    def load_weights(self, sd: Dict[str, torch.Tensor]) -> None:
+        if self.engine is None:
+            raise RuntimeError("vLLM engine not initialised")
+        core = self.engine.llm_engine.model_executor.driver_worker.model  # type: ignore
+        core.load_weights(sd.items())
+
+# ----------------------------------------------------------------------------
+# Quantisation helpers
+# ----------------------------------------------------------------------------
+
+try:
+    from transformers import BitsAndBytesConfig  # type: ignore
+    import bitsandbytes as bnb
+    from bitsandbytes.optim import PagedAdamW8bit  # type: ignore
+    _HAS_BNB = True
+except Exception:
+    BitsAndBytesConfig = None  # type: ignore
+    bnb = None
+    PagedAdamW8bit = None  # type: ignore
+    _HAS_BNB = False
+
+# ----------------------------------------------------------------------------
+# Liger kernel patching
+# ----------------------------------------------------------------------------
+
 try:
     from liger_kernel.transformers import (
         apply_liger_kernel_to_gemma,
@@ -121,28 +361,19 @@ try:
 except Exception:
     _HAS_LIGER = False
 
-try:
-    import bitsandbytes as bnb
-    from bitsandbytes.optim import PagedAdamW8bit
-    _HAS_BNB = True
-except Exception:  # pragma: no cover
-    bnb = None
-    PagedAdamW8bit = None  # type: ignore
-    _HAS_BNB = False
+# ----------------------------------------------------------------------------
+# Turn batcher (environment) import
+# ----------------------------------------------------------------------------
 
-# vLLM (kept but automatically disabled for 4/8bit)
 try:
-    from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
-    _HAS_VLLM = True
+    # The environment used by ToSSim.  This is only available on rank 0.
+    from Simulation.turn_batcher import TurnBatcher  # type: ignore
 except Exception:
-    _HAS_VLLM = False
+    TurnBatcher = None  # type: ignore
 
-# ToSSim deps
-from Simulation.turn_batcher import TurnBatcher  # type: ignore
-
-###############################################################################
-# Configurations
-###############################################################################
+# ----------------------------------------------------------------------------
+# Configuration dataclasses
+# ----------------------------------------------------------------------------
 
 def _dtype() -> torch.dtype:
     """Return bf16 if available, else fp16."""
@@ -168,13 +399,13 @@ def _sharding(name: str) -> ShardingStrategy:
 class FSDPConfig:
     """Configuration for FSDP."""
     sharding_strategy: str = "FULL_SHARD"
-    sync_state: str = "SHARDED"  # FULL | SHARDED for vLLM sync
+    sync_state: str = "SHARDED"  # SHARDED is cheaper for periodic vLLM syncs
     mixed_precision: bool = True
     activation_checkpointing: bool = True
     use_orig_params: bool = True
     offload_full_state_dict_to_cpu: bool = True
     rank0_only_state_dict: bool = True
-    checkpoint_dir: str | None = "checkpoints"
+    checkpoint_dir: Optional[str] = "checkpoints"
 
 
 @dataclass
@@ -191,9 +422,8 @@ class VLLMConfig:
 @dataclass
 class QuantArgs:
     """Arguments for bitsandbytes quantization."""
-    # Only used when quant_mode in {"4bit", "8bit"}
-    bnb_4bit_compute_dtype: str = "bfloat16"  # "bfloat16" | "float16"
-    bnb_4bit_quant_type: str = "nf4"  # nf4 (recommended) | fp4
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_use_double_quant: bool = True
     llm_int8_threshold: float = 6.0
     llm_int8_has_fp16_weight: bool = False
@@ -202,7 +432,6 @@ class QuantArgs:
         """Convert quantization arguments to a BitsAndBytesConfig."""
         if BitsAndBytesConfig is None:
             raise RuntimeError("You need a recent transformers for BitsAndBytesConfig")
-        # map strings to torch dtypes
         dmap = {"bfloat16": torch.bfloat16, "float16": torch.float16, "fp16": torch.float16}
         compute_dtype = dmap.get(self.bnb_4bit_compute_dtype.lower(), torch.bfloat16)
         return BitsAndBytesConfig(
@@ -217,64 +446,70 @@ class QuantArgs:
 
 @dataclass
 class DrGRPOConfig:
-    """Top‑level configuration for the DrGRPO trainer."""
-    # core
+    """Top‑level configuration for the GRPO trainer."""
+    # Core model and training hyper‑parameters
     model_name: str = "google/gemma-3-27b-it"
-    learning_rate: float = 1e-5
-    min_learning_rate: float | None = 1e-6
-    warmup_ticks: int = 200
+    learning_rate: float = 5.0e-5
+    min_learning_rate: float | None = 4.0e-5
+    warmup_ticks: int = 100
     gradient_clip_norm: float = 1.0
-    batch_size: int = 64
+    batch_size: int = 15
     max_iterations: int = 5000
-    log_interval: int = 10
+    log_interval: int = 2
     k_per_prompt: int = 4
     beta: float = 0.0
-    sync_frequency: int = 100
-    use_flash_attention: bool = True  # enable FlashAttention‑2
-    use_liger: bool = False  # enable Liger kernel patching
+    sync_frequency: int = 10
+    use_flash_attention: bool = True
+    use_liger: bool = False
 
-    # visibility / samples
+    # Environment / game
+    num_games: int = 2
+    active_seats_per_game: int = 3
+
+    # Sampling
+    temperature: float = 0.8
+    top_p: float = 0.9
+    top_k: Optional[int] = None
+    min_p: float = 0.0
+    repetition_penalty: float = 1.0
+    max_tokens: int = 96
+    max_think_tokens: Optional[int] = 64
+
+    # Early stopping
+    early_stop_parse_rate: Optional[float] = 0.99
+    early_stop_consecutive_ticks: int = 1000
+
+    # Loss variant and reward scaling
+    loss_type: str = "dr_grpo"  # "grpo" or "dr_grpo"
+    scale_rewards: bool = True
+
+    # Switches
+    disable_vllm: bool = False
+    only_transformers: bool = True
+
+    # Quantisation
+    quant_mode: str = "4bit"  # bf16 | fp16 | 8bit | 4bit
+    quant_args: QuantArgs = field(default_factory=QuantArgs)
+
+    # Logging / outputs
+    csv_path: str = "gemma3-27b_tos_training.csv"
+    track_weight_deltas: bool = True
     sample_log_interval: int = 100
     sample_log_n: int = 2
     samples_path: str = "grpo_samples.jsonl"
 
-    # env
-    num_games: int = 30
-    active_seats_per_game: int = 3
-
-    # sampling
-    temperature: float = 0.8
-    top_p: float = 0.9
-    max_tokens: int = 256
-    max_think_tokens: int | None = None
-
-    # early stop
-    early_stop_parse_rate: float | None = None
-    early_stop_consecutive_ticks: int = 0
-
-    # switches
-    disable_vllm: bool = False
-    only_transformers: bool = False
-
-    # quantization
-    quant_mode: str = "bf16"  # bf16 | fp16 | 8bit | 4bit
-    quant_args: QuantArgs = field(default_factory=QuantArgs)
-
-    # logging / outputs
-    csv_path: str = "training_log.csv"
-    track_weight_deltas: bool = True
-
-    # Hub export
+    # Push to hub
     output_hub_repo: Optional[str] = None
-    hub_private: bool = True
+    hub_private: bool = False
     max_shard_size: str = "10GB"
 
     fsdp_config: FSDPConfig = field(default_factory=FSDPConfig)
     vllm_config: VLLMConfig = field(default_factory=VLLMConfig)
 
     @classmethod
-    def from_yaml(cls, p: str | Path):
+    def from_yaml(cls, p: str | Path) -> "DrGRPOConfig":
         """Load a configuration from a YAML file."""
+        import yaml  # local import to avoid unnecessary dependency when not needed
         raw = yaml.safe_load(Path(p).read_text())
         fsdp_raw = raw.pop("fsdp_config", {})
         vllm_raw = raw.pop("vllm_config", {})
@@ -287,11 +522,11 @@ class DrGRPOConfig:
         return cls(**main_kwargs, fsdp_config=fsdp, vllm_config=vllm, quant_args=qa)
 
 
-###############################################################################
+# ----------------------------------------------------------------------------
 # Helper functions
-###############################################################################
+# ----------------------------------------------------------------------------
 
-def _gemma_layer(model: nn.Module):
+def _gemma_layer(model: nn.Module) -> type:
     """Return the decoder layer class for Gemma models."""
     for m in model.modules():
         if m.__class__.__name__.endswith("DecoderLayer"):
@@ -299,7 +534,7 @@ def _gemma_layer(model: nn.Module):
     raise RuntimeError("Cannot find Gemma DecoderLayer class")
 
 
-def _clip_think_block(text: str, max_think_tokens: int | None) -> str:
+def _clip_think_block(text: str, max_think_tokens: Optional[int]) -> str:
     """Optionally truncate the content inside <think>…</think> to a given token count."""
     if max_think_tokens is None or not text:
         return text
@@ -314,76 +549,14 @@ def _clip_think_block(text: str, max_think_tokens: int | None) -> str:
     return re.sub(r"<think>.*?</think>", new_think, text, count=1, flags=re.DOTALL)
 
 
-###############################################################################
-# vLLM Manager
-###############################################################################
-
-class VLLMManager:
-    """Asynchronous interface to a vLLM engine."""
-
-    def __init__(self, cfg: DrGRPOConfig, rank: int):
-        self.cfg = cfg
-        self.rank = rank
-        self.engine: "AsyncLLMEngine | None" = None
-
-    async def init(self):
-        """Initialize the underlying vLLM engine."""
-        if self.engine:
-            return
-        if not _HAS_VLLM:
-            raise RuntimeError("vLLM not installed but disable_vllm=False")
-        v = self.cfg.vllm_config
-        self.engine = AsyncLLMEngine.from_engine_args(
-            AsyncEngineArgs(
-                model=self.cfg.model_name,
-                tensor_parallel_size=v.tensor_parallel_size,
-                max_num_seqs=v.max_num_seqs,
-                max_model_len=v.max_model_len,
-                gpu_memory_utilization=v.gpu_memory_utilization,
-                enforce_eager=v.enforce_eager,
-                disable_log_stats=v.disable_log_stats,
-            )
-        )
-
-    async def generate(self, prompts: List[str]) -> List[str]:
-        """Generate completions for a list of prompts using vLLM."""
-        sp = SamplingParams(
-            temperature=self.cfg.temperature,
-            top_p=self.cfg.top_p,
-            max_tokens=self.cfg.max_tokens,
-        )
-        res = await self.engine.generate(prompts, sp)
-        outs = []
-        for r in res:
-            t = r.outputs[0].text if r.outputs else ""
-            t = _clip_think_block(t, self.cfg.max_think_tokens)
-            outs.append(t)
-        return outs
-
-    async def sleep(self):
-        """Put the vLLM engine to sleep (release GPU resources)."""
-        if self.engine:
-            await self.engine.sleep(level=2)
-
-    async def wake(self):
-        """Wake the vLLM engine."""
-        if self.engine:
-            await self.engine.wake_up()
-
-    def load_weights(self, sd: Dict[str, torch.Tensor]):
-        """Load weights into the vLLM engine from a state dict."""
-        core = (self.engine.llm_engine.model_executor.driver_worker.model)  # type: ignore
-        core.load_weights(sd.items())
-
-
-###############################################################################
+# ----------------------------------------------------------------------------
 # CSV Logger
-###############################################################################
+# ----------------------------------------------------------------------------
 
 class CSVLogger:
     """Simple CSV logger that writes only on rank 0."""
 
-    def __init__(self, path: str, rank: int):
+    def __init__(self, path: str, rank: int) -> None:
         self.rank = rank
         if rank == 0:
             self.f = open(path, "w", newline="")
@@ -394,89 +567,78 @@ class CSVLogger:
             self.f = None
             self.w = None
 
-    def log(self, row: List[Any]):
-        if self.rank == 0:
+    def log(self, row: List[Any]) -> None:
+        if self.rank == 0 and self.w is not None:
             self.w.writerow(row)
             self.f.flush()
 
-    def close(self):
+    def close(self) -> None:
         if self.f:
             self.f.close()
 
 
-###############################################################################
+# ----------------------------------------------------------------------------
 # Trainer
-###############################################################################
+# ----------------------------------------------------------------------------
 
 class Trainer:
     """Main GRPO training loop."""
 
-    def __init__(self, cfg: DrGRPOConfig):
+    def __init__(self, cfg: DrGRPOConfig) -> None:
         self.cfg = cfg
         self._init_dist()
 
-        # auto turn off vLLM if quantized
+        # Auto‑disable vLLM if quantised or only_transformers
         if cfg.quant_mode.lower() in {"4bit", "8bit"}:
             if not cfg.only_transformers:
                 logging.warning(
-                    "quant_mode is %s → forcing disable_vllm=True (vLLM can't use bnb) and suggesting only_transformers=True",
+                    "quant_mode is %s → forcing disable_vllm=True (vLLM can't use bitsandbytes) and suggesting only_transformers=True",
                     cfg.quant_mode,
                 )
             self.cfg.disable_vllm = True
-
         if cfg.only_transformers:
             logging.warning(
                 "only_transformers=True → using pure HF + DDP (no FSDP, no vLLM)."
             )
-            self.cfg.disable_vllm = True  # force
+            self.cfg.disable_vllm = True
         elif cfg.disable_vllm:
-            logging.warning(
-                "disable_vllm=True → running FSDP with HF.generate (no vLLM)."
-            )
+            logging.warning("disable_vllm=True → running FSDP with HF.generate (no vLLM).")
 
+        # CSV logger and environment (only on rank 0)
         self.logger = CSVLogger(cfg.csv_path, self.rank)
-        self.env: Optional[TurnBatcher] = (
-            TurnBatcher(cfg.num_games, cfg.active_seats_per_game, cfg.model_name)
-            if self.rank == 0
-            else None
-        )
+        self.env: Optional[TurnBatcher] = None
+        if self.rank == 0 and TurnBatcher is not None:
+            self.env = TurnBatcher(cfg.num_games, cfg.active_seats_per_game, cfg.model_name)
 
         # Build model (FSDP or DDP) with quantization
         self._init_model()
 
-        # vLLM only if allowed
-        self.vllm = (
-            None
-            if (
-                cfg.disable_vllm
-                or cfg.only_transformers
-                or cfg.quant_mode.lower() in {"4bit", "8bit"}
-            )
-            else VLLMManager(cfg, self.rank)
-        )
+        # vLLM manager (if enabled)
+        self.vllm: Optional[VLLMManager] = None
+        if not (self.cfg.disable_vllm or self.cfg.only_transformers or self.cfg.quant_mode.lower() in {"4bit", "8bit"}):
+            self.vllm = VLLMManager(cfg, self.rank)
 
         self._maybe_track_init_weights()
         self.optimizer = self._init_optimizer()
         self.scheduler = self._build_sched()
         self.step = 0
 
-    # -----------------------------------------------------------------------
-    # Distributed initialization
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Distributed initialisation
+    # ---------------------------------------------------------------------
     def _init_dist(self) -> None:
-        """Initialize torch.distributed if necessary and set the device."""
+        """Initialise torch.distributed if necessary and set the device."""
         if not dist.is_initialized():
-            # Long timeout to avoid watchdog killing long generate() steps
             dist.init_process_group("nccl", timeout=timedelta(hours=6))
         self.rank = dist.get_rank()
         self.world = dist.get_world_size()
         torch.cuda.set_device(self.rank)
 
-    # -----------------------------------------------------------------------
-    # Model initialization
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Model initialisation
+    # ---------------------------------------------------------------------
     def _quant_config(self):
-        """Return quantization configuration or None for full precision."""
+        """Return quantisation configuration or None for full precision."""
         m = self.cfg.quant_mode.lower()
         if m in {"bf16", "fp16"}:
             return None
@@ -495,7 +657,7 @@ class Trainer:
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
 
-        # Build kwargs for model loading based on quantization
+        # Build kwargs for model loading based on quantisation
         quant = self._quant_config()
         load_kwargs: Dict[str, Any] = {}
         if quant is None:
@@ -534,10 +696,10 @@ class Trainer:
         # Load the model
         base = AutoModelForCausalLM.from_pretrained(self.cfg.model_name, **load_kwargs)
         device = torch.device(f"cuda:{self.rank}")
-        quantized = self.cfg.quant_mode.lower() in {"4bit", "8bit"}
+        quantised = self.cfg.quant_mode.lower() in {"4bit", "8bit"}
 
-        # DDP path for quantized or only_transformers
-        if self.cfg.only_transformers or quantized:
+        # DDP path for quantised or only_transformers
+        if self.cfg.only_transformers or quantised:
             # Ensure model is on the correct device for FlashAttention‑2
             base.to(device)
             self.ddp = DDP(
@@ -547,8 +709,8 @@ class Trainer:
                 find_unused_parameters=False,
             )
             self.fsdp = None
-            self.net = self.ddp  # forward path
-            self.core = self.ddp.module  # raw model
+            self.net: nn.Module = self.ddp  # forward path
+            self.core: nn.Module = self.ddp.module  # raw model
         else:
             # FSDP path for full‑precision training
             if self.cfg.fsdp_config.activation_checkpointing:
@@ -576,14 +738,14 @@ class Trainer:
             self.net = self.fsdp
             self.core = self.fsdp.module
 
-    # -----------------------------------------------------------------------
-    # Optimizer and scheduler
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Optimiser and scheduler
+    # ---------------------------------------------------------------------
     def params(self):
         return self.net.parameters()
 
     def _init_optimizer(self):
-        """Initialize the optimizer."""
+        """Initialise the optimiser."""
         if (
             self.cfg.quant_mode.lower() in {"4bit", "8bit"}
             and _HAS_BNB
@@ -602,7 +764,7 @@ class Trainer:
             (self.cfg.min_learning_rate or 0.0),
         )
 
-        def decay(i):
+        def decay(i: int) -> float:
             if i < warm:
                 return i / max(1, warm)
             prog = (i - warm) / max(1, total - warm)
@@ -610,18 +772,18 @@ class Trainer:
 
         return LambdaLR(self.optimizer, decay)
 
-    # -----------------------------------------------------------------------
-    # Synchronization helpers
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Synchronisation helpers
+    # ---------------------------------------------------------------------
     def _sync_bool(self, flag: bool) -> bool:
-        """Synchronize a boolean flag across all ranks using all_reduce."""
+        """Synchronise a boolean flag across all ranks using all_reduce."""
         t = torch.tensor([1 if flag else 0], dtype=torch.int, device=f"cuda:{self.rank}")
         dist.all_reduce(t, op=dist.ReduceOp.SUM)
         return t.item() > 0
 
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     # Weight deltas for monitoring
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     def _maybe_track_init_weights(self) -> None:
         self.track = self.cfg.track_weight_deltas and (self.rank == 0)
         if self.track:
@@ -639,16 +801,16 @@ class Trainer:
         )
         return torch.norm(cur - self.init_vec).item()
 
-    # -----------------------------------------------------------------------
-    # Save to Hugging Face Hub
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Push to Hugging Face Hub
+    # ---------------------------------------------------------------------
     def _push_to_hub(self) -> None:
-        """Save and upload the model to the Hugging Face Hub."""
+        """Save and upload the model to the Hugging Face Hub."""
         if self.cfg.output_hub_repo is None:
             if self.rank == 0:
                 logging.info("output_hub_repo not set — skipping push_to_hub.")
             return
-        # Synchronize before exporting
+        # Synchronise before exporting
         if dist.is_initialized():
             dist.barrier()
         if self.rank != 0:
@@ -659,7 +821,6 @@ class Trainer:
         tmp = tempfile.mkdtemp()
         try:
             if self.fsdp is None:
-                # DDP / quantized
                 state_dict = self.core.state_dict()
                 self.core.save_pretrained(
                     tmp,
@@ -668,7 +829,6 @@ class Trainer:
                     max_shard_size=self.cfg.max_shard_size,
                 )
             else:
-                # FSDP full state
                 fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
                 with FSDP.state_dict_type(
                     self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg
@@ -682,7 +842,7 @@ class Trainer:
                 )
             self.tok.save_pretrained(tmp)
             logging.info(f"Pushing to Hub: {self.cfg.output_hub_repo}")
-            from huggingface_hub import create_repo, upload_folder
+            from huggingface_hub import create_repo, upload_folder  # local import
 
             create_repo(
                 self.cfg.output_hub_repo,
@@ -701,9 +861,9 @@ class Trainer:
         if dist.is_initialized():
             dist.barrier()
 
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     # Sample logging
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     def _maybe_log_samples(self, prompts: List[str], outs: List[str], rewards: List[float]) -> None:
         """Log sample completions to file and console on rank 0."""
         if self.rank != 0:
@@ -727,9 +887,9 @@ class Trainer:
                     rec["reward"],
                 )
 
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     # Training loop
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     async def train(self) -> None:
         """Perform the training loop."""
         if self.vllm is not None:
@@ -742,11 +902,9 @@ class Trainer:
                 stats = await self._step()
                 # Logging to stdout
                 if self.rank == 0:
-                    tqdm.write(
+                    logging.info(
                         f"Step {it}: loss={stats['loss']:.4f}, avg_reward={stats['avg_reward']:.4f}, parse_acc={stats['parse_acc']:.4f}"
                     )
-                    if it % self.cfg.log_interval == 0:
-                        logging.info(json.dumps(stats))
                 # Early stopping
                 stop = False
                 if (
@@ -765,7 +923,7 @@ class Trainer:
                             f"[early-stop] parse_acc {current_acc:.4f} for {consecutive_hits} consecutive steps. Stopping."
                         )
                         stop = True
-                # Synchronize stop flag
+                # Synchronise stop flag across ranks
                 stop = self._sync_bool(stop)
                 if stop:
                     break
@@ -777,18 +935,18 @@ class Trainer:
                 ckdir.mkdir(parents=True, exist_ok=True)
                 try:
                     if self.fsdp is None:
-                        # move to CPU and cast weights
                         cpu_model = self.core.to("cpu").float()
                         torch.save(cpu_model.state_dict(), ckdir / "fatal_ckpt_ddp.pt")
                     else:
                         fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-                        with FSDP.state_dict_type(self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg):
+                        with FSDP.state_dict_type(
+                            self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg
+                        ):
                             sd = {k: v.to("cpu") for k, v in self.fsdp.state_dict().items()}
                         torch.save(sd, ckdir / "fatal_ckpt_fsdp.pt")
                 except Exception as e:
                     logging.error(f"Failed to save fatal checkpoint: {e}")
                 logging.error(traceback.format_exc())
-
             # Bring all ranks down cleanly
             with contextlib.suppress(Exception):
                 if dist.is_initialized():
@@ -796,11 +954,12 @@ class Trainer:
             raise
         finally:
             if self.rank == 0:
-                # Push model to hub and plot metrics if training finished normally
+                # Push model to hub if training finished normally
                 self._push_to_hub()
+                # Optionally plot metrics
                 try:
-                    import pandas as pd
-                    import matplotlib.pyplot as plt
+                    import pandas as pd  # type: ignore
+                    import matplotlib.pyplot as plt  # type: ignore
 
                     df = pd.read_csv(self.cfg.csv_path)
                     plt.plot(df["step"], df["avg_reward"], label="avg_reward")
@@ -819,14 +978,14 @@ class Trainer:
                 with contextlib.suppress(Exception):
                     dist.destroy_process_group()
 
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     # Single training step
-    # -----------------------------------------------------------------------
-    async def _step(self):
+    # ---------------------------------------------------------------------
+    async def _step(self) -> Dict[str, Any]:
         """Perform a single training step and return logging stats."""
         # Get batch on rank 0 and broadcast to others
         if self.rank == 0:
-            prompts, meta = self.env.next_batch()
+            prompts, meta = self.env.next_batch() if self.env is not None else ([], [])
         else:
             prompts, meta = [], []
         prompts = self._bcast(prompts)
@@ -850,7 +1009,7 @@ class Trainer:
             outs = await self.vllm.generate(tp)
         # Rewards
         if self.rank == 0:
-            rewards = [r for r, _ in self.env.apply_actions(meta * K, outs)]
+            rewards = [r for r, _ in self.env.apply_actions(meta * K, outs)] if self.env else []
         else:
             rewards = []
         rewards = self._bcast(rewards)
@@ -860,13 +1019,13 @@ class Trainer:
         # Loss
         lp = self._logprob_sums(tp, outs)
         loss = self._grpo_loss(
-        lp,
-        torch.tensor(rewards, device=lp.device),
-        group_ids,
-        loss_type=("dr_grpo" if self.cfg.loss_type == "dr_grpo" else "grpo"),
-        scale_rewards=self.cfg.scale_rewards,
-            )
-        # Optimizer step
+            lp,
+            torch.tensor(rewards, device=lp.device, dtype=lp.dtype),
+            group_ids,
+            loss_type=("dr_grpo" if self.cfg.loss_type.lower() == "dr_grpo" else "grpo"),
+            scale_rewards=self.cfg.scale_rewards,
+        )
+        # Optimiser step
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.params(), self.cfg.gradient_clip_norm)
@@ -880,7 +1039,7 @@ class Trainer:
         rew_avg = sum(rewards) / max(1, len(rewards))
         delta = self._current_delta()
         parse_acc = 0.0
-        if self.rank == 0:
+        if self.rank == 0 and self.env is not None:
             parse_acc = self.env.get_batch_stats()["parsing_accuracy"]
         self.logger.log([self.step, loss_val, rew_avg, parse_acc, delta])
         return {
@@ -891,74 +1050,54 @@ class Trainer:
             "weight_delta": delta,
         }
 
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     # HF-only generation path
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     def _generate_with_hf(self, prompts: List[str]) -> List[str]:
+        """Generate completions using the HuggingFace model directly."""
+        # On non‑zero ranks, wait for rank 0 to finish
         if self.rank != 0:
-            # ensure ordering on non‑zero ranks
             if dist.is_initialized():
                 dist.barrier()
             return self._bcast_obj([], src=0)
-
         self.net.eval()
-        # Use conservative generation settings to avoid pathological distributions
-        gen_cfg = GenerationConfig(
-            do_sample=True,
+        # Build conservative generation config using parameters from cfg
+        gen_cfg = build_generation_config(
             temperature=self.cfg.temperature,
             top_p=self.cfg.top_p,
-            top_k=64,                # limit sampling to the top‑64 tokens
-            min_p=1e-4,              # discard tokens whose prob is < min_p * max_prob
-            repetition_penalty=1.1,  # discourage repetition
+            top_k=self.cfg.top_k,
+            min_p=self.cfg.min_p,
+            repetition_penalty=self.cfg.repetition_penalty,
             max_new_tokens=self.cfg.max_tokens,
             pad_token_id=self.tok.pad_token_id,
             eos_token_id=self.tok.eos_token_id,
         )
-
         outs: List[str] = []
         device = next(self.params()).device
         with torch.no_grad():
             for p in prompts:
                 enc = self.tok(p, return_tensors="pt").to(device)
-                try:
-                    out_ids = self.core.generate(
-                        **enc,
-                        generation_config=gen_cfg,
-                        synced_gpus=False
-                    )
-                except RuntimeError as e:
-                    # If sampling fails, fall back to greedy decoding
-                    logging.error(f"[rank {self.rank}] generate() failed: {e}")
-                    logging.error("Retrying with greedy decoding to skip NaN/neg probs.")
-                    out_ids = self.core.generate(
-                        **enc,
-                        do_sample=False,
-                        max_new_tokens=self.cfg.max_tokens,
-                        pad_token_id=self.tok.pad_token_id,
-                        eos_token_id=self.tok.eos_token_id,
-                        synced_gpus=False,
-                    )
-
-                # Decode the newly generated portion
+                # Use generate_with_retry to handle NaN/inf or invalid distributions
+                out_ids = generate_with_retry(self.core, enc, gen_cfg)
+                # Decode only the new tokens
                 text = self.tok.decode(
-                    out_ids[0][enc["input_ids"].shape[1]:],
-                    skip_special_tokens=False
+                    out_ids[0][enc["input_ids"].shape[1] :],
+                    skip_special_tokens=False,
                 )
                 text = _clip_think_block(text, self.cfg.max_think_tokens)
                 outs.append(text)
-
         self.net.train()
         if dist.is_initialized():
             dist.barrier()
         return self._bcast_obj(outs, src=0)
 
-
-
-    # -----------------------------------------------------------------------
-    # Weight synchronization for vLLM
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Weight synchronisation for vLLM
+    # ---------------------------------------------------------------------
     async def _sync_weights(self) -> None:
-        """Synchronize weights from FSDP to vLLM."""
+        """Synchronise weights from FSDP to vLLM."""
+        if self.vllm is None or self.fsdp is None:
+            return
         mode = self.cfg.fsdp_config.sync_state.upper()
         await self.vllm.sleep()
         if dist.is_initialized():
@@ -985,27 +1124,29 @@ class Trainer:
         if dist.is_initialized():
             dist.barrier()
 
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     # Broadcast helpers
-    # -----------------------------------------------------------------------
+    # ---------------------------------------------------------------------
     def _bcast(self, obj: Any, src: int = 0) -> Any:
-        buf = [obj] if self.rank == src else [None]
+        buf: List[Any] = [obj] if self.rank == src else [None]
         if dist.is_initialized():
             dist.broadcast_object_list(buf, src=src)
         return buf[0]
 
     def _bcast_obj(self, obj: Any, src: int = 0) -> Any:
-        buf = [obj] if self.rank == src else [None]
+        buf: List[Any] = [obj] if self.rank == src else [None]
         if dist.is_initialized():
             dist.broadcast_object_list(buf, src=src)
         return buf[0]
-
 
     def _mean(self, x: float) -> float:
         t = torch.tensor([x], device=f"cuda:{self.rank}")
         dist.all_reduce(t)
         return (t / self.world).item()
 
+    # ---------------------------------------------------------------------
+    # Log probability sums
+    # ---------------------------------------------------------------------
     def _logprob_sums(self, prompts: List[str], completions: List[str]) -> torch.Tensor:
         device = next(self.params()).device
         maxlen = self.cfg.vllm_config.max_model_len
@@ -1018,14 +1159,12 @@ class Trainer:
             max_length=maxlen,
             return_tensors="pt",
         ).to(device)
-
         logits = self.net(**enc).logits.float()
         # Replace NaNs or Infs with a large negative value
         bad = ~torch.isfinite(logits)
         if bad.any():
             logits = torch.where(bad, torch.full_like(logits, -1e9), logits)
-
-        res = []
+        res: List[torch.Tensor] = []
         for i, pl in enumerate(plens):
             start = max(pl - 1, 0)
             lp_slice = logits[i, start:-1]
@@ -1039,54 +1178,60 @@ class Trainer:
             res.append(token_ll.sum())
         return torch.stack(res)
 
-
-
-    def _grpo_loss(self, lp: torch.Tensor, rw: torch.Tensor,
-               gid: torch.Tensor, loss_type: str = "grpo",
-               scale_rewards: bool = True) -> torch.Tensor:
-        """
-        Compute the GRPO/Dr.GRPO loss.
+    # ---------------------------------------------------------------------
+    # GRPO loss
+    # ---------------------------------------------------------------------
+    def _grpo_loss(
+        self,
+        lp: torch.Tensor,
+        rw: torch.Tensor,
+        gid: torch.Tensor,
+        *,
+        loss_type: str = "grpo",
+        scale_rewards: bool = True,
+    ) -> torch.Tensor:
+        """Compute the GRPO/Dr.GRPO loss.
 
         Args:
             lp: log‑probability sums for each completion.
             rw: rewards tensor.
             gid: tensor assigning each completion to a prompt (group).
             loss_type: "grpo" for sequence‑length normalisation or
-                    "dr_grpo" to divide by a constant (max completion length).
+                "dr_grpo" to divide by a constant (max completion length).
             scale_rewards: if True, divide the advantages by the std. deviation.
+
+        Returns:
+            The scalar loss tensor.
         """
         device = lp.device
-        adv = torch.zeros_like(rw, device=device)
+        adv = torch.zeros_like(rw, device=device, dtype=lp.dtype)
         # Compute group‑wise advantages
         for g in torch.unique(gid):
-            m = (gid == g)
+            m = gid == g
             rewards_g = rw[m]
             mean = rewards_g.mean()
             std = rewards_g.std() if scale_rewards else 1.0
             std = std if std > 0 else 1.0
             adv[m] = (rewards_g - mean) / std
-
         # Optionally normalise by maximum length (Dr. GRPO)
         if loss_type == "dr_grpo":
             max_len = max(1, self.cfg.max_tokens)
             return -(adv * lp / max_len).mean()
-
         return -(adv * lp).mean()
 
 
-
-###############################################################################
-# Command‑line interface
-###############################################################################
+# ----------------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------------
 
 async def _amain() -> None:
     import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True)
-    ap.add_argument("--log-level", default="INFO")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--log-level", default="INFO")
+    args = parser.parse_args()
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
+        level=getattr(logging, args.log_level.upper()),
         format="%(asctime)s %(levelname)s %(message)s",
     )
     cfg = DrGRPOConfig.from_yaml(args.config)
