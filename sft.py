@@ -1,6 +1,6 @@
 """
 Completion-only SFT with LoRA + push-to-hub, using TRL's SFTConfig/SFTTrainer.
-torchrun --nproc_per_node=2 sft.py training_configs/nemotron_32b.json
+torchrun --nproc_per_node=2 sft.py training_configs/gemma_4bit.json
 """
 
 from __future__ import annotations
@@ -172,8 +172,7 @@ def load_model_and_tokenizer(cfg):
         mdl = get_peft_model(mdl, lcfg)
         mdl.print_trainable_parameters()
 
-    if cfg.get("gradient_checkpointing", True):
-        mdl.gradient_checkpointing_enable()
+    
 
     return mdl, tok
 
@@ -244,10 +243,12 @@ def train(cfg):
         eval_steps=cfg.get("eval_steps"),
         bf16=torch.cuda.is_available(),
         seed=cfg.get("seed", 42),
-        ddp_find_unused_parameters=False,
+        ddp_find_unused_parameters=True,
         max_seq_length=cfg["max_seq_length"],
         report_to=cfg.get("report_to", None),
         packing=False,
+    
+        
     )
     training_args = SFTConfig(**cfg_args)
 
