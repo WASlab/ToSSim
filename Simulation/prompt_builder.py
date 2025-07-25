@@ -25,12 +25,12 @@ import json
 
 from .enums import Time, Phase, RoleName
 from .roles import create_role_from_name
-
+from Simulation.chat_template_patch import format_chat
 if TYPE_CHECKING:
     from .game import Game
     from .player import Player
     from .roles import Role
-
+    
 # Load phase metadata for dynamic phase instructions
 PHASES_JSON_PATH = Path(__file__).parent / "tools" / "phases.json"
 with open(PHASES_JSON_PATH, "r", encoding="utf-8") as f:
@@ -1228,16 +1228,25 @@ except Exception:
 # ----------------------------
 @dataclass
 class TrainingPrompt:
-    text: str
-    messages: List[Dict[str, str]]
-    input_ids: Optional["torch.Tensor"] = None
+    """Everything the caller might want back from the builder."""
+
+    text: str  # the full prompt string fed to the model
+    messages: List[Dict[str, str]]  # standard chat‑message dicts
+    input_ids: Optional["torch.Tensor"] = None  # populated only if return_tensors=True
     attention_mask: Optional["torch.Tensor"] = None
-    meta: Dict[str, Any] = None
+    meta: Dict[str, Any] = None  # arbitrary extras (phase, role, …)
+
+    # 🪄 When someone does `str(prompt_obj)` we give them the prompt text –
+    # this avoids the classic "expected str instance, ChatMessage found" crash.
+    def __str__(self) -> str:  # noqa: Dunder
+        return self.text
 
 
-# ----------------------------
-# Full, self-contained builder
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Main builder
+# ---------------------------------------------------------------------------
+
+
 def build_training_prompt(
     game: Any,
     actor: Any,
@@ -1249,781 +1258,158 @@ def build_training_prompt(
     return_tensors: bool = False,
     tools_dir: Optional[Union[str, Path]] = None,
 ) -> TrainingPrompt:
-    """
-    Full, self-contained ToSSim GRPO training prompt builder.
-
-    - No dependency on your other prompt-builder helpers.
-    - Reconstructs the entire large prompt (system + user).
-    - Optionally tokenizes using a HF tokenizer (apply_chat_template if available).
+    """Return a **fully formatted** prompt ready for RL / supervised training.
 
     Parameters
     ----------
-    game, actor : your usual Game / Player objects (duck-typed).
-    tokenizer   : optional HF tokenizer to return tensors.
-    model_name  : used to switch to Gemma chat markers if it contains "gemma".
-    tokens_remaining : passed through for display.
-    device      : torch device when return_tensors=True.
-    return_tensors   : if True and tokenizer is provided, return (input_ids, attention_mask).
-    tools_dir   : optional override for where to read tools/*.json. Defaults to module_dir/tools.
+    game, actor
+        Your usual objects (duck‑typed; only a few attrs are accessed).
+    tokenizer
+        Optional HF tokenizer – if provided with *return_tensors=True* we also
+        return *input_ids*/*attention_mask*.
+    model_name
+        If it contains "gemma" we switch to Gemma’s <start_of_turn> markers.
+    tokens_remaining
+        Shown to the agent (cosmetic only).
+    device
+        Torch device string when returning tensors. Defaults to "cpu".
+    return_tensors
+        Whether to run the tokenizer.
+    tools_dir
+        Optional *tools/*.json folder location; leave None to skip tool intros.
     """
 
-    # ---------------------------
-    # Tiny utilities
-    # ---------------------------
-    def _safe(obj, name, default=None):
-        return getattr(obj, name, default)
-
-    def _name(x):
-        if hasattr(x, "name"):
-            return x.name
-        return str(x)
-
-    def _role_name(r):
-        n = _safe(r, "name", None)
-        if hasattr(n, "value"):
-            return n.value
-        return str(n)
-
-    def _phase_name(ph):
-        return _name(ph)
-
-    def _time_name(tm):
-        return _name(tm)
-
-    def _string_in_enum(obj, attr):
-        v = _safe(obj, attr, None)
-        if hasattr(v, "name"):
-            return v.name
-        return str(v)
-
-    # ---------------------------
-    # Static, *full* prompt chunks
-    # ---------------------------
-    FULL_PHASE_RULES = """PHASE RULES (PLAIN TEXT, XML‑FRIENDLY, ACTION‑DRIVEN)
-
-Day phases:
-
-• Discussion
-  – All living players may <speak>, <whisper target="Player">, or </wait>.
-  – No voting yet; wills and notebooks may be viewed or edited.
-  – Dead chat is hidden from the living.
-
-• Nomination
-  – Use <vote>Player</vote> to place an up‑vote. A simple majority sends that player to trial.
-  – Public chat and whispers stay open; <vote>guilty</vote> / <vote>innocent</vote> *not* allowed here.
-
-• Defense
-  – Only the accused may <speak>. Others may still <whisper> or </wait>.
-  – No further votes or tool use unless the tool is explicitly Day‑unrestricted.
-
-• Judgement
-  – All living players except the accused must cast <vote>guilty</vote>,
-    <vote>innocent</vote>, or <vote>abstain</vote>.
-  - You can change your vote by selecting another option.
-  – Public <speak> disabled; whispers (day‑only) remain legal; wills still editable.
-
-• Last Words
-  – The condemned alone may <speak> a single closing message.
-  – No other public messages or whispers. Wills cannot be changed in this window.
-
-• Pre‑Night  
-  – A brief twilight (small token budget) before Night begins.  
-  – **All living players** may <speak>, <whisper target="Player">, or </wait>.  
-  – No voting, no night abilities, but wills/notes can still be viewed or edited.  
-  – Use this window to coordinate last‑second plans before actions lock in.
-
-Night phase:
-
-• Night
-  – Roles with night abilities may act (e.g., <heal>, <protect>, <shoot>).
-  – Public <speak> disabled. Only faction chats (Mafia, Coven, etc.) and the Jailor’s cell allow talking.
-  – <whisper> is **not** available at night.
-  – Living players may still view or update their will/notebook before committing an action.
-
-Game end
---------
-
-• Victory screen follows when one faction fulfils its win condition.
-• No further actions are accepted once the result is displayed.
-"""
-
-    REAL_TIME_WARNING = """Real-Time Play:
-The game operates in real-time. This means that as you spend time thinking or generating your response, the game continues and other players may act, send messages, or perform actions during this period.
-
-Each time you generate output, any events or changes in the environment that occurred while you were thinking will be injected into your context as new information. The longer your <think> block or your reasoning, the more time will pass in the game, and the more the environment may have changed by the time you are ready to act.
-
-Therefore, you should balance the thoroughness of your reasoning with the need to respond in a timely manner, as excessive delays may cause you to miss important developments or opportunities. This applies to your entire generation time, not just thinking but also speaking for long amounts of time."""
-
-    REASONING_PROTOCOL = (
-        "The following tools/interactions are available to you. Each must be invoked outside of the <think> block, "
-        "AFTER you close </think>. After you act or receive any new info, you must open a new <think> block and reason "
-        "again before your next action. Never chain tools in a single step. Alternate: <think>…</think> → ONE action → wait."
-    )
-
-    # Minimal phase-name → long human label, for Phase Brief & instructions.
-    PHASE_NAME_MAP = {
-        "DISCUSSION": "Discussion",
-        "NOMINATION": "Nomination",
-        "DEFENSE": "Defense",
-        "JUDGEMENT": "Judgement",
-        "LAST_WORDS": "Last Words",
-        "PRE_NIGHT": "Pre-Night",
-        "NIGHT": "Night",
-    }
-
-    # If you want to load phases.json dynamically you can—but stay self-contained:
-    def _phase_brief(game_obj: Any, actor_obj: Any, role_specific_interactions: List[Dict[str, Any]]) -> str:
-        phase_key = PHASE_NAME_MAP.get(_phase_name(_safe(game_obj, "phase")).upper(), None)
-        if not phase_key:
-            return ""
-
-        # You can elaborate this dict to match your phases.json.
-        # Here we inline a representative set; extend as needed.
-        PHASES_DATA: Dict[str, Dict[str, Any]] = {
-            "Discussion": {
-                "description": "Open day chat. No votes to execute yet.",
-                "activities": ["Talk publicly", "Whisper", "Plan strategies", "Update wills"],
-                "mechanics": ["No nomination or judgement votes yet."],
-            },
-            "Nomination": {
-                "description": "Players nominate someone to go to trial.",
-                "activities": ["Public chat", "Whispers", "Nominate with <vote>Player</vote>"],
-                "mechanics": ["Majority sends a player to the stand."],
-            },
-            "Defense": {
-                "description": "Accused player defends; others mostly wait (or whisper).",
-                "activities": ["Accused speaks publicly", "Others whisper or wait"],
-                "mechanics": ["No new nominations."],
-            },
-            "Judgement": {
-                "description": "All must decide the accused's fate.",
-                "activities": ["Vote guilty/innocent/abstain", "Limited whispering"],
-                "mechanics": ["Outcome decides execution."],
-            },
-            "Last Words": {
-                "description": "Condemned player says a final message.",
-                "activities": ["Accused only may speak one last time."],
-                "mechanics": ["No more actions."],
-            },
-            "Pre-Night": {
-                "description": "Brief twilight—last second coordination.",
-                "activities": ["Talk", "Whisper", "Edit wills"],
-                "mechanics": ["No night abilities."],
-            },
-            "Night": {
-                "description": "Night actions occur. Public chat disabled.",
-                "activities": ["Use role abilities if you have them."],
-                "mechanics": ["Factions talk privately (where allowed)."],
-            },
-        }
-
-        info = PHASES_DATA.get(phase_key, {})
-        lines: List[str] = []
-
-        if (desc := info.get("description")):
-            lines.append(f"{phase_key} – {desc}")
-
-        acts = info.get("activities", [])
-        if acts:
-            lines.append("Activities:")
-            lines.extend(f"• {a}" for a in acts)
-
-        mechs = info.get("mechanics", [])
-        if mechs:
-            lines.append("Mechanics:")
-            lines.extend(f"• {m}" for m in mechs)
-
-        # Extra instructions for nomination/judgement
-        if phase_key == "Nomination":
-            lines.append(
-                "\nTo nominate a player for trial, use <vote>PlayerName</vote>. A majority up-vote sends that player to the stand."
-            )
-        elif phase_key == "Judgement":
-            lines.append(
-                "\nVote <vote>guilty</vote>, <vote>innocent</vote>, or <vote>abstain</vote> to decide the fate of the accused."
-            )
-
-        # Role-ability syntaxes currently usable this phase
-        phase_norm = phase_key.lower().replace("-", " ")
-        allowed = []
-        for it in role_specific_interactions:
-            for allowed_phase in it.get("phases_allowed", []):
-                norm = allowed_phase.lower().replace("-", " ")
-                if (
-                    norm == "all phases"
-                    or norm == phase_norm
-                    or (phase_norm == "night" and "night" in norm)
-                ):
-                    allowed.append(it["syntax"])
-                    break
-
-        if allowed:
-            lines.append("Role abilities usable now:")
-            lines.extend(f"• {s}" for s in allowed)
-        return "\n".join(lines)
-
-    # ---------------------------
-    # Tools & interactions (full)
-    # ---------------------------
-    def _discover_tools(role_obj: Any) -> List[Dict[str, Any]]:
-        """
-        Self-contained copy of your ToolSpec discovery.
-        Reads tools/*.json if available; otherwise returns [] (or you can embed defaults).
-        """
-        res: List[Dict[str, Any]] = []
-
-        # 1) try to load from tools_dir
-        base_dir = tools_dir or Path(__file__).parent / "tools"
-        base_path = Path(base_dir)
-        if base_path.exists():
-            for json_file in base_path.glob("*.json"):
-                try:
-                    with open(json_file, "r", encoding="utf-8") as f:
-                        spec = json.load(f)
-                    tool_name = spec.get("name", json_file.stem)
-                    tool_class = spec.get("class", "environment_static")
-                    description = spec.get("description", "")
-                    # syntax defaulting:
-                    if tool_name in {"view_will", "check_will", "view_notebook"}:
-                        syntax = f"</{tool_name}>"
-                    elif tool_name == "notebook":
-                        syntax = f"<{tool_name}>content</{tool_name}>"
-                    elif tool_name == "whisper":
-                        syntax = f'<{tool_name} target="PlayerName">message</{tool_name}>'
-                    else:
-                        syntax = f"<{tool_name}>argument</{tool_name}>"
-                    examples = spec.get("examples", [])
-                    example_input = f"<{tool_name}>example</{tool_name}>" if not examples else str(examples[0].get("input", ""))
-                    example_output = "[Tool result]" if not examples else str(examples[0].get("output", ""))
-                    # Pretty overrides (mirroring your long version)
-                    if tool_name == "view_will":
-                        example_input = "</view_will>"
-                        example_output = '[Your current will: "Investigated Player5 on Night 2, result was Town."]'
-                    elif tool_name in ["roles", "role_details", "get_role_details"]:
-                        example_input = "<roles>Bodyguard</roles>"
-                        example_output = "[Detailed information about the Bodyguard role.]"
-                    elif tool_name == "write_will":
-                        example_input = "<write_will>I healed Player3 on Night 2.</write_will>"
-                        example_output = "[Your will has been updated.]"
-                    elif tool_name == "chat_history":
-                        example_input = "<chat_history>Day1</chat_history>"
-                        example_output = "[Day 1 chat history: ...]"
-                    elif tool_name == "graveyard":
-                        example_input = "<graveyard>John</graveyard>"
-                        example_output = "[John (Mafioso) — died Day 1. Last Will: 'I'm not Mafia.']"
-                    elif tool_name == "notebook":
-                        example_input = "<notebook>Player3 seems suspicious</notebook>"
-                        example_output = "[Note added to notebook. Tokens used: 45/1500]"
-                    elif tool_name == "write_death_note":
-                        example_input = "<write_death_note>The Sheriff knows too much. -SK</write_death_note>"
-                        example_output = "[Death note updated (7/100 tokens).]"
-                    elif tool_name == "jailor_death_note":
-                        example_input = "<jailor_death_note>contradictory</jailor_death_note>"
-                        example_output = "[Execution reason set: Their confession was contradictory.]"
-
-                    res.append(
-                        dict(
-                            name=tool_name,
-                            syntax=syntax,
-                            description=description,
-                            example_input=example_input,
-                            example_output=example_output,
-                            tool_class=tool_class,
-                        )
-                    )
-                except Exception:
-                    # swallow tool-parse errors
-                    pass
-
-        # 2) Filter by role (death notes etc.) if we loaded any
-        if role_obj and res:
-            role_string = _role_name(role_obj)
-            death_note_roles = {
-                "GODFATHER", "MAFIOSO", "SERIAL KILLER", "ARSONIST", "WEREWOLF",
-                "JUGGERNAUT", "COVEN LEADER", "HEX MASTER", "NECROMANCER",
-                "MEDUSA", "POISONER", "AMBUSHER"
-            }
-            filtered = []
-            for t in res:
-                if t["name"] == "write_death_note":
-                    if role_string.upper() in death_note_roles:
-                        filtered.append(t)
-                elif t["name"] == "jailor_death_note":
-                    if role_string.upper() == "JAILOR":
-                        filtered.append(t)
-                else:
-                    filtered.append(t)
-            res = filtered
-
-        # 3) Always append <help> fallback meta-tool
-        res.append(
-            dict(
-                name="help",
-                syntax="<help>ToolName</help>",
-                description="Returns all valid arguments for the tool and what they mean.",
-                example_input="<help>attributes</help>",
-                example_output="[Valid attributes: BasicDefense, PowerfulDefense, ...]",
-                tool_class="environment_static",
-            )
-        )
-        return res
-
-    def _role_specific_interactions(role_obj: Any) -> List[Dict[str, Any]]:
-        """
-        Self-contained copy of your large role → interactions switch.
-        Returns a list of dicts: {name, syntax, description, example_input, example_output, phases_allowed}
-        """
-        out: List[Dict[str, Any]] = []
-        rname = _role_name(role_obj)
-
-        def add(name, syntax, description, example_input, example_output, phases):
-            out.append(dict(
-                name=name,
-                syntax=syntax,
-                description=description,
-                example_input=example_input,
-                example_output=example_output,
-                phases_allowed=phases,
-            ))
-
-        # Base interactions
-        add(
-            "speak",
-            "<speak>message</speak>",
-            "Public message visible to everyone.",
-            "<speak>I am not the Mafia, please do not vote for me.</speak>",
-            "[Your message has been sent to the public channel.]",
-            ["Day Discussion", "Nomination", "Defense (if on trial only)", "Last Words (if being executed only)"]
-        )
-        add(
-            "whisper",
-            '<whisper target="PlayerName">message</whisper>',
-            "Private message to a single player.",
-            '<whisper target="Sarah">Trust me, I am on your side.</whisper>',
-            "[Your message has been privately delivered to Sarah.]",
-            ["Day Discussion", "Nomination", "Defense", "Judgement"]
-        )
-        add(
-            "vote",
-            "<vote>PlayerName</vote>",
-            "Nomination phase: nominate a player. Judgement phase: <vote>guilty</vote>/<vote>innocent</vote>/<vote>abstain</vote>.",
-            "<vote>John</vote> or <vote>guilty</vote>",
-            "[Your vote has been recorded.]",
-            ["Nomination", "Judgement"]
-        )
-        add(
-            "wait",
-            "<wait></wait>",
-            "Do nothing this turn.",
-            "</wait>",
-            "[No action taken; you are waiting.]",
-            ["All phases"]
-        )
-
-        # (Paste in the full mapping from your existing code — shortened here for brevity.)
-        # Town Investigative
-        if rname == "Sheriff":
-            add("investigate", "<investigate>Target</investigate>",
-                "NIGHT ABILITY: Interrogate a player for suspicious activity. Returns 'Suspicious' or 'Not Suspicious'.",
-                "<investigate>Target</investigate>", "[You will investigate Target tonight.]", ["Night"])
-
-        if rname == "Investigator":
-            add("investigate", "<investigate>Target</investigate>",
-                "NIGHT ABILITY: Investigate a player to learn their possible roles.",
-                "<investigate>Target</investigate>", "[You will investigate Target tonight.]", ["Night"])
-
-        if rname == "Lookout":
-            add("watch", "<watch>Target</watch>",
-                "NIGHT ABILITY: Watch a player to see who visits them.",
-                "<watch>Target</watch>", "[You will watch Target tonight.]", ["Night"])
-
-        if rname == "Spy":
-            add("bug", "<bug>Target</bug>",
-                "NIGHT ABILITY: Bug a player to see who visits them and Mafia/Coven visits.",
-                "<bug>Target</bug>", "[You will bug Target tonight.]", ["Night"])
-
-        if rname == "Tracker":
-            add("track", "<track>Target</track>",
-                "NIGHT ABILITY: Track a player to see who they visit.",
-                "<track>Target</track>", "[You will track Target tonight.]", ["Night"])
-
-        if rname == "Psychic":
-            add("vision", "<vision></vision>",
-                "NIGHT ABILITY: Receive a vision of suspicious players (randomized).",
-                "<vision></vision>", "[You receive a vision of three players.]", ["Night"])
-
-        # Town Protective
-        if rname == "Doctor":
-            add("heal", "<heal>Target</heal>",
-                "NIGHT ABILITY: Heal a player, preventing their death. Self-heal once per game.",
-                "<heal>Target</heal>", "[You are healing Target tonight.]", ["Night"])
-
-        if rname == "Bodyguard":
-            add("protect", "<protect>Target</protect>",
-                "NIGHT ABILITY: Protect a player, counterattacking. You die in their place.",
-                "<protect>Target</protect>", "[You are protecting Target tonight.]", ["Night"])
-
-        if rname == "Crusader":
-            add("protect", "<protect>Target</protect>",
-                "NIGHT ABILITY: Protect a player, killing one non-Town visitor.",
-                "<protect>Target</protect>", "[You are protecting Target tonight.]", ["Night"])
-
-        if rname == "Trapper":
-            add("trap", "<trap>Target</trap>",
-                "NIGHT ABILITY: Place a trap on a player's house to protect them.",
-                "<trap>Target</trap>", "[You are placing a trap at Target's house tonight.]", ["Night"])
-
-        # Town Killing
-        if rname == "Jailor":
-            add("jail", "<jail>Target</jail>",
-                "DAY ABILITY: Select a player to jail tonight (if executions remain).",
-                "<jail>Target</jail>", "[You have jailed Target for tonight.]", ["Discussion", "Voting"])
-            add("execute", "<execute></execute>",
-                "NIGHT ABILITY: Execute the jailed target (max 3). Lose all if you kill Town.",
-                "<execute></execute>", "[You will execute the jailed player.]", ["Night"])
-
-        if rname == "Vigilante":
-            add("shoot", "<shoot>Target</shoot>",
-                "NIGHT ABILITY: Shoot a player (Basic Attack). Cannot shoot Night 1. Three bullets max.",
-                "<shoot>Target</shoot>", "[You will shoot Target tonight.]", ["Night"])
-
-        if rname == "Veteran":
-            add("alert", "<alert></alert>",
-                "NIGHT ABILITY: Go on alert (Powerful Attack on visitors, Basic Defense). Three alerts total.",
-                "<alert></alert>", "[You are going on alert tonight.]", ["Night"])
-
-        if rname == "Vampire Hunter":
-            add("check", "<check>Target</check>",
-                "NIGHT ABILITY: Check a player for vampirism. Kills vampires.",
-                "<check>Target</check>", "[You will check Target tonight.]", ["Night"])
-
-        # (…carry on for every role exactly as your long mapping shows…)
-        # Mafia, Coven, Neutrals, etc. — omitted here to keep the snippet readable.
-        # COPY your entire get_role_specific_interactions body here, translating each to the add() helper above.
-
-        return out
-
-    # ---------------------------
-    # Role card (full-ish)
-    # ---------------------------
-    def _build_role_card(role_obj: Any) -> Dict[str, Any]:
-        info = role_obj.get_info() if hasattr(role_obj, "get_info") else {}
-        rname = info.get("name", _role_name(role_obj))
-
-        win_conditions = {
-            "TOWN": "Eliminate all threats to the Town.",
-            "MAFIA": "Kill anyone that will not submit to the Mafia.",
-            "NEUTRAL": "Achieve your specific role objective.",
-            "COVEN": "Kill all who would oppose the Coven.",
-        }
-        faction = info.get("faction", _safe(role_obj, "faction", "Unknown"))
-        faction_str = _safe(faction, "name", str(faction))
-        win_cond = win_conditions.get(faction_str, "Achieve your role's specific objective.")
-
-        passive_abilities: List[str] = []
-        active_abilities: List[str] = []
-        # (Optional) expand by role if desired (like your original). Keeping short here for space:
-        # Example:
-        if rname == "Doctor":
-            active_abilities = ["NIGHT ABILITY: <heal>player</heal> – Heal one person (Powerful Defense). Self-heal once."]
-            passive_abilities = ["Defense: None", "Visit Type: Non-harmful"]
-        elif rname == "Sheriff":
-            active_abilities = ["NIGHT ABILITY: <investigate>player</investigate> – Returns 'Suspicious' or 'Not Suspicious'."]
-            passive_abilities = ["Defense: None", "Visit Type: Non-harmful"]
-        # (…port the rest of your detailed mapping if you want 1:1 role cards…)
-
-        return dict(
-            name=rname,
-            faction=faction_str,
-            alignment=info.get("alignment", _safe(role_obj, "alignment", "Unknown")),
-            win_condition=win_cond,
-            passive_abilities=passive_abilities,
-            active_abilities=active_abilities,
-            attack=info.get("attack", _safe(role_obj, "attack", "None")),
-            defense=info.get("defense", _safe(role_obj, "defense", "None")),
-            visit_type=_safe(role_obj, "visit_type", "Non-harmful"),
-            immunities=_safe(role_obj, "immunities", []),
-            unique=info.get("is_unique", _safe(role_obj, "is_unique", False)),
-        )
-
-    # ---------------------------
-    # 1) Collect dynamic data
-    # ---------------------------
-    phase_str = _phase_name(_safe(game, "phase"))
-    day_num = _safe(game, "day", 1)
-    time_str = _time_name(_safe(game, "time"))
-
-    # Game mode & role list
-    game_mode = None
-    cfg = _safe(game, "config", None)
-    if cfg:
-        game_mode = getattr(cfg, "game_mode", None) or getattr(cfg, "mode", None)
-    role_list = getattr(cfg, "role_list", None) if cfg else None
-
-    # Roster (expose evil teammates)
-    actor_faction = _string_in_enum(_safe(actor, "role", None), "faction")
-    alive_lines: List[str] = []
-    for p in sorted(_safe(game, "players", []), key=lambda x: _safe(x, "id", 0)):
-        if _safe(p, "is_alive", True):
-            line = f"- {p.name}"
-            pfaction = _string_in_enum(_safe(p, "role", None), "faction")
-            if actor_faction and pfaction == actor_faction:
-                line += f" ({_role_name(_safe(p, 'role', None))})"
-            # nomination counts
-            try:
-                if phase_str.upper() == "NOMINATION" and hasattr(game, "nomination_counts"):
-                    count = game.nomination_counts().get(p, 0)
-                    if count > 0:
-                        line += f" [{count}]"
-            except Exception:
-                pass
-            alive_lines.append(line)
-
-    # Graveyard
-    grave_lines: List[str] = []
-    for d in _safe(game, "graveyard", []):
-        rn = _role_name(_safe(d, "role", None))
-        if getattr(d, "was_cleaned", False) and getattr(d, "cleaned_by", None) != actor:
-            info = "(Cleaned)"
-        elif getattr(d, "was_stoned", False):
-            info = "(Stoned)"
-        else:
-            info = f"({rn})"
-        grave_lines.append(f"- {d.name} {info}")
-
-    # Visible chat
+    # ---------------------------------------------------------------------
+    # Tiny helpers – keep them here so we stay 100 % standalone.
+    # ---------------------------------------------------------------------
+
+    def _getattr(o: Any, name: str, default: Any = ""):
+        return getattr(o, name, default)
+
+    def _enum_to_str(val: Any) -> str:
+        if hasattr(val, "name"):
+            return val.name
+        if hasattr(val, "value"):
+            return str(val.value)
+        return str(val)
+
+    # ------------------------------------------------------------------
+    # 1⃣  Collect dynamic data from *game* / *actor*
+    # ------------------------------------------------------------------
+
+    phase = _enum_to_str(_getattr(game, "phase"))
+    day = _getattr(game, "day", 1)
+    time_of_day = _enum_to_str(_getattr(game, "time"))
+
+    role_name = _enum_to_str(_getattr(_getattr(actor, "role", None), "name"))
+    faction = _enum_to_str(_getattr(_getattr(actor, "role", None), "faction"))
+
+    # Simplified live roster list – evil teammates are revealed to each other.
+    roster_lines: List[str] = []
+    for p in sorted(_getattr(game, "players", []), key=lambda x: _getattr(x, "id", 0)):
+        if not _getattr(p, "is_alive", True):
+            continue
+        line = f"- {p.name}"
+        if faction and _enum_to_str(_getattr(_getattr(p, "role", None), "faction")) == faction:
+            line += f" ({_enum_to_str(_getattr(_getattr(p, 'role', None), 'name'))})"
+        roster_lines.append(line)
+
+    # Simple graveyard list
+    grave_lines = [f"- {d.name} ({_enum_to_str(_getattr(_getattr(d, 'role', None), 'name'))})" for d in _getattr(game, "graveyard", [])]
+
+    # Visible chat log (string‑ified)
     chat_log: List[str] = []
-    chat_obj = _safe(game, "chat", None)
-    if chat_obj and hasattr(chat_obj, "get_visible_messages"):
-        visible = chat_obj.get_visible_messages(actor)
-        for m in visible:
-            chat_log.append(str(m))
+    chat = _getattr(game, "chat")
+    if chat and hasattr(chat, "get_visible_messages"):
+        chat_log = [str(m) for m in chat.get_visible_messages(actor)]
 
-    # Notebook
-    notebook_tokens = _safe(actor, "notebook_tokens", 0)
-    notebook_content = _safe(actor, "notebook", "") or "(Empty)"
-    notebook_block = f"----------Notebook {notebook_tokens}/1500 tokens used-------------\n{notebook_content}"
-
-    # Agent’s recent thought/action history
-    recent_thoughts: List[str] = []
-    tha = _safe(actor, "thought_and_action_history", [])
-    if tha:
-        for item in tha[-3:]:
-            recent_thoughts.append(str(item))
-
-    # Verdict tally (if any)
-    verdict_line = ""
-    try:
-        if phase_str.upper() == "JUDGEMENT" and hasattr(game, "current_trial"):
-            on_trial = game.current_trial()
-            gv, iv = game.verdict_tally()
-            verdict_line = f"Player on Trial: {on_trial.name} | Guilty: {gv} | Innocent: {iv}"
-    except Exception:
-        pass
-
-    # Build role card, tools, interactions (FULL)
-    role_card = _build_role_card(_safe(actor, "role", None))
-    tools = _discover_tools(_safe(actor, "role", None))
-    interactions = _role_specific_interactions(_safe(actor, "role", None))
-
-    # ---------------------------
-    # 2) Build FULL system prompt
-    # ---------------------------
-    sections = []
-
-    # 0. Explicit phase, day, time, game mode, role list
-    sections.append(f"Current Phase: {phase_str} | Day: {day_num} | Time: {time_str}")
-    sections.append(f"Game Mode: {game_mode if game_mode else 'Unknown'}")
-    if role_list:
-        sections.append("Role List:\n" + "\n".join(f"- {r}" for r in role_list))
-
-    # 1. Header
-    sections.append(f"Your name is {actor.name}. You are a {role_card['name']}.")
-
-    # 2. Role Card
-    sections.append(
-        f"Role: {role_card['name']}\n"
-        f"Alignment: {role_card['alignment']}\n"
-        f"Faction: {role_card['faction']}\n"
-        f"Win Condition: {role_card['win_condition']}"
-    )
-    if role_card["passive_abilities"]:
-        sections.append("Passive Abilities:\n" + "\n".join(f"• {a}" for a in role_card["passive_abilities"]))
-    if role_card["active_abilities"]:
-        sections.append("Active Abilities:\n" + "\n".join(f"• {a}" for a in role_card["active_abilities"]))
-
-    # 3. Game Overview
-    game_overview = (
-        "You are a highly competitive agent playing Town of Salem. "
-        "The game alternates day (discussion, voting) and night (actions). "
-        "Do NOT mention being an AI. You must use <think>...</think> for private reasoning, "
-        "THEN act outside of it with a single tool/interaction. You are playing to win."
-    )
-    sections.append(game_overview)
-
-    # 4. COMPRESSED STRATEGY SECTIONS (keep your placeholders or inline your full strategies)
-    sections.append(
-        """
-[GENERAL RULES]
-# (Insert your full general rules / tool usage instructions here.)
-
-[TOWN STRATEGY]
-# (Insert detailed Town strategy.)
-
-[EVIL STRATEGY]
-# (Insert detailed Mafia/Coven/Vamp/Vamps etc. strategy.)
-
-[NEUTRAL STRATEGY]
-# (Insert detailed Neutral strategy.)
-
-[PLAY HUMAN]
-# (Persona/human-like play instructions here.)
-""".strip()
+    # Notebook block (always safe strings).
+    notebook_tokens = _getattr(actor, "notebook_tokens", 0)
+    notebook_content = _getattr(actor, "notebook", "") or "(Empty)"
+    notebook_block = (
+        f"----------Notebook {notebook_tokens}/1500 tokens used-------------\n{notebook_content}"
     )
 
-    # 5. Internal Reasoning Protocol
-    sections.append(REASONING_PROTOCOL)
+    # ------------------------------------------------------------------
+    # 2⃣  Build *system* prompt (super‑minimal but complete).
+    # ------------------------------------------------------------------
 
-    # 6. Tools Section
-    tsec = ["The tools available to you are:"]
-    for t in tools:
-        # little patching for alignment/attributes, like your long prompt
-        if t["name"] == "alignment":
-            t["description"] = (
-                "Returns the alignment for a ROLE NAME, not a player. Example: <alignment>Investigator</alignment>."
-            )
-            t["example_input"] = "<alignment>Investigator</alignment>"
-            t["example_output"] = "[Alignment: Town Investigative]"
-        elif t["name"] == "attributes":
-            t["description"] = (
-                "Returns attribute definitions (attack, defense, immunities, etc.) of a ROLE NAME."
-            )
-            t["example_input"] = "<attributes>Bodyguard</attributes>"
-            t["example_output"] = "[Attributes: Basic Defense, Non-harmful Visit, etc.]"
+    system_prompt = (
+        f"Current Phase: {phase} | Day: {day} | Time: {time_of_day}\n"
+        f"Your name is {actor.name}. You are a {role_name}.\n"
+        f"Faction: {faction}\n"
+        "Use <think>…</think> for private reasoning, then ONE tool/interaction outside."
+    )
 
-        tsec.append(f"\nTool: {t['syntax']}")
-        tsec.append(f"Description: {t['description']}")
-        tsec.append(f"Example input: {t['example_input']}")
-        tsec.append(f"Example output: {t['example_output']}")
-    sections.append("\n".join(tsec))
+    # ------------------------------------------------------------------
+    # 3⃣  Build *user* prompt – what the agent sees this turn.
+    # ------------------------------------------------------------------
 
-    # 7. Interactions
-    isec = ["The interactions available to you are:"]
-    for it in interactions:
-        isec.append(f"\nInteraction: {it['syntax']}")
-        isec.append(f"Description: {it['description']}")
-        isec.append(f"Example input: {it['example_input']}")
-        isec.append(f"Example output: {it['example_output']}")
-    sections.append("\n".join(isec))
+    token_disp = "Unlimited" if tokens_remaining is None else str(tokens_remaining)
 
-    # 8. Phase Rules
-    sections.append(FULL_PHASE_RULES)
+    user_sections = [
+        f"Phase: {time_of_day} {day} – {phase} (Tokens remaining: {token_disp})",
+        "Alive Roster\n" + "\n".join(roster_lines) if roster_lines else "",
+        "Graveyard\n" + "\n".join(grave_lines) if grave_lines else "",
+        "Chat Log\n" + "\n".join(chat_log) if chat_log else "",
+    ]
 
-    # 9. Real-Time Warning
-    sections.append(REAL_TIME_WARNING)
+    # Drop empty strings then join.
+    user_prompt = "\n\n".join(filter(bool, user_sections))
 
-    system_prompt = "\n\n".join(sections)
+    # ------------------------------------------------------------------
+    # 4⃣  Final model‑specific wrapping.
+    # ------------------------------------------------------------------
 
-    # ---------------------------
-    # 3) FULL user prompt
-    # ---------------------------
-    token_str = "Unlimited" if tokens_remaining is None else str(tokens_remaining)
-    user_sections: List[str] = []
+    messages, prompt_text = format_chat(
+    tokenizer,
+    model_name=model_name,
+    system_prompt=system_prompt,
+    user_prompt=user_prompt,
+    observation=notebook_block,
+    add_generation_prompt=True,
+)
+    # ------------------------------------------------------------------
+    # 5⃣  Optional tokenisation.
+    # ------------------------------------------------------------------
 
-    if not _safe(actor, "is_alive", True):
-        user_sections.append("🪦 YOU HAVE DIED 🪦\nYou are a ghost observer. You cannot interact with living players.")
-
-    user_sections.append(f"Phase: {time_str} {day_num} - {phase_str} (Tokens remaining: {token_str})")
-
-    # Role specific interactions for dynamic phase brief
-    phase_brief = _phase_brief(game, actor, interactions)
-    if phase_brief:
-        user_sections.append(phase_brief)
-
-    if verdict_line:
-        user_sections.append(verdict_line)
-
-    if alive_lines:
-        user_sections.append("Alive Roster\n" + "\n".join(alive_lines))
-
-    if grave_lines:
-        user_sections.append("Graveyard\n" + "\n".join(grave_lines))
-
-    if chat_log:
-        user_sections.append("Chat Log\n" + "\n".join(chat_log))
-
-    if _safe(actor, "is_jailed", False):
-        user_sections.append("You have been hauled off to jail!")
-
-    if recent_thoughts:
-        user_sections.append("--- Your Recent Thoughts and Actions ---\n" + "\n".join(recent_thoughts))
-
-    user_prompt = "\n\n".join(user_sections)
-
-    # ---------------------------
-    # 4) Model-specific formatting
-    # ---------------------------
-    is_gemma = "gemma" in model_name.lower()
-
-    if is_gemma:
-        text = (
-            f"<start_of_turn>user\n{system_prompt}<end_of_turn>\n"
-            f"<start_of_turn>observation\n{notebook_block}<end_of_turn>\n"
-            f"<start_of_turn>user\n{user_prompt}<end_of_turn>\n"
-            f"<start_of_turn>model\n"
-        )
-        messages = [
-            {"role": "user", "content": system_prompt},
-            {"role": "observation", "content": notebook_block},
-            {"role": "user", "content": user_prompt},
-        ]
-    else:
-        text = (
-            f"<|system|>\n{system_prompt}</s>\n"
-            f"<|user|>\n{notebook_block}\n\n{user_prompt}</s>\n"
-            f"<|assistant|>\n"
-        )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": notebook_block + "\n\n" + user_prompt},
-        ]
-
-    # ---------------------------
-    # 5) Optional tokenization
-    # ---------------------------
     input_ids = attention_mask = None
     if tokenizer is not None and return_tensors:
         if not TORCH_AVAILABLE:
-            raise RuntimeError("PyTorch is required to return tensors.")
+            raise RuntimeError("return_tensors=True requires PyTorch installed.")
         device = device or "cpu"
 
         if hasattr(tokenizer, "apply_chat_template"):
-            enc = tokenizer.apply_chat_template(
+            encoded = tokenizer.apply_chat_template(
                 messages,
                 tokenize=True,
                 add_generation_prompt=True,
                 return_tensors="pt",
             ).to(device)
-            input_ids = enc
-            if hasattr(enc, "input_ids"):
-                input_ids = enc.input_ids
-                attention_mask = enc.attention_mask
+            # HF 4.40 returns a dict; below keeps BC with previous versions.
+            if isinstance(encoded, dict):
+                input_ids = encoded.get("input_ids")
+                attention_mask = encoded.get("attention_mask")
+            else:  # earlier versions → Tensor directly
+                input_ids = encoded
         else:
-            enc = tokenizer(text, return_tensors="pt").to(device)
-            input_ids = enc["input_ids"]
-            attention_mask = enc["attention_mask"]
+            encoded = tokenizer(prompt_text, return_tensors="pt").to(device)
+            input_ids = encoded["input_ids"]
+            attention_mask = encoded["attention_mask"]
+
+    # ------------------------------------------------------------------
+    # 6⃣  Return the dataclass – `str()` gives .text for free.
+    # ------------------------------------------------------------------
 
     return TrainingPrompt(
-        text=text,
+        text=prompt_text,
         messages=messages,
         input_ids=input_ids,
         attention_mask=attention_mask,
         meta={
-            "phase": phase_str,
-            "day": day_num,
-            "time": time_str,
-            "role": role_card["name"],
-            "faction": role_card["faction"],
-            "alignment": role_card["alignment"],
+            "phase": phase,
+            "day": day,
+            "role": role_name,
+            "faction": faction,
         },
     )

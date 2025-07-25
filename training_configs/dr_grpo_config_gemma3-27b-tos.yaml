@@ -1,19 +1,19 @@
 # ----------------------- core -----------------------
-model_name: "google/gemma-3-27b-it"
+model_name: "google/gemma-3-12b-it"
 
 # training
-learning_rate: 5.0e-5
-min_learning_rate: 4.0e-5
+learning_rate: 5.0e-3
+min_learning_rate: 4.0e-3
 warmup_ticks: 100
 gradient_clip_norm: 1.0
-batch_size: 15
+batch_size: 10
 max_iterations: 5000          # was: max_ticks
 log_interval: 2              # was: log_ticks
 early_stop_parse_rate: 0.99
 early_stop_consecutive_ticks: 1000
 
 # DR‑GRPO
-k_per_prompt: 3               # choose your K; 4 is a good default
+k_per_prompt: 2               # choose your K; 4 is a good default
 beta: 0.0                     # no length penalty
 sync_frequency: 10            # was: sync_every
 
@@ -24,15 +24,15 @@ active_seats_per_game: 1
 # sampling
 temperature: 0.8
 top_p: 0.9
-max_tokens: 96                # was: max_tokens_per_gen
-max_think_tokens: 64
+max_tokens: 32                # was: max_tokens_per_gen
+max_think_tokens: 32
 
 # logging / outputs
-csv_path: "gemma3-27b_tos_training.csv"
+csv_path: "gemma3-12b_tos_training.csv"
 track_weight_deltas: true
 
 # Push-to-Hub (optional — set this if you want auto-publish)
-output_hub_repo: ToSSim/gemma3-27b-tos         # e.g. "your-org/gemma3-27b-drgrpo-tos"
+output_hub_repo: ToSSim/gemma3-12b-tos         # e.g. "your-org/gemma3-27b-drgrpo-tos"
 hub_private: false
 max_shard_size: "10GB"
 
@@ -45,13 +45,13 @@ fsdp_config:
   use_orig_params: true
   offload_full_state_dict_to_cpu: true
   rank0_only_state_dict: true
-  checkpoint_dir: "checkpoints/gemma3-27b-tos"
+  checkpoint_dir: "checkpoints/gemma3-12b-tos"
 
 # ----------------------- vLLM -----------------------
 vllm_config:
   tensor_parallel_size: 1     
   max_num_seqs: 32
-  max_model_len: 32768        
+  max_model_len: 4096       
   gpu_memory_utilization: 0.4
   enforce_eager: true
   disable_log_stats: true
@@ -74,4 +74,5 @@ repetition_penalty: 1.0     # discourage exact repetition (tune as needed)
 
 flash_attention: true
 liger: true
-
+force_single_gpu: true
+single_device: 0
