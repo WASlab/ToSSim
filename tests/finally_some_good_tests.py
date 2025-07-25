@@ -55,7 +55,7 @@ def _visible_gpu_count() -> int:
 class VLLMEngine:
     """Single‑process vLLM wrapper that obeys ToSSim’s InferenceClient API."""
 
-    def __init__(self, model_name: str = "ToSSim/misaligned-gemma-3-27b-it") -> None:
+    def __init__(self, model_name: str = "ToSSim/misaligned-gemma-3-27B-4bit") -> None:
         if LLM is None:
             raise RuntimeError(f"vLLM unavailable: {_vllm_err}")
 
