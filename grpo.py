@@ -76,6 +76,20 @@ try:
     from transformers import BitsAndBytesConfig  # HF >= 4.30
 except Exception:
     BitsAndBytesConfig = None  # type: ignore
+# Try to import Liger kernels if available.
+try:
+    from liger_kernel.transformers import (
+        apply_liger_kernel_to_gemma,
+        apply_liger_kernel_to_gemma2,
+        apply_liger_kernel_to_gemma3_text,
+        apply_liger_kernel_to_llama,
+        apply_liger_kernel_to_mistral,
+        apply_liger_kernel_to_mixtral,
+    )
+    _HAS_LIGER = True
+except Exception:
+    _HAS_LIGER = False
+
 
 try:
     import bitsandbytes as bnb
@@ -171,6 +185,8 @@ class DrGRPOConfig:
     k_per_prompt: int = 4
     beta: float = 0.0
     sync_frequency: int = 100
+    use_flash_attention: bool = True
+    use_liger: bool = True
 
     # visibility / samples
     sample_log_interval: int = 100
@@ -319,7 +335,8 @@ class Trainer:
     def __init__(self, cfg: DrGRPOConfig):
         self.cfg = cfg
         self._init_dist()
-
+        
+            
         # auto turn off vLLM if quantized
         if cfg.quant_mode.lower() in {"4bit", "8bit"}:
             if not cfg.only_transformers:
@@ -384,6 +401,27 @@ class Trainer:
             load_kwargs.update(dict(load_in_8bit=True, device_map={"": self.rank}))
         else:  # BitsAndBytesConfig 4bit
             load_kwargs.update(dict(quantization_config=quant, device_map={"": self.rank}))
+        if self.cfg.use_flash_attention:
+            load_kwargs['attn_implementation'] = 'flash_attention_2'
+        if self.cfg.use_liger and _HAS_LIGER:
+            try:
+                name = self.cfg.model_name.lower()
+                if "gemma-3" in name:
+                    apply_liger_kernel_to_gemma3_text()
+                elif "gemma2" in name:
+                    apply_liger_kernel_to_gemma2()
+                elif "gemma" in name:
+                    apply_liger_kernel_to_gemma()
+                elif "llama" in name:
+                    apply_liger_kernel_to_llama()
+                elif "mistral" in name:
+                    apply_liger_kernel_to_mistral()
+                elif "mixtral" in name:
+                    apply_liger_kernel_to_mixtral()
+            except Exception as e:
+                logging.warning(f"Liger kernel patch failed: {e}")
+        elif self.cfg.use_liger and not _HAS_LIGER:
+                logging.warning("use_liger=True but liger_kernel is not installed.")
 
         base = AutoModelForCausalLM.from_pretrained(self.cfg.model_name, **load_kwargs)
 
@@ -440,6 +478,12 @@ class Trainer:
             prog = (i - warm) / max(1, total - warm)
             return max(minlr / self.cfg.learning_rate, 0.5 * (1 + math.cos(math.pi * prog)))
         return LambdaLR(self.optimizer, decay)
+    
+    def _sync_bool(self, flag: bool) -> bool:
+        t = torch.tensor([1 if flag else 0], dtype=torch.int, device=f"cuda:{self.rank}")
+        # Sum across ranks; any non‑zero means one rank wanted to stop.
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        return t.item() > 0
 
     # ---- weight deltas ----
     def _maybe_track_init_weights(self):
@@ -555,7 +599,7 @@ class Trainer:
                         )
                         stop = True
 
-                stop = self._bcast(stop)
+                stop = self._sync_bool(stop)
                 if stop:
                     break
 
