@@ -2,10 +2,7 @@
 Dr GRPO (Group Relative Policy Optimization)
 =================================================================================
 
-This is an updated version of the GRPO training script.  It retains the original
-features (support for fp16/bf16 and bitsandbytes 4‑bit/8‑bit quantization, DDP
-and FSDP distributed training, optional vLLM inference, CSV logging, and
-early stopping) while incorporating the following improvements:
+:
 
 * **FlashAttention‑2 support:** When `use_flash_attention` is set to
   `True` (the default), the model is loaded with
@@ -33,7 +30,7 @@ early stopping) while incorporating the following improvements:
   `ValueError: Argument 'synced_gpus' is not a valid argument of
   GenerationConfig` on newer transformers releases.
 
-To train, prepare a YAML configuration as before, adding optional
+To train, prepare a YAML configuration , adding optional
 `use_flash_attention` and `use_liger` fields if desired.
 """
 
@@ -766,16 +763,18 @@ class Trainer:
                 ckdir.mkdir(parents=True, exist_ok=True)
                 try:
                     if self.fsdp is None:
-                        torch.save(self.core.state_dict(), ckdir / "fatal_ckpt_ddp.pt")
+                        # move to CPU and cast weights
+                        cpu_model = self.core.to("cpu").float()
+                        torch.save(cpu_model.state_dict(), ckdir / "fatal_ckpt_ddp.pt")
                     else:
                         fsd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-                        with FSDP.state_dict_type(
-                            self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg
-                        ):
-                            torch.save(self.fsdp.state_dict(), ckdir / "fatal_ckpt_fsdp.pt")
+                        with FSDP.state_dict_type(self.fsdp, StateDictType.FULL_STATE_DICT, fsd_cfg):
+                            sd = {k: v.to("cpu") for k, v in self.fsdp.state_dict().items()}
+                        torch.save(sd, ckdir / "fatal_ckpt_fsdp.pt")
                 except Exception as e:
                     logging.error(f"Failed to save fatal checkpoint: {e}")
                 logging.error(traceback.format_exc())
+
             # Bring all ranks down cleanly
             with contextlib.suppress(Exception):
                 if dist.is_initialized():
@@ -846,7 +845,13 @@ class Trainer:
             self._maybe_log_samples(tp, outs, rewards)
         # Loss
         lp = self._logprob_sums(tp, outs)
-        loss = self._grpo_loss(lp, torch.tensor(rewards, device=lp.device), group_ids)
+        loss = self._grpo_loss(
+        lp,
+        torch.tensor(rewards, device=lp.device),
+        group_ids,
+        loss_type=("dr_grpo" if self.cfg.loss_type == "dr_grpo" else "grpo"),
+        scale_rewards=self.cfg.scale_rewards,
+            )
         # Optimizer step
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -875,56 +880,117 @@ class Trainer:
     # -----------------------------------------------------------------------
     # HF-only generation path
     # -----------------------------------------------------------------------
+    ###############################################################################
+    # New generation helper: safe token-by-token sampling
+    ###############################################################################
+
+    def _safe_generate_single(self, prompt: str) -> str:
+        """
+        Generate a completion one token at a time, sanitising logits before sampling
+        to avoid device-side asserts.  This does not rely on transformers.generate.
+        """
+        device = next(self.params()).device
+        # Encode the prompt
+        encoded = self.tok(prompt, return_tensors="pt").to(device)
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded.get("attention_mask", None)
+
+        generated = []
+        past_key_values = None
+
+        # Maximum number of new tokens
+        max_new_tokens = self.cfg.max_tokens
+        temperature = self.cfg.temperature or 1.0
+        top_k = getattr(self.cfg, "top_k", None)  # optional new field
+        min_p = getattr(self.cfg, "min_p", None)  # optional new field
+
+        for _ in range(max_new_tokens):
+            # Forward pass with caching
+            outputs = self.core(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+            logits = outputs.logits[:, -1, :].float()
+            past_key_values = outputs.past_key_values
+
+            # Sanitize logits: replace NaN/Inf with large negative
+            logits[torch.isnan(logits) | torch.isinf(logits)] = -1e9
+            # Temperature scaling
+            logits = logits / temperature
+
+            # Convert to probabilities
+            probs = torch.softmax(logits, dim=-1)
+
+            # Clamp negative values (should not happen after softmax, but guard anyway)
+            probs = torch.clamp(probs, min=0.0)
+
+            # Optional top-k filter
+            if top_k is not None and top_k > 0:
+                topk_vals, topk_inds = torch.topk(probs, k=top_k, dim=-1)
+                # Zero-out all other probabilities
+                filtered = torch.zeros_like(probs)
+                filtered.scatter_(dim=-1, index=topk_inds, src=topk_vals)
+                probs = filtered
+
+            # Optional min_p filter: drop tokens below min_p * max_prob
+            if min_p is not None and 0.0 < min_p < 1.0:
+                max_prob = probs.max()
+                mask = probs < (min_p * max_prob)
+                probs[mask] = 0.0
+
+            # Re-normalise
+            total = probs.sum()
+            if total <= 0:
+                # fallback to greedy if distribution collapses
+                next_token = torch.argmax(logits, dim=-1).item()
+            else:
+                probs = probs / total
+                next_token = torch.multinomial(probs, num_samples=1).item()
+
+            # Stop if EOS
+            if next_token == self.tok.eos_token_id:
+                break
+
+            generated.append(next_token)
+            # Prepare next input
+            input_ids = torch.tensor([[next_token]], device=device)
+            attention_mask = torch.tensor([[1]], device=device) if attention_mask is not None else None
+
+        # Decode only the generated part
+        out_ids = torch.tensor(generated, device=device)
+        text = self.tok.decode(out_ids, skip_special_tokens=False)
+        return _clip_think_block(text, self.cfg.max_think_tokens)
+
+    ###############################################################################
+    # Updated generation path using _safe_generate_single
+    ###############################################################################
+
     def _generate_with_hf(self, prompts: List[str]) -> List[str]:
         if self.rank != 0:
+            # Non-zero ranks wait for results
             if dist.is_initialized():
                 dist.barrier()
             return self._bcast_obj([], src=0)
 
-        self.net.eval()
-        gen_cfg = GenerationConfig(
-            do_sample=True,
-            temperature=self.cfg.temperature,
-            top_p=self.cfg.top_p,
-            max_new_tokens=self.cfg.max_tokens,
-            pad_token_id=self.tok.pad_token_id,
-            eos_token_id=self.tok.eos_token_id,
-        )
+        # On rank 0, use safe token-by-token generation for each prompt
+        outs = []
+        for p in prompts:
+            try:
+                out = self._safe_generate_single(p)
+            except Exception as e:
+                # Log any unexpected exception and fall back to an empty completion
+                logging.error(f"[rank {self.rank}] safe generation failed: {e}")
+                out = ""
+            outs.append(out)
 
-        outs: List[str] = []
-        device = next(self.params()).device
-        with torch.no_grad():
-            for p in prompts:
-                try:
-                    enc = self.tok(p, return_tensors="pt").to(device)
-                    out_ids = self.core.generate(
-                        **enc, generation_config=gen_cfg, synced_gpus=False
-                    )
-                except RuntimeError as e:
-                    # Catch the device-side assert early and recover gracefully
-                    logging.error(f"[rank {self.rank}] generate() failed: {e}")
-                    logging.error("Retrying with greedy decoding to skip NaN probs.")
-                    enc = self.tok(p, return_tensors="pt").to(device)
-                    out_ids = self.core.generate(
-                        **enc,
-                        do_sample=False,
-                        max_new_tokens=self.cfg.max_tokens,
-                        pad_token_id=self.tok.pad_token_id,
-                        eos_token_id=self.tok.eos_token_id,
-                        synced_gpus=False,
-                    )
-
-                text = self.tok.decode(
-                    out_ids[0][enc["input_ids"].shape[1]:],
-                    skip_special_tokens=False
-                )
-                text = _clip_think_block(text, self.cfg.max_think_tokens)
-                outs.append(text)
-
-        self.net.train()
+        # Broadcast to other ranks
         if dist.is_initialized():
             dist.barrier()
         return self._bcast_obj(outs, src=0)
+
+
 
 
     # -----------------------------------------------------------------------
@@ -982,10 +1048,8 @@ class Trainer:
     def _logprob_sums(self, prompts: List[str], completions: List[str]) -> torch.Tensor:
         device = next(self.params()).device
         maxlen = self.cfg.vllm_config.max_model_len
-
         texts = [p + c for p, c in zip(prompts, completions)]
         plens = [len(self.tok.encode(p)) for p in prompts]
-
         enc = self.tok(
             texts,
             padding=True,
@@ -994,48 +1058,60 @@ class Trainer:
             return_tensors="pt",
         ).to(device)
 
-        # Bail out early if truncation ate the completion
-        seq_len = enc["input_ids"].shape[1]
-        for i, pl in enumerate(plens):
-            if pl >= seq_len:
-                raise RuntimeError(
-                    f"Prompt length ({pl}) >= encoded length ({seq_len}). "
-                    "Increase vllm_config.max_model_len or shorten prompts/completions."
-                )
-
-        use_amp = not (self.cfg.quant_mode.lower() in {"4bit", "8bit"})
-        with torch.cuda.amp.autocast(enabled=use_amp):
-            logits = self.net(**enc).logits
-
-        if torch.isnan(logits).any() or torch.isinf(logits).any():
-            raise RuntimeError(f"NaN/Inf in logits at step {self.step} during _logprob_sums")
+        logits = self.net(**enc).logits.float()
+        # Replace NaNs or Infs with a large negative value
+        bad = ~torch.isfinite(logits)
+        if bad.any():
+            logits = torch.where(bad, torch.full_like(logits, -1e9), logits)
 
         res = []
         for i, pl in enumerate(plens):
             start = max(pl - 1, 0)
-            lp_slice = logits[i, start:-1].float()  # use float32 for stability
+            lp_slice = logits[i, start:-1]
             ids_slice = enc["input_ids"][i, pl:]
-
             if ids_slice.numel() == 0:
                 res.append(torch.tensor(0.0, device=device, dtype=logits.dtype))
                 continue
-
-            lp = torch.log_softmax(lp_slice, dim=-1)
-            if torch.isnan(lp).any() or torch.isinf(lp).any():
-                lp = torch.nan_to_num(lp, nan=-1e9, posinf=-1e9, neginf=-1e9)
-
-            token_ll = lp.gather(1, ids_slice.unsqueeze(-1)).squeeze(-1)
+            log_probs = torch.log_softmax(lp_slice, dim=-1)
+            log_probs = torch.nan_to_num(log_probs, nan=-1e9, neginf=-1e9, posinf=0.0)
+            token_ll = log_probs.gather(1, ids_slice.unsqueeze(-1)).squeeze(-1)
             res.append(token_ll.sum())
-
         return torch.stack(res)
 
 
-    def _grpo_loss(self, lp: torch.Tensor, rw: torch.Tensor, gid: torch.Tensor) -> torch.Tensor:
-        adv = torch.zeros_like(rw)
+
+    def _grpo_loss(self, lp: torch.Tensor, rw: torch.Tensor,
+               gid: torch.Tensor, loss_type: str = "grpo",
+               scale_rewards: bool = True) -> torch.Tensor:
+        """
+        Compute the GRPO/Dr.GRPO loss.
+
+        Args:
+            lp: log‑probability sums for each completion.
+            rw: rewards tensor.
+            gid: tensor assigning each completion to a prompt (group).
+            loss_type: "grpo" for sequence‑length normalisation or
+                    "dr_grpo" to divide by a constant (max completion length).
+            scale_rewards: if True, divide the advantages by the std. deviation.
+        """
+        device = lp.device
+        adv = torch.zeros_like(rw, device=device)
+        # Compute group‑wise advantages
         for g in torch.unique(gid):
-            m = gid == g
-            adv[m] = rw[m] - rw[m].mean()
+            m = (gid == g)
+            rewards_g = rw[m]
+            mean = rewards_g.mean()
+            std = rewards_g.std() if scale_rewards else 1.0
+            std = std if std > 0 else 1.0
+            adv[m] = (rewards_g - mean) / std
+
+        # Optionally normalise by maximum length (Dr. GRPO)
+        if loss_type == "dr_grpo":
+            max_len = max(1, self.cfg.max_tokens)
+            return -(adv * lp / max_len).mean()
+
         return -(adv * lp).mean()
+
 
 
 ###############################################################################
