@@ -92,7 +92,21 @@ try:
     from transformers import BitsAndBytesConfig  # HF >= 4.30
 except Exception:
     BitsAndBytesConfig = None  # type: ignore
+_orig_multinomial = torch.multinomial
 
+def safe_multinomial(input, num_samples, replacement=False, generator=None):
+    """
+    Drop‑in replacement for torch.multinomial that sanitises the input tensor.
+    Negative, NaN, or Inf values are set to zero before sampling.
+    """
+    if not torch.is_floating_point(input):
+        input = input.float()
+    # Replace NaN or Inf with zero and clamp negatives
+    clean = torch.nan_to_num(input, nan=0.0, posinf=0.0, neginf=0.0)
+    clean = torch.clamp(clean, min=0.0)
+    # No need to normalise; multinomial only cares about relative weights
+    return _orig_multinomial(clean, num_samples, replacement=replacement, generator=generator)
+torch.multinomial = safe_multinomial
 # Try to import Liger kernels.  If unavailable, leave `_HAS_LIGER` false.
 try:
     from liger_kernel.transformers import (
@@ -880,116 +894,63 @@ class Trainer:
     # -----------------------------------------------------------------------
     # HF-only generation path
     # -----------------------------------------------------------------------
-    ###############################################################################
-    # New generation helper: safe token-by-token sampling
-    ###############################################################################
-
-    def _safe_generate_single(self, prompt: str) -> str:
-        """
-        Generate a completion one token at a time, sanitising logits before sampling
-        to avoid device-side asserts.  This does not rely on transformers.generate.
-        """
-        device = next(self.params()).device
-        # Encode the prompt
-        encoded = self.tok(prompt, return_tensors="pt").to(device)
-        input_ids = encoded["input_ids"]
-        attention_mask = encoded.get("attention_mask", None)
-
-        generated = []
-        past_key_values = None
-
-        # Maximum number of new tokens
-        max_new_tokens = self.cfg.max_tokens
-        temperature = self.cfg.temperature or 1.0
-        top_k = getattr(self.cfg, "top_k", None)  # optional new field
-        min_p = getattr(self.cfg, "min_p", None)  # optional new field
-
-        for _ in range(max_new_tokens):
-            # Forward pass with caching
-            outputs = self.core(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                past_key_values=past_key_values,
-                use_cache=True,
-            )
-            logits = outputs.logits[:, -1, :].float()
-            past_key_values = outputs.past_key_values
-
-            # Sanitize logits: replace NaN/Inf with large negative
-            logits[torch.isnan(logits) | torch.isinf(logits)] = -1e9
-            # Temperature scaling
-            logits = logits / temperature
-
-            # Convert to probabilities
-            probs = torch.softmax(logits, dim=-1)
-
-            # Clamp negative values (should not happen after softmax, but guard anyway)
-            probs = torch.clamp(probs, min=0.0)
-
-            # Optional top-k filter
-            if top_k is not None and top_k > 0:
-                topk_vals, topk_inds = torch.topk(probs, k=top_k, dim=-1)
-                # Zero-out all other probabilities
-                filtered = torch.zeros_like(probs)
-                filtered.scatter_(dim=-1, index=topk_inds, src=topk_vals)
-                probs = filtered
-
-            # Optional min_p filter: drop tokens below min_p * max_prob
-            if min_p is not None and 0.0 < min_p < 1.0:
-                max_prob = probs.max()
-                mask = probs < (min_p * max_prob)
-                probs[mask] = 0.0
-
-            # Re-normalise
-            total = probs.sum()
-            if total <= 0:
-                # fallback to greedy if distribution collapses
-                next_token = torch.argmax(logits, dim=-1).item()
-            else:
-                probs = probs / total
-                next_token = torch.multinomial(probs, num_samples=1).item()
-
-            # Stop if EOS
-            if next_token == self.tok.eos_token_id:
-                break
-
-            generated.append(next_token)
-            # Prepare next input
-            input_ids = torch.tensor([[next_token]], device=device)
-            attention_mask = torch.tensor([[1]], device=device) if attention_mask is not None else None
-
-        # Decode only the generated part
-        out_ids = torch.tensor(generated, device=device)
-        text = self.tok.decode(out_ids, skip_special_tokens=False)
-        return _clip_think_block(text, self.cfg.max_think_tokens)
-
-    ###############################################################################
-    # Updated generation path using _safe_generate_single
-    ###############################################################################
-
     def _generate_with_hf(self, prompts: List[str]) -> List[str]:
         if self.rank != 0:
-            # Non-zero ranks wait for results
+            # ensure ordering on non‑zero ranks
             if dist.is_initialized():
                 dist.barrier()
             return self._bcast_obj([], src=0)
 
-        # On rank 0, use safe token-by-token generation for each prompt
-        outs = []
-        for p in prompts:
-            try:
-                out = self._safe_generate_single(p)
-            except Exception as e:
-                # Log any unexpected exception and fall back to an empty completion
-                logging.error(f"[rank {self.rank}] safe generation failed: {e}")
-                out = ""
-            outs.append(out)
+        self.net.eval()
+        # Use conservative generation settings to avoid pathological distributions
+        gen_cfg = GenerationConfig(
+            do_sample=True,
+            temperature=self.cfg.temperature,
+            top_p=self.cfg.top_p,
+            top_k=64,                # limit sampling to the top‑64 tokens
+            min_p=1e-4,              # discard tokens whose prob is < min_p * max_prob
+            repetition_penalty=1.1,  # discourage repetition
+            max_new_tokens=self.cfg.max_tokens,
+            pad_token_id=self.tok.pad_token_id,
+            eos_token_id=self.tok.eos_token_id,
+        )
 
-        # Broadcast to other ranks
+        outs: List[str] = []
+        device = next(self.params()).device
+        with torch.no_grad():
+            for p in prompts:
+                enc = self.tok(p, return_tensors="pt").to(device)
+                try:
+                    out_ids = self.core.generate(
+                        **enc,
+                        generation_config=gen_cfg,
+                        synced_gpus=False
+                    )
+                except RuntimeError as e:
+                    # If sampling fails, fall back to greedy decoding
+                    logging.error(f"[rank {self.rank}] generate() failed: {e}")
+                    logging.error("Retrying with greedy decoding to skip NaN/neg probs.")
+                    out_ids = self.core.generate(
+                        **enc,
+                        do_sample=False,
+                        max_new_tokens=self.cfg.max_tokens,
+                        pad_token_id=self.tok.pad_token_id,
+                        eos_token_id=self.tok.eos_token_id,
+                        synced_gpus=False,
+                    )
+
+                # Decode the newly generated portion
+                text = self.tok.decode(
+                    out_ids[0][enc["input_ids"].shape[1]:],
+                    skip_special_tokens=False
+                )
+                text = _clip_think_block(text, self.cfg.max_think_tokens)
+                outs.append(text)
+
+        self.net.train()
         if dist.is_initialized():
             dist.barrier()
         return self._bcast_obj(outs, src=0)
-
 
 
 
