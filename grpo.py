@@ -367,7 +367,8 @@ except Exception:
 
 try:
     # The environment used by ToSSim.  This is only available on rank 0.
-    from Simulation.turn_batcher import TurnBatcher  # type: ignore
+    from Simulation.runner_with_rewards import RunnerWithRewards as TurnBatcher
+
 except Exception:
     TurnBatcher = None  # type: ignore
 
@@ -1009,7 +1010,7 @@ class Trainer:
             outs = await self.vllm.generate(tp)
         # Rewards
         if self.rank == 0:
-            rewards = [r for r, _ in self.env.apply_actions(meta * K, outs)] if self.env else []
+            rewards = self.env.apply_actions(meta * K, outs) if self.env else []
         else:
             rewards = []
         rewards = self._bcast(rewards)

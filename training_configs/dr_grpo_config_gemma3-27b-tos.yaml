@@ -13,13 +13,13 @@ early_stop_parse_rate: 0.99
 early_stop_consecutive_ticks: 1000
 
 # DR‑GRPO
-k_per_prompt: 4               # choose your K; 4 is a good default
+k_per_prompt: 3               # choose your K; 4 is a good default
 beta: 0.0                     # no length penalty
 sync_frequency: 10            # was: sync_every
 
 # environment
-num_games: 2                 # was: num_concurrent_games
-active_seats_per_game: 3
+num_games: 1                 # was: num_concurrent_games
+active_seats_per_game: 1
 
 # sampling
 temperature: 0.8
@@ -66,11 +66,11 @@ quant_args:
   llm_int8_threshold: 6.0
   llm_int8_has_fp16_weight: false
 
-temperature: 1.0            # soften logits; reduce if output is too random
-top_p: 1.0                  # 1.0 disables nucleus sampling
-top_k: 1                 # null disables top‑k filtering (–1 internally)
+temperature: 0.3            # soften logits; reduce if output is too random
+top_p: 0.9                  # 1.0 disables nucleus sampling
+top_k: 64                 # null disables top‑k filtering (–1 internally)
 min_p: 0.0                  # 0.0 disables probability cutoff
-repetition_penalty: 1.1     # discourage exact repetition (tune as needed)
+repetition_penalty: 1.0     # discourage exact repetition (tune as needed)
 
 flash_attention: true
 liger: true
